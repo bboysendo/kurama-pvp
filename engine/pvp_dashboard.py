@@ -160,28 +160,31 @@ def render_gallery(catalog_dicts: list[dict]) -> None:
         return
 
     st.divider()
-    cols = st.columns(4)
-    for i, card_dict in enumerate(filtered):
-        with cols[i % 4]:
-            img = card_image_path(card_dict)
-            if img:
-                st.image(str(img), width="stretch")
-            else:
-                st.caption("🖼️ (sin imagen)")
-            st.markdown(f"**{card_dict['name']}**")
-            if card_dict.get("subtitle"):
-                st.caption(card_dict["subtitle"])
-            st.caption(f"⚡ Coste {card_dict['cost_energy']} · {card_dict['atk']} ATK / {card_dict['defense']} DEF")
-            st.caption(f"🏷️ {CATEGORY_LABELS.get(card_dict['category'], card_dict['category'])} · {card_type_label(card_dict)}")
-            if card_dict.get("ability") == "heal_potion" and card_dict.get("heal_amount"):
-                st.caption(f"💚 Cura mínimo {card_dict['heal_amount']} HP")
-            if card_dict.get("ability") == "counter" and card_dict.get("counter_damage"):
-                st.caption(f"↩️ Devuelve {card_dict['counter_damage']} de daño")
-            if card_dict.get("description"):
-                st.caption(card_dict["description"])
-            if card_dict.get("is_placeholder"):
-                st.caption("🧩 Arte pendiente (placeholder)")
-            st.divider()
+    with st.container(key="gallery_grid"):
+        cols = st.columns(4)
+        for i, card_dict in enumerate(filtered):
+            with cols[i % 4]:
+                img = card_image_path(card_dict)
+                if img:
+                    st.image(str(img), width="stretch")
+                else:
+                    st.caption("🖼️ (sin imagen)")
+                st.markdown(f"<div class='card-name'>{html.escape(card_dict['name'])}</div>", unsafe_allow_html=True)
+                st.caption(f"⚡ Coste {card_dict['cost_energy']} · {card_dict['atk']} ATK / {card_dict['defense']} DEF")
+                st.caption(f"🏷️ {CATEGORY_LABELS.get(card_dict['category'], card_dict['category'])} · {card_type_label(card_dict)}")
+                ability_note = ""
+                if card_dict.get("ability") == "heal_potion" and card_dict.get("heal_amount"):
+                    ability_note = f"💚 Cura mínimo {card_dict['heal_amount']} HP"
+                elif card_dict.get("ability") == "counter" and card_dict.get("counter_damage"):
+                    ability_note = f"↩️ Devuelve {card_dict['counter_damage']} de daño"
+                st.markdown(f"<div class='gallery-ability'>{ability_note or '&nbsp;'}</div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<div class='gallery-desc'>{html.escape(card_dict.get('description') or '')}</div>",
+                    unsafe_allow_html=True,
+                )
+                if card_dict.get("is_placeholder"):
+                    st.caption("🧩 Arte pendiente (placeholder)")
+                st.divider()
 
 
 # --------------------------------------------------------------------------- #
@@ -647,6 +650,39 @@ st.markdown(
         min-height: 1.3em;
         line-height: 1.3em;
         margin: 0.1rem 0 0.2rem;
+    }
+    /* Catálogo de cartas: imagen a altura fija (object-fit: contain, en vez
+       de estirar al ancho y dejar que la relación de aspecto de cada arte
+       decida la altura de la fila) y cajas de texto de altura fija para la
+       nota de habilidad y la descripción (recortada con línea de puntos si
+       es más larga que otras), para que las 4 columnas de la parrilla
+       queden siempre alineadas y del mismo tamaño. */
+    [class*="st-key-gallery_grid"] [data-testid="stImage"] img {
+        height: 230px !important;
+        width: auto !important;
+        max-width: 100% !important;
+        object-fit: contain;
+        display: block;
+        margin: 0 auto;
+    }
+    .gallery-ability {
+        font-size: 0.8rem;
+        color: rgb(107, 163, 107);
+        min-height: 1.3em;
+        line-height: 1.3em;
+        margin: 0.15rem 0;
+    }
+    .gallery-desc {
+        font-size: 0.78rem;
+        color: rgba(135, 135, 135, 0.95);
+        min-height: 3.3em;
+        max-height: 3.3em;
+        line-height: 1.1em;
+        overflow: hidden;
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        margin-top: 0.2rem;
     }
     .combat-feed {
         background: rgba(135, 135, 135, 0.08);
