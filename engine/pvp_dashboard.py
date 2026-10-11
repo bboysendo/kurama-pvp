@@ -514,93 +514,6 @@ st.title("⚔️ Kurama Run — Simulador PVP")
 st.caption("Prototipo local y desacoplado — motor de combate + lectura BSC simulada. No usa fondos reales.")
 
 # --------------------------------------------------------------------------- #
-# Sidebar: modo del panel, wallet / NFT / economía
-# --------------------------------------------------------------------------- #
-with st.sidebar:
-    st.header("📺 Panel")
-    panel_mode = st.radio(
-        "Modo", ["⚔️ Modo Batalla", "🎓 Tutorial Interactivo", "📖 Catálogo de Cartas"], key="panel_mode"
-    )
-    st.divider()
-
-    st.header("🦊 Wallet (simulada)")
-    connector: BlockchainConnector = st.session_state.connector
-    st.caption(f"Modo: {'SIMULACIÓN' if connector.is_simulated else 'BSC real'}")
-    wallet = st.text_input("Dirección de wallet", value=st.session_state.wallet_address)
-    st.session_state.wallet_address = wallet
-
-    owned = connector.owned_token_ids(wallet)
-    kur_balance = connector.kur_balance(wallet)
-    rarity = connector.best_rarity_for_wallet(wallet)
-    base_hp = compute_base_hp(rarity)
-
-    st.metric("NFTs en la wallet", len(owned))
-    st.metric("Rareza más alta", rarity_label(rarity))
-    st.metric("HP base de combate", base_hp)
-    st.metric("Balance $KUR (simulado)", f"{kur_balance:,.2f}")
-
-    if owned:
-        preview_id = st.selectbox("Previsualizar NFT", owned, key="preview_nft")
-        fox_path = PVP_ROOT / "GAMENFT" / f"fox_{preview_id}.png"
-        if fox_path.exists():
-            st.image(str(fox_path), caption=f"Fox #{preview_id} · {rarity_label(derive_placeholder_rarity(preview_id))}", width="stretch")
-
-    st.divider()
-    st.caption("Recargar wallet de prueba con otros NFTs/KUR:")
-    new_ids = st.text_input("Token IDs (separados por coma)", value=",".join(str(i) for i in owned))
-    new_kur = st.number_input("$KUR simulado", min_value=0.0, value=float(kur_balance), step=10.0)
-    if st.button("💾 Actualizar wallet simulada", width="stretch"):
-        try:
-            ids = [int(x.strip()) for x in new_ids.split(",") if x.strip()]
-        except ValueError:
-            ids = []
-        connector.simulated_backend.seed_wallet(wallet, ids, new_kur)
-        st.rerun()
-
-    st.divider()
-    st.header("🏆 Modo de partida")
-    mode = st.radio("Modo", ["free", "competitive"], format_func=lambda m: "Free / Vs. Bot" if m == "free" else "Competitivo (con Cristales/KUR)")
-    stake = 0.0
-    if mode == "competitive":
-        stake = st.number_input("Apuesta en KUR", min_value=0.0, value=10.0, step=1.0)
-    economy = compute_match_economy(mode, stake)
-    st.caption(
-        f"Victoria: +{economy.win_elo} ELO · {economy.win_kur_reward:.0f} KUR · "
-        f"Derrota: {economy.loss_elo} ELO" + (f" · comisión {economy.fee_kur:.2f} KUR" if mode == "competitive" else "")
-    )
-
-    st.divider()
-    st.session_state.vs_bot = st.radio("Oponente", ["Bot", "Hotseat (2 jugadores locales)"]) == "Bot"
-
-    if st.button("🆕 Nueva partida", width="stretch", type="primary"):
-        rng = random.Random()
-        deck_a = build_deck_from_pool(pool_27, rng=rng)
-        deck_b = build_deck_from_pool(pool_27, rng=rng)
-        deck_a = apply_nft_buffs_to_deck(deck_a, rarity)
-        hp_a = base_hp
-        hp_b = compute_base_hp(NFTRarity.NONE) if st.session_state.vs_bot else base_hp
-        st.session_state.match = start_match(
-            deck_a, deck_b, hp_a=hp_a, hp_b=hp_b,
-            name_a="Tú (Jugador A)", name_b="Bot" if st.session_state.vs_bot else "Jugador B",
-        )
-        st.rerun()
-
-if panel_mode.startswith("🎓"):
-    render_tutorial(catalog_dicts)
-    st.stop()
-
-if panel_mode.startswith("📖"):
-    render_gallery(catalog_dicts)
-    st.stop()
-
-match = st.session_state.match
-if match is None:
-    st.info("Pulsa **Nueva partida** en la barra lateral para empezar a jugar.")
-    st.stop()
-
-state = get_match_state(match)
-
-# --------------------------------------------------------------------------- #
 # Playmat compacto: imágenes de mano más pequeñas, nombre/habilidad a altura
 # fija (para que Zona/Jugar queden siempre en la misma línea entre cartas) y
 # el feed de combate flotante (ver más abajo) compactos por CSS.
@@ -722,6 +635,94 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+
+# --------------------------------------------------------------------------- #
+# Sidebar: modo del panel, wallet / NFT / economía
+# --------------------------------------------------------------------------- #
+with st.sidebar:
+    st.header("📺 Panel")
+    panel_mode = st.radio(
+        "Modo", ["⚔️ Modo Batalla", "🎓 Tutorial Interactivo", "📖 Catálogo de Cartas"], key="panel_mode"
+    )
+    st.divider()
+
+    st.header("🦊 Wallet (simulada)")
+    connector: BlockchainConnector = st.session_state.connector
+    st.caption(f"Modo: {'SIMULACIÓN' if connector.is_simulated else 'BSC real'}")
+    wallet = st.text_input("Dirección de wallet", value=st.session_state.wallet_address)
+    st.session_state.wallet_address = wallet
+
+    owned = connector.owned_token_ids(wallet)
+    kur_balance = connector.kur_balance(wallet)
+    rarity = connector.best_rarity_for_wallet(wallet)
+    base_hp = compute_base_hp(rarity)
+
+    st.metric("NFTs en la wallet", len(owned))
+    st.metric("Rareza más alta", rarity_label(rarity))
+    st.metric("HP base de combate", base_hp)
+    st.metric("Balance $KUR (simulado)", f"{kur_balance:,.2f}")
+
+    if owned:
+        preview_id = st.selectbox("Previsualizar NFT", owned, key="preview_nft")
+        fox_path = PVP_ROOT / "GAMENFT" / f"fox_{preview_id}.png"
+        if fox_path.exists():
+            st.image(str(fox_path), caption=f"Fox #{preview_id} · {rarity_label(derive_placeholder_rarity(preview_id))}", width="stretch")
+
+    st.divider()
+    st.caption("Recargar wallet de prueba con otros NFTs/KUR:")
+    new_ids = st.text_input("Token IDs (separados por coma)", value=",".join(str(i) for i in owned))
+    new_kur = st.number_input("$KUR simulado", min_value=0.0, value=float(kur_balance), step=10.0)
+    if st.button("💾 Actualizar wallet simulada", width="stretch"):
+        try:
+            ids = [int(x.strip()) for x in new_ids.split(",") if x.strip()]
+        except ValueError:
+            ids = []
+        connector.simulated_backend.seed_wallet(wallet, ids, new_kur)
+        st.rerun()
+
+    st.divider()
+    st.header("🏆 Modo de partida")
+    mode = st.radio("Modo", ["free", "competitive"], format_func=lambda m: "Free / Vs. Bot" if m == "free" else "Competitivo (con Cristales/KUR)")
+    stake = 0.0
+    if mode == "competitive":
+        stake = st.number_input("Apuesta en KUR", min_value=0.0, value=10.0, step=1.0)
+    economy = compute_match_economy(mode, stake)
+    st.caption(
+        f"Victoria: +{economy.win_elo} ELO · {economy.win_kur_reward:.0f} KUR · "
+        f"Derrota: {economy.loss_elo} ELO" + (f" · comisión {economy.fee_kur:.2f} KUR" if mode == "competitive" else "")
+    )
+
+    st.divider()
+    st.session_state.vs_bot = st.radio("Oponente", ["Bot", "Hotseat (2 jugadores locales)"]) == "Bot"
+
+    if st.button("🆕 Nueva partida", width="stretch", type="primary"):
+        rng = random.Random()
+        deck_a = build_deck_from_pool(pool_27, rng=rng)
+        deck_b = build_deck_from_pool(pool_27, rng=rng)
+        deck_a = apply_nft_buffs_to_deck(deck_a, rarity)
+        hp_a = base_hp
+        hp_b = compute_base_hp(NFTRarity.NONE) if st.session_state.vs_bot else base_hp
+        st.session_state.match = start_match(
+            deck_a, deck_b, hp_a=hp_a, hp_b=hp_b,
+            name_a="Tú (Jugador A)", name_b="Bot" if st.session_state.vs_bot else "Jugador B",
+        )
+        st.rerun()
+
+if panel_mode.startswith("🎓"):
+    render_tutorial(catalog_dicts)
+    st.stop()
+
+if panel_mode.startswith("📖"):
+    render_gallery(catalog_dicts)
+    st.stop()
+
+match = st.session_state.match
+if match is None:
+    st.info("Pulsa **Nueva partida** en la barra lateral para empezar a jugar.")
+    st.stop()
+
+state = get_match_state(match)
 
 
 def _fire_event_toasts(log_before: int) -> None:
