@@ -202,7 +202,7 @@ REAL_ART_CARDS: list[Card] = [
         element=Element.FIRE,
         subtitle="(Talon Zhen)",
         description="Ataque Puro Alternativo — serpiente de ocho cabezas envuelta en fuego.",
-        image_path="CARDS/descarga.png",
+        image_path="CARDS/descargaaaa.png",
     ),
     Card(
         id="ph_std_hybrid_off_1",
@@ -239,7 +239,7 @@ REAL_ART_CARDS: list[Card] = [
         subtitle="(Talon Zhen)",
         description="Poción Curativa Moderada — la emperatriz helada congela el golpe y lo convierte en vida.",
         heal_amount=4,
-        image_path="CARDS/descargaaaa.png",
+        image_path="CARDS/descarga.png",
     ),
     Card(
         id="ph_rare_potion_major",
