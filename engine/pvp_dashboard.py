@@ -20,6 +20,7 @@ BSC real si el equipo quiere probarlo con web3 instalado.
 
 from __future__ import annotations
 
+import html
 import json
 import random
 from pathlib import Path
@@ -597,6 +598,70 @@ if match is None:
 state = get_match_state(match)
 
 # --------------------------------------------------------------------------- #
+# Playmat compacto: imágenes de mano más pequeñas, nombre/habilidad a altura
+# fija (para que Zona/Jugar queden siempre en la misma línea entre cartas) y
+# el feed de combate flotante (ver más abajo) compactos por CSS.
+# --------------------------------------------------------------------------- #
+st.markdown(
+    """
+    <style>
+    [class*="st-key-battle_hand"] img {
+        max-height: 190px !important;
+        width: auto !important;
+        max-width: 100% !important;
+        object-fit: contain;
+        display: block;
+        margin: 0 auto;
+    }
+    .card-name {
+        font-weight: 600;
+        font-size: 0.85rem;
+        min-height: 2.3em;
+        line-height: 1.15em;
+        overflow: hidden;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        margin-top: 0.25rem;
+    }
+    .combat-feed {
+        background: rgba(135, 135, 135, 0.08);
+        border: 1px solid rgba(135, 135, 135, 0.25);
+        border-radius: 8px;
+        padding: 6px 12px;
+        font-size: 0.82rem;
+        line-height: 1.35;
+        max-height: 6.5em;
+        overflow-y: auto;
+        margin-bottom: 0.4rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+def _fire_event_toasts(log_before: int) -> None:
+    """Un toast rápido por cada línea de log que generó la última jugada
+    (daño, curación, contraataque, carta del Bot...), en vez de un único
+    mensaje genérico — así el jugador ve el resultado real al instante sin
+    bajar al registro completo."""
+    new_lines = [line for line in match.log[log_before:] if not line.startswith("--- Turno")]
+    for line in new_lines[:4]:
+        if "inflige" in line or "Combo" in line:
+            icon = "⚔️"
+        elif "cura" in line or "bloquea" in line:
+            icon = "💚"
+        elif "contraataca" in line:
+            icon = "↩️"
+        elif "juega" in line:
+            icon = "🎴"
+        else:
+            icon = "ℹ️"
+        st.toast(line, icon=icon)
+
+
+# --------------------------------------------------------------------------- #
 # Cabecera: HP / energía / estado
 # --------------------------------------------------------------------------- #
 col_a, col_vs, col_b = st.columns([5, 1, 5])
@@ -628,7 +693,13 @@ elif st.session_state.vs_bot:
 else:
     st.info("🔵 Elige las cartas de **ambos** jugadores y pulsa **Resolver turno** para aplicarlas a la vez.")
 
-st.divider()
+# Feed de combate compacto (últimas 4 líneas, fijo justo sobre las cartas) —
+# complementa el registro completo (más abajo, colapsado) y los toasts.
+if state["log"]:
+    recent_lines = "".join(f"<div>{html.escape(line)}</div>" for line in reversed(state["log"][-4:]))
+    st.markdown(f'<div class="combat-feed">{recent_lines}</div>', unsafe_allow_html=True)
+
+ZONE_LABELS = {"head": "🗣️ Cabeza", "torso": "🫁 Tronco", "legs": "🦵 Piernas"}
 
 
 def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None:
@@ -636,35 +707,45 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
     responder al Bot y resuelve el turno en un solo paso — sin esto, cada
     carta se queda solo "preparada" hasta pulsar Resolver turno (modo Hotseat,
     donde sí hace falta que ambos jugadores decidan antes de aplicar el turno
-    a la vez, sección 2.4 de PVP_Rules)."""
+    a la vez, sección 2.4 de PVP_Rules). Nombre y habilidad reservan siempre
+    la misma altura (vía CSS/placeholder) para que Zona y Jugar queden
+    alineados en la misma línea entre cartas, tengan o no habilidad especial."""
     p = state[f"player_{player_key}"]
     st.markdown(f"**Mano de {label}**")
     if not p["hand"]:
         st.caption("Sin cartas en mano.")
         return
-    cols = st.columns(len(p["hand"]))
-    for col, card_dict in zip(cols, p["hand"]):
-        with col:
-            img = card_image_path(card_dict)
-            if img:
-                st.image(str(img), width="stretch")
-            st.caption(f"**{card_dict['name']}**")
-            st.caption(f"{card_dict['atk']} ATK / {card_dict['defense']} DEF · Coste {card_dict['cost_energy']}")
-            if card_dict.get("ability") != "none":
-                st.caption(f"✨ {card_dict['ability']}")
-            zone = st.selectbox("Zona", [z.value for z in Zone], key=f"zone_{player_key}_{card_dict['id']}")
-            label_btn = "⚔️ Jugar" if auto_resolve else "Jugar"
-            if st.button(label_btn, key=f"play_{player_key}_{card_dict['id']}", width="stretch", type="primary" if auto_resolve else "secondary"):
-                try:
-                    play_card(match, player_key, card_dict["id"], Zone(zone))
-                except EngineError as e:
-                    st.error(str(e))
-                else:
-                    if auto_resolve:
-                        bot_choose_plays(match, "b")
-                        end_turn(match)
-                        st.toast("✅ Paso de turno realizado", icon="✅")
-                st.rerun()
+    with st.container(key=f"battle_hand_{player_key}"):
+        cols = st.columns(len(p["hand"]))
+        for col, card_dict in zip(cols, p["hand"]):
+            with col:
+                img = card_image_path(card_dict)
+                if img:
+                    st.image(str(img), width="stretch")
+                st.markdown(f"<div class='card-name'>{html.escape(card_dict['name'])}</div>", unsafe_allow_html=True)
+                st.caption(f"{card_dict['atk']} ATK / {card_dict['defense']} DEF · Coste {card_dict['cost_energy']}")
+                ability = card_dict.get("ability")
+                st.caption(f"✨ {ability}" if ability and ability != "none" else " ")
+                zone = st.selectbox(
+                    "Zona",
+                    [z.value for z in Zone],
+                    key=f"zone_{player_key}_{card_dict['id']}",
+                    format_func=lambda z: ZONE_LABELS.get(z, z),
+                    label_visibility="collapsed",
+                )
+                label_btn = "⚔️ Jugar" if auto_resolve else "Jugar"
+                if st.button(label_btn, key=f"play_{player_key}_{card_dict['id']}", width="stretch", type="primary" if auto_resolve else "secondary"):
+                    log_before = len(match.log)
+                    try:
+                        play_card(match, player_key, card_dict["id"], Zone(zone))
+                    except EngineError as e:
+                        st.error(str(e))
+                    else:
+                        if auto_resolve:
+                            bot_choose_plays(match, "b")
+                            end_turn(match)
+                        _fire_event_toasts(log_before)
+                    st.rerun()
 
     if p["staged_plays"]:
         staged_txt = ", ".join(
@@ -678,15 +759,14 @@ if state["status"] == MatchStatus.ONGOING.value:
         render_hand("a", state["player_a"]["name"], auto_resolve=True)
     else:
         render_hand("a", state["player_a"]["name"], auto_resolve=False)
-        st.divider()
         render_hand("b", state["player_b"]["name"], auto_resolve=False)
-        st.divider()
         if st.button("⏭️ Resolver turno", type="primary", width="stretch"):
+            log_before = len(match.log)
             end_turn(match)
+            _fire_event_toasts(log_before)
             st.rerun()
 
-st.divider()
-with st.expander("📜 Registro de la partida", expanded=True):
+with st.expander("📜 Registro completo de la partida", expanded=False):
     for line in reversed(state["log"][-40:]):
         st.text(line)
 
