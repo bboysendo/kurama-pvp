@@ -1,0 +1,3 @@
+streamlit>=1.60
+web3>=6.0
+Pillow>=10.0
