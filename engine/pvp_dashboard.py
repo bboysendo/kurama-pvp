@@ -623,11 +623,20 @@ if state["status"] != MatchStatus.ONGOING.value:
     if st.button("🔄 Jugar otra partida"):
         st.session_state.match = None
         st.rerun()
+elif st.session_state.vs_bot:
+    st.info("🟢 **¡Tu turno!** Elige una carta y pulsa **Jugar** para atacar o defender — el Bot responde al instante.")
+else:
+    st.info("🔵 Elige las cartas de **ambos** jugadores y pulsa **Resolver turno** para aplicarlas a la vez.")
 
 st.divider()
 
 
-def render_hand(player_key: str, label: str) -> None:
+def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None:
+    """auto_resolve=True (modo Vs. Bot): cada "Jugar" ejecuta la jugada, hace
+    responder al Bot y resuelve el turno en un solo paso — sin esto, cada
+    carta se queda solo "preparada" hasta pulsar Resolver turno (modo Hotseat,
+    donde sí hace falta que ambos jugadores decidan antes de aplicar el turno
+    a la vez, sección 2.4 de PVP_Rules)."""
     p = state[f"player_{player_key}"]
     st.markdown(f"**Mano de {label}**")
     if not p["hand"]:
@@ -644,11 +653,17 @@ def render_hand(player_key: str, label: str) -> None:
             if card_dict.get("ability") != "none":
                 st.caption(f"✨ {card_dict['ability']}")
             zone = st.selectbox("Zona", [z.value for z in Zone], key=f"zone_{player_key}_{card_dict['id']}")
-            if st.button("Jugar", key=f"play_{player_key}_{card_dict['id']}", width="stretch"):
+            label_btn = "⚔️ Jugar" if auto_resolve else "Jugar"
+            if st.button(label_btn, key=f"play_{player_key}_{card_dict['id']}", width="stretch", type="primary" if auto_resolve else "secondary"):
                 try:
                     play_card(match, player_key, card_dict["id"], Zone(zone))
                 except EngineError as e:
                     st.error(str(e))
+                else:
+                    if auto_resolve:
+                        bot_choose_plays(match, "b")
+                        end_turn(match)
+                        st.toast("✅ Paso de turno realizado", icon="✅")
                 st.rerun()
 
     if p["staged_plays"]:
@@ -659,19 +674,16 @@ def render_hand(player_key: str, label: str) -> None:
 
 
 if state["status"] == MatchStatus.ONGOING.value:
-    render_hand("a", state["player_a"]["name"])
     if st.session_state.vs_bot:
-        st.caption("El Bot jugará automáticamente al resolver el turno.")
+        render_hand("a", state["player_a"]["name"], auto_resolve=True)
     else:
+        render_hand("a", state["player_a"]["name"], auto_resolve=False)
         st.divider()
-        render_hand("b", state["player_b"]["name"])
-
-    st.divider()
-    if st.button("⏭️ Resolver turno", type="primary", width="stretch"):
-        if st.session_state.vs_bot:
-            bot_choose_plays(match, "b")
-        end_turn(match)
-        st.rerun()
+        render_hand("b", state["player_b"]["name"], auto_resolve=False)
+        st.divider()
+        if st.button("⏭️ Resolver turno", type="primary", width="stretch"):
+            end_turn(match)
+            st.rerun()
 
 st.divider()
 with st.expander("📜 Registro de la partida", expanded=True):
