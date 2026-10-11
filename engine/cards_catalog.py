@@ -1,39 +1,31 @@
 """
 Generador del catálogo de cartas: construye las 27 cartas del pool
 competitivo (sección 5.2 de PVP_Rules) + 2 cartas "Legendary" fuera de pool,
-mezclando los 18 artes ya terminados en ../CARDS (recortados a PNG
-transparente) con placeholders generados para los huecos que todavía no
-tienen arte final.
+a partir de los artes terminados en ../CARDS (recortados a PNG transparente).
 
 IMPORTANTE: la carpeta ../CARDS/CARDS_NO_USE guarda versiones antiguas /
 descartadas de estos mismos artes — este módulo nunca debe referenciar nada
 de ahí dentro, solo archivos directamente en la raíz de ../CARDS.
 
-Inventario de arte real encontrado en la carpeta PVP (11/10/2026):
-- 6 cartas "KURAMARUN*-removebg-preview" (bando del jugador, Cyber/Celestial
-  Kitsune Operative).
-- 6 cartas "ENEMIGOS*-removebg-preview" (bando Talon Zhen: Raging Earthquake,
-  Shadow Claw, Flora-Fury, Lava Rage, Frost Rage, Kappa).
-- 6 artes nuevos de criaturas/pociones Talon Zhen: Namasu: Abyssal Guardian
-  (reemplaza al viejo ENEMIGOS6, ahora 2/2), Bakeneko: Phantom Paws (1/1),
-  Yamata-no-Orochi (3/0), e Inari: Frost Spirit / Yuki-Onna: Frozen Empress /
-  Kyūbi: Spirit of Nine Flames (las 3 nuevas cartas de Poción, 0/0 con
-  Ability.HEAL_POTION).
-Cada una ya trae nombre y stats ATK/DEF pintados en el propio arte (leídos a
-mano de la imagen). De esas 18: 2 no encajan en ningún hueco de rareza fijo
-del documento (KURAMARUN2 "Celestial Kitsune Operative" 3/3 y KURAMARUN6
-"Pyre & Cosmos: Kitsune Celestial" 3/1) -> se catalogan como LEGENDARY fuera
-del pool de 27. Las otras 16 se reparten entre los huecos Raros y Estándar
-cuyo ATK/DEF coincide (o cuyo rol — potion/ataque puro/híbrida — coincide,
-aunque el número exacto sea una "variante de atributos"); el resto de huecos
-(11) se cubre con placeholders balanceados (ver generate_placeholder_image).
-El documento permite explícitamente "variantes estéticas y de atributos"
-dentro de cada bloque, así que no hace falta que cada placeholder matchee un
-hueco numerado 1:1.
+Estado (11/10/2026): las 27 + 2 cartas tienen ya arte final — PLACEHOLDER_SPECS
+se mantiene vacía (en vez de borrarla) para poder volver a usarla sin más que
+añadirle tuplas si en el futuro se amplía el pool o se retira algún arte.
+Cada carta trae nombre y stats ATK/DEF pintados en el propio arte (leídos a
+mano de la imagen); cuando el nombre pintado no coincidía con el nombre
+genérico del hueco de diseño que rellena (p.ej. "Giant Cobra" ocupando el
+hueco antes llamado "Ataque Perforante Táctico", o "Rhino" el de
+"Rompedefensas Directo"), se usó el nombre del arte y se conservaron el rol
+mecánico (id, categoría, habilidad, ATK/DEF) del hueco original — así ningún
+id cambia y las referencias existentes (p.ej. el Tutorial Interactivo del
+dashboard) siguen siendo válidas. 2 cartas no encajan en ningún hueco de
+rareza fijo del documento (KURAMARUN2 "Celestial Kitsune Operative" 3/3 y
+KURAMARUN6 "Pyre & Cosmos: Kitsune Celestial" 3/1) -> se catalogan como
+LEGENDARY fuera del pool de 27.
 
 Ejecutar directamente (`python cards_catalog.py`) regenera:
 - cards_database.json (las 27 + 2 cartas, serializadas)
-- assets/placeholders/<id>.png (una imagen generada por cada placeholder)
+- assets/placeholders/<id>.png (una imagen generada por cada placeholder,
+  si PLACEHOLDER_SPECS deja de estar vacía)
 Las cartas con arte real apuntan a image_path relativo a la raíz del
 proyecto PVP (ver PVP_ROOT en blockchain_connector.py / pvp_dashboard.py).
 """
@@ -313,6 +305,77 @@ REAL_ART_CARDS: list[Card] = [
         description="Híbrida Ofensiva Secundaria — koi samurái, doble espada entre sombras.",
         image_path="CARDS/twinblade.png",
     ),
+    # --- Arte añadido 11/10/2026 (tercera tanda — completa el pool) -------
+    Card(
+        id="ph_std_def_shield_2",
+        name="Iron Carapace",
+        faction=Faction.TALON_ZHEN,
+        category=CardCategory.STANDARD,
+        atk=0, defense=3,
+        element=Element.NATURE,
+        subtitle="(Talon Zhen)",
+        description="Defensa Pura / Escudo Alternativa — ent de corteza y hierro, inquebrantable.",
+        image_path="CARDS/ironcarapace.png",
+    ),
+    Card(
+        id="ph_std_hybrid_off_3",
+        name="Twinblade Tactician",
+        faction=Faction.TALON_ZHEN,
+        category=CardCategory.STANDARD,
+        atk=2, defense=1,
+        element=Element.WATER,
+        subtitle="(Talon Zhen)",
+        description="Híbrida Ofensiva Táctica — tortuga ninja, doble espada y reflejos precisos.",
+        image_path="CARDS/twinbladetactician-removebg-preview.png",
+    ),
+    Card(
+        id="ph_rare_piercing_1",
+        name="Rhino",
+        faction=Faction.TALON_ZHEN,
+        category=CardCategory.RARE,
+        atk=2, defense=0,
+        ability=Ability.PIERCING,
+        element=Element.EARTH,
+        subtitle="(Talon Zhen)",
+        description="Rompedefensas Directo — samurái rinoceronte, embiste y atraviesa cualquier escudo.",
+        image_path="CARDS/rhino-removebg-preview.png",
+    ),
+    Card(
+        id="ph_rare_piercing_2",
+        name="Giant Cobra",
+        faction=Faction.KURAMARUN,
+        category=CardCategory.RARE,
+        atk=3, defense=0,
+        ability=Ability.PIERCING,
+        element=Element.NATURE,
+        description="Ataque Perforante Táctico — veneno que atraviesa cualquier armadura.",
+        image_path="CARDS/giantcobra-removebg-preview.png",
+    ),
+    Card(
+        id="ph_rare_counter_1",
+        name="Sumo Natsumoto",
+        faction=Faction.KURAMARUN,
+        category=CardCategory.RARE,
+        atk=1, defense=1,
+        ability=Ability.COUNTER,
+        element=Element.ARCANE,
+        description="Contraataque Estándar — el peso del sumo convierte cualquier golpe fallido en respuesta.",
+        counter_damage=2,
+        image_path="CARDS/sumo-removebg-preview.png",
+    ),
+    Card(
+        id="ph_rare_counter_2",
+        name="Sushi Samurai",
+        faction=Faction.TALON_ZHEN,
+        category=CardCategory.RARE,
+        atk=1, defense=1,
+        ability=Ability.COUNTER,
+        element=Element.SHADOW,
+        subtitle="(Talon Zhen)",
+        description="Contraataque de Repsilo Avanzado — precisión de espadachín, responde antes de que el golpe llegue.",
+        counter_damage=3,
+        image_path="CARDS/sushisamurai-removebg-preview.png",
+    ),
 ]
 
 
@@ -320,21 +383,8 @@ REAL_ART_CARDS: list[Card] = [
 # 2. Huecos del pool de 27 que todavía no tienen arte -> placeholders
 # --------------------------------------------------------------------------- #
 # (id, name, faction, category, atk, defense, ability, element, heal, counter_dmg)
-PLACEHOLDER_SPECS: list[tuple] = [
-    # Estándar — Ataque: el Ataque Puro ya tiene 2 artes reales (ENEMIGOS2 y
-    # Yamata-no-Orochi), y moderado/ligero x2 también (Rookie Striker, Swift
-    # Fang, Swift Fang Alt) -> este grupo ya no tiene huecos sin arte.
-    # Estándar — Defensa (falta 1 escudo pura 0/3; la mínima 0/1 ya tiene arte: Paper Guard)
-    ("ph_std_def_shield_2", "Iron Carapace", Faction.TALON_ZHEN, CardCategory.STANDARD, 0, 3, Ability.NONE, Element.NONE, 0, 0),
-    # Estándar — Híbrida Ofensiva (Bakeneko y Twinblade Adept Alt ya cubren 2; queda esta)
-    ("ph_std_hybrid_off_3", "Twinblade Tactician", Faction.TALON_ZHEN, CardCategory.STANDARD, 2, 1, Ability.NONE, Element.NONE, 0, 0),
-    # Raras/Especiales — las 3 Pociones ya tienen arte real (Inari/Yuki-Onna/Kyūbi);
-    # quedan Perforantes (2) y Contraataque (2)
-    ("ph_rare_piercing_1", "Rompedefensas Directo", Faction.TALON_ZHEN, CardCategory.RARE, 2, 0, Ability.PIERCING, Element.SHADOW, 0, 0),
-    ("ph_rare_piercing_2", "Ataque Perforante Táctico", Faction.KURAMARUN, CardCategory.RARE, 3, 0, Ability.PIERCING, Element.ARCANE, 0, 0),
-    ("ph_rare_counter_1", "Contraataque Estándar", Faction.KURAMARUN, CardCategory.RARE, 1, 1, Ability.COUNTER, Element.ARCANE, 0, 2),
-    ("ph_rare_counter_2", "Contraataque de Repsilo Avanzado", Faction.TALON_ZHEN, CardCategory.RARE, 1, 1, Ability.COUNTER, Element.SHADOW, 0, 3),
-]
+# Vacío: las 27 + 2 cartas ya tienen arte final (ver cabecera del módulo).
+PLACEHOLDER_SPECS: list[tuple] = []
 
 
 def build_catalog() -> list[Card]:
