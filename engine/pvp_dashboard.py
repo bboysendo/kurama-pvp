@@ -597,6 +597,22 @@ st.markdown(
         -webkit-box-orient: vertical;
         margin-top: 0.2rem;
     }
+    /* Zoom al pasar el ratón por una carta, tanto en la mano de combate
+       como en el Catálogo de Cartas: la imagen se amplía por encima de
+       sus vecinas (los contenedores padres no recortan con overflow). */
+    [class*="st-key-battle_hand"] [data-testid="stImage"] img,
+    [class*="st-key-gallery_grid"] [data-testid="stImage"] img {
+        transition: transform 0.25s ease-in-out, box-shadow 0.25s ease-in-out;
+        cursor: pointer;
+    }
+    [class*="st-key-battle_hand"] [data-testid="stImage"] img:hover,
+    [class*="st-key-gallery_grid"] [data-testid="stImage"] img:hover {
+        transform: scale(1.35);
+        position: relative;
+        z-index: 100;
+        box-shadow: 0px 10px 25px rgba(0, 0, 0, 0.6);
+        border-radius: 8px;
+    }
     .combat-feed {
         background: rgba(135, 135, 135, 0.08);
         border: 1px solid rgba(135, 135, 135, 0.25);
