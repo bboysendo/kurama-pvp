@@ -255,7 +255,7 @@ REAL_ART_CARDS: list[Card] = [
     ),
     Card(
         id="ph_std_atk_light_1",
-        name="Swift Fang",
+        name="Dragon",
         faction=Faction.TALON_ZHEN,
         category=CardCategory.STANDARD,
         atk=1, defense=0,
@@ -265,7 +265,7 @@ REAL_ART_CARDS: list[Card] = [
     ),
     Card(
         id="ph_std_atk_light_2",
-        name="Swift Fang Alt",
+        name="Dragon Zhen",
         faction=Faction.TALON_ZHEN,
         category=CardCategory.STANDARD,
         atk=1, defense=0,
@@ -285,7 +285,7 @@ REAL_ART_CARDS: list[Card] = [
     ),
     Card(
         id="ph_std_hybrid_off_2",
-        name="Twinblade Adept Alt",
+        name="Carp",
         faction=Faction.KURAMARUN,
         category=CardCategory.STANDARD,
         atk=2, defense=1,

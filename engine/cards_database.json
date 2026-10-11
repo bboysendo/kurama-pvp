@@ -324,7 +324,7 @@
   },
   {
     "id": "ph_std_atk_light_1",
-    "name": "Swift Fang",
+    "name": "Dragon",
     "faction": "talon_zhen",
     "category": "standard",
     "atk": 1,
@@ -341,7 +341,7 @@
   },
   {
     "id": "ph_std_atk_light_2",
-    "name": "Swift Fang Alt",
+    "name": "Dragon Zhen",
     "faction": "talon_zhen",
     "category": "standard",
     "atk": 1,
@@ -375,7 +375,7 @@
   },
   {
     "id": "ph_std_hybrid_off_2",
-    "name": "Twinblade Adept Alt",
+    "name": "Carp",
     "faction": "kuramarun",
     "category": "standard",
     "atk": 2,
