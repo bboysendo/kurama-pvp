@@ -605,13 +605,27 @@ state = get_match_state(match)
 st.markdown(
     """
     <style>
+    /* Mano de cartas: imágenes algo más grandes, columnas de ancho fijo
+       (no estiradas a todo el contenedor) y centradas como grupo en vez de
+       repartidas a los lados con huecos en blanco. */
     [class*="st-key-battle_hand"] img {
-        max-height: 190px !important;
+        max-height: 225px !important;
         width: auto !important;
         max-width: 100% !important;
         object-fit: contain;
         display: block;
         margin: 0 auto;
+    }
+    [class*="st-key-battle_hand"] [data-testid="stHorizontalBlock"] {
+        justify-content: center !important;
+        flex-wrap: wrap;
+        gap: 1.5rem !important;
+    }
+    [class*="st-key-battle_hand"] [data-testid="stColumn"] {
+        flex: 0 0 240px !important;
+        width: 240px !important;
+        max-width: 240px !important;
+        min-width: 180px;
     }
     .card-name {
         font-weight: 600;
@@ -624,6 +638,16 @@ st.markdown(
         -webkit-box-orient: vertical;
         margin-top: 0.25rem;
     }
+    /* Altura fija para la línea de habilidad ('piercing', 'counter', ...)
+       aunque esté vacía, para que el selector de Zona y el botón Jugar
+       queden siempre alineados entre cartas con y sin habilidad. */
+    .card-ability {
+        font-size: 0.75rem;
+        color: rgba(135, 135, 135, 0.9);
+        min-height: 1.3em;
+        line-height: 1.3em;
+        margin: 0.1rem 0 0.2rem;
+    }
     .combat-feed {
         background: rgba(135, 135, 135, 0.08);
         border: 1px solid rgba(135, 135, 135, 0.25);
@@ -634,6 +658,29 @@ st.markdown(
         max-height: 6.5em;
         overflow-y: auto;
         margin-bottom: 0.4rem;
+    }
+    /* Cabecera de combate (HP/energía/turno) más compacta, para que el
+       tablero entero quepa de un vistazo sin tanto scroll. */
+    [class*="st-key-battle_header"] [data-testid="stVerticalBlock"] {
+        gap: 0.5rem !important;
+    }
+    [class*="st-key-battle_header"] [data-testid="stHeading"] h3 {
+        font-size: 1rem !important;
+        margin: 0 !important;
+    }
+    [class*="st-key-battle_header"] [data-testid="stHeading"] h2 {
+        font-size: 1.05rem !important;
+        margin: 0 !important;
+    }
+    [class*="st-key-battle_header"] [data-testid="stProgress"] {
+        margin: 0.1rem 0 !important;
+    }
+    [class*="st-key-battle_header"] [data-testid="stProgressBarTrack"] {
+        height: 6px !important;
+    }
+    [class*="st-key-battle_header"] [data-testid="stCaptionContainer"] p {
+        font-size: 0.78rem !important;
+        line-height: 1.25em !important;
     }
     </style>
     """,
@@ -662,21 +709,23 @@ def _fire_event_toasts(log_before: int) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Cabecera: HP / energía / estado
+# Cabecera: HP / energía / estado (contenedor con key propia para poder
+# compactarla por CSS sin afectar a cabeceras de otras secciones)
 # --------------------------------------------------------------------------- #
-col_a, col_vs, col_b = st.columns([5, 1, 5])
-for col, p, key in ((col_a, state["player_a"], "a"), (col_b, state["player_b"], "b")):
-    with col:
-        st.subheader(p["name"])
-        st.progress(max(0.0, p["hp"] / p["max_hp"]), text=f"{p['hp']} / {p['max_hp']} HP")
-        st.caption(
-            f"Energía: {p['energy']} (gastado este turno: {p['energy_spent_this_turn']}) · "
-            f"Mazo: {p['deck_remaining']} · Descarte: {p['discard_count']}"
-        )
-        st.caption(f"Zonas dañadas (combo tripartito): {', '.join(p['zones_damaged']) or '—'} "
-                   f"{'✅' if p['tripartite_claimed'] else ''}")
-with col_vs:
-    st.markdown(f"<h2 style='text-align:center'>Turno {state['turn_number']}</h2>", unsafe_allow_html=True)
+with st.container(key="battle_header"):
+    col_a, col_vs, col_b = st.columns([5, 1, 5])
+    for col, p, key in ((col_a, state["player_a"], "a"), (col_b, state["player_b"], "b")):
+        with col:
+            st.subheader(p["name"])
+            st.progress(max(0.0, p["hp"] / p["max_hp"]), text=f"{p['hp']} / {p['max_hp']} HP")
+            st.caption(
+                f"Energía: {p['energy']} (gastado este turno: {p['energy_spent_this_turn']}) · "
+                f"Mazo: {p['deck_remaining']} · Descarte: {p['discard_count']}"
+            )
+            st.caption(f"Zonas dañadas (combo tripartito): {', '.join(p['zones_damaged']) or '—'} "
+                       f"{'✅' if p['tripartite_claimed'] else ''}")
+    with col_vs:
+        st.markdown(f"<h2 style='text-align:center'>Turno {state['turn_number']}</h2>", unsafe_allow_html=True)
 
 if state["status"] != MatchStatus.ONGOING.value:
     banner = {
@@ -725,7 +774,8 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                 st.markdown(f"<div class='card-name'>{html.escape(card_dict['name'])}</div>", unsafe_allow_html=True)
                 st.caption(f"{card_dict['atk']} ATK / {card_dict['defense']} DEF · Coste {card_dict['cost_energy']}")
                 ability = card_dict.get("ability")
-                st.caption(f"✨ {ability}" if ability and ability != "none" else " ")
+                ability_text = f"✨ {html.escape(ability)}" if ability and ability != "none" else "&nbsp;"
+                st.markdown(f"<div class='card-ability'>{ability_text}</div>", unsafe_allow_html=True)
                 zone = st.selectbox(
                     "Zona",
                     [z.value for z in Zone],
