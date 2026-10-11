@@ -262,6 +262,57 @@ REAL_ART_CARDS: list[Card] = [
         heal_amount=6,
         image_path="CARDS/KURAMARUN7.png",
     ),
+    # --- Arte añadido 11/10/2026 (segunda tanda) ---------------------------
+    Card(
+        id="ph_std_atk_mod_2",
+        name="Rookie Striker",
+        faction=Faction.KURAMARUN,
+        category=CardCategory.STANDARD,
+        atk=2, defense=0,
+        element=Element.AIR,
+        description="Ataque Moderado Alternativo — joven guerrero alado, veloz con la espada.",
+        image_path="CARDS/rokiestikeer.png",
+    ),
+    Card(
+        id="ph_std_atk_light_1",
+        name="Swift Fang",
+        faction=Faction.TALON_ZHEN,
+        category=CardCategory.STANDARD,
+        atk=1, defense=0,
+        element=Element.ARCANE,
+        description="Ataque Ligero — dragón celeste, golpe rápido de bajo coste.",
+        image_path="CARDS/swiftfang.png",
+    ),
+    Card(
+        id="ph_std_atk_light_2",
+        name="Swift Fang Alt",
+        faction=Faction.TALON_ZHEN,
+        category=CardCategory.STANDARD,
+        atk=1, defense=0,
+        element=Element.FIRE,
+        description="Ataque Ligero Alternativo — variante carmesí del dragón veloz.",
+        image_path="CARDS/suiftfanngalt.png",
+    ),
+    Card(
+        id="ph_std_def_min_2",
+        name="Paper Guard",
+        faction=Faction.KURAMARUN,
+        category=CardCategory.STANDARD,
+        atk=0, defense=1,
+        element=Element.ARCANE,
+        description="Defensa Pura Mínima Alternativa — centinela de papeles sagrados.",
+        image_path="CARDS/paperguard.png",
+    ),
+    Card(
+        id="ph_std_hybrid_off_2",
+        name="Twinblade Adept Alt",
+        faction=Faction.KURAMARUN,
+        category=CardCategory.STANDARD,
+        atk=2, defense=1,
+        element=Element.WATER,
+        description="Híbrida Ofensiva Secundaria — koi samurái, doble espada entre sombras.",
+        image_path="CARDS/twinblade.png",
+    ),
 ]
 
 
@@ -270,16 +321,12 @@ REAL_ART_CARDS: list[Card] = [
 # --------------------------------------------------------------------------- #
 # (id, name, faction, category, atk, defense, ability, element, heal, counter_dmg)
 PLACEHOLDER_SPECS: list[tuple] = [
-    # Estándar — Ataque (el Ataque Puro ya tiene 2 artes reales: ENEMIGOS2 y
-    # Yamata-no-Orochi; quedan moderado y los 2 ligeros)
-    ("ph_std_atk_mod_2", "Rookie Striker", Faction.KURAMARUN, CardCategory.STANDARD, 2, 0, Ability.NONE, Element.NONE, 0, 0),
-    ("ph_std_atk_light_1", "Swift Fang", Faction.TALON_ZHEN, CardCategory.STANDARD, 1, 0, Ability.NONE, Element.NONE, 0, 0),
-    ("ph_std_atk_light_2", "Swift Fang Alt", Faction.TALON_ZHEN, CardCategory.STANDARD, 1, 0, Ability.NONE, Element.NONE, 0, 0),
-    # Estándar — Defensa (falta 1 escudo pura 0/3, 2 mínima 0/1)
+    # Estándar — Ataque: el Ataque Puro ya tiene 2 artes reales (ENEMIGOS2 y
+    # Yamata-no-Orochi), y moderado/ligero x2 también (Rookie Striker, Swift
+    # Fang, Swift Fang Alt) -> este grupo ya no tiene huecos sin arte.
+    # Estándar — Defensa (falta 1 escudo pura 0/3; la mínima 0/1 ya tiene arte: Paper Guard)
     ("ph_std_def_shield_2", "Iron Carapace", Faction.TALON_ZHEN, CardCategory.STANDARD, 0, 3, Ability.NONE, Element.NONE, 0, 0),
-    ("ph_std_def_min_2", "Paper Guard", Faction.KURAMARUN, CardCategory.STANDARD, 0, 1, Ability.NONE, Element.NONE, 0, 0),
-    # Estándar — Híbrida Ofensiva (Bakeneke ya cubre una; quedan estas 2)
-    ("ph_std_hybrid_off_2", "Twinblade Adept Alt", Faction.KURAMARUN, CardCategory.STANDARD, 2, 1, Ability.NONE, Element.NONE, 0, 0),
+    # Estándar — Híbrida Ofensiva (Bakeneko y Twinblade Adept Alt ya cubren 2; queda esta)
     ("ph_std_hybrid_off_3", "Twinblade Tactician", Faction.TALON_ZHEN, CardCategory.STANDARD, 2, 1, Ability.NONE, Element.NONE, 0, 0),
     # Raras/Especiales — las 3 Pociones ya tienen arte real (Inari/Yuki-Onna/Kyūbi);
     # quedan Perforantes (2) y Contraataque (2)
