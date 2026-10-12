@@ -40,6 +40,7 @@ import kurama_theme  # noqa: E402
 import marketplace_app  # noqa: E402  (MARKETPLACE/ — ver render_marketplace_panel() más abajo)
 
 from blockchain_connector import (
+    DECK_STAT_BUFF_PCT,
     BlockchainConnector,
     apply_nft_buffs_to_deck,
     compute_base_hp,
@@ -129,6 +130,18 @@ def rarity_label(rarity: NFTRarity) -> str:
         NFTRarity.EPIC: "Épico",
         NFTRarity.LEGENDARY: "Legendario",
     }[rarity]
+
+
+def resolve_equipped_rarity(connector: BlockchainConnector, wallet_address: str) -> NFTRarity:
+    """Rareza que decide HP base y buff de mazo para la próxima partida: la
+    del NFT elegido en render_nft_equip_section si sigue en la wallet; si no
+    hay ninguno equipado (o cambió de wallet mientras tanto), cae a la mejor
+    rareza disponible — mismo comportamiento que antes de tener selector."""
+    owned = connector.owned_token_ids(wallet_address)
+    equipped_id = st.session_state.get("equipped_token_id")
+    if equipped_id in owned:
+        return derive_placeholder_rarity(equipped_id)
+    return connector.best_rarity_for_wallet(wallet_address)
 
 
 # --------------------------------------------------------------------------- #
@@ -622,7 +635,7 @@ def render_context_bar(
                 st.rerun()
         with btn_col:
             if st.button("🔥 NUEVA PARTIDA", key="navbar_new_match", width="stretch", type="primary"):
-                rarity = connector.best_rarity_for_wallet(wallet_address)
+                rarity = resolve_equipped_rarity(connector, wallet_address)
                 base_hp = compute_base_hp(rarity)
                 rng = random.Random()
                 deck_a = build_deck_from_pool(pool_27, rng=rng)
@@ -689,6 +702,47 @@ def render_wallet_status_bar(connector: BlockchainConnector, wallet_address: str
         c2.metric("NFTs en la wallet", len(owned))
         c3.metric("Rareza más alta", rarity_label(rarity))
         c4.metric("Balance $KUR (simulado)", f"{kur_balance:,.2f}")
+
+
+def render_nft_equip_section(connector: BlockchainConnector, wallet_address: str) -> None:
+    """Selector del NFT a equipar para la próxima partida — su rareza decide
+    el HP base y el buff de ATK/DEF del mazo (resolve_equipped_rarity, usado
+    por el botón 🔥 NUEVA PARTIDA). Vive en la página de Batalla, justo
+    debajo de la tarjeta de estado de la wallet, para poder alternar entre
+    NFTs de prueba (Común/Raro/Épico/Legendario) antes de jugar."""
+    owned = connector.owned_token_ids(wallet_address)
+    if not owned:
+        st.info("Esta wallet no tiene NFTs — jugarás con el HP base por defecto (sin NFT).")
+        st.session_state.equipped_token_id = None
+        return
+
+    if st.session_state.get("equipped_token_id") not in owned:
+        best = connector.best_rarity_for_wallet(wallet_address)
+        st.session_state.equipped_token_id = next(
+            (tid for tid in owned if derive_placeholder_rarity(tid) == best), owned[0]
+        )
+
+    with st.container(key="nft_equip_section"):
+        sel_col, img_col, stats_col = st.columns([1.3, 1, 2])
+        with sel_col:
+            equipped_id = st.selectbox(
+                "🎴 NFT equipado para la próxima partida",
+                owned,
+                format_func=lambda tid: f"Fox #{tid} · {rarity_label(derive_placeholder_rarity(tid))}",
+                key="equipped_token_id",
+            )
+        rarity = derive_placeholder_rarity(equipped_id)
+        with img_col:
+            fox_path = PVP_ROOT / "GAMENFT" / f"fox_{equipped_id}.png"
+            if fox_path.exists():
+                st.image(str(fox_path), width="stretch")
+        with stats_col:
+            buff_pct = DECK_STAT_BUFF_PCT.get(rarity, 0.0)
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Rareza", rarity_label(rarity))
+            m2.metric("HP base de combate", compute_base_hp(rarity))
+            m3.metric("Buff ATK/DEF de mazo", f"+{buff_pct:.0%}" if buff_pct else "—")
+            st.caption("Decide tu HP inicial y el bono de ataque/defensa del mazo al pulsar 🔥 NUEVA PARTIDA.")
 
 
 def render_wallet_config_expander(connector: BlockchainConnector, wallet_address: str) -> None:
@@ -979,6 +1033,7 @@ if panel_mode.startswith("🛒"):
 # render_wallet_config_expander más arriba (antes vivían en la barra lateral).
 # --------------------------------------------------------------------------- #
 render_wallet_status_bar(connector, current_wallet_address)
+render_nft_equip_section(connector, current_wallet_address)
 render_wallet_config_expander(connector, current_wallet_address)
 
 match = st.session_state.match
