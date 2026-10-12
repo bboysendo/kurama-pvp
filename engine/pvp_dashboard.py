@@ -75,6 +75,13 @@ ENGINE_DIR = _ENGINE_DIR
 PVP_ROOT = _PVP_ROOT
 DATABASE_PATH = ENGINE_DIR / "cards_database.json"
 
+# Única fuente de verdad para las 4 secciones del panel — la usan tanto el
+# menú superior (st.popover, ver más abajo) como el st.radio de la barra
+# lateral, los dos atados al mismo st.session_state["panel_mode"] (mismo
+# key="panel_mode" en ambos widgets) para que cualquiera de los dos navegue
+# igual, sin depender de si la barra lateral está colapsada o no.
+PANEL_OPTIONS = ["⚔️ Modo Batalla", "🎓 Tutorial Interactivo", "📖 Catálogo de Cartas", "🛒 Marketplace NFT ($KUR)"]
+
 
 @st.cache_data
 def load_catalog() -> list[dict]:
@@ -566,6 +573,28 @@ cards_by_id = {c.id: c for c in catalog}
 # tipografías gaming y badges de rareza/estado comunes a los dos paneles.
 st.markdown(kurama_theme.base_css(), unsafe_allow_html=True)
 
+# --------------------------------------------------------------------------- #
+# Menú de navegación superior (st.popover): vive en el área principal, no en
+# la barra lateral — así navega igual aunque la barra esté colapsada, lo que
+# en la versión online (Streamlit Cloud) hace que el icono nativo de abrirla
+# pase desapercibido. Comparte el mismo st.session_state["panel_mode"] que
+# el st.radio de la barra lateral (mismo key, ver más abajo), así que elegir
+# aquí navega al instante y deja el radio sincronizado, y viceversa.
+# --------------------------------------------------------------------------- #
+st.session_state.setdefault("panel_mode", PANEL_OPTIONS[0])
+
+with st.popover("☰ MENÚ DE NAVEGACIÓN"):
+    st.caption("Ir directamente a:")
+    for _option in PANEL_OPTIONS:
+        if st.button(
+            _option,
+            key=f"nav_top_{_option}",
+            width="stretch",
+            type="primary" if st.session_state.panel_mode == _option else "secondary",
+        ):
+            st.session_state.panel_mode = _option
+            st.rerun()
+
 st.title("⚔️ Kurama Run — Simulador PVP")
 st.caption("Prototipo local y desacoplado — motor de combate + lectura BSC simulada. No usa fondos reales.")
 
@@ -714,11 +743,7 @@ st.markdown(
 # --------------------------------------------------------------------------- #
 with st.sidebar:
     st.header("📺 Panel")
-    panel_mode = st.radio(
-        "Modo",
-        ["⚔️ Modo Batalla", "🎓 Tutorial Interactivo", "📖 Catálogo de Cartas", "🛒 Marketplace NFT ($KUR)"],
-        key="panel_mode",
-    )
+    panel_mode = st.radio("Modo", PANEL_OPTIONS, key="panel_mode")
     st.divider()
 
     st.header("🦊 Wallet (simulada)")

@@ -215,6 +215,39 @@ def base_css() -> str:
         box-shadow: 0 0 10px rgba(255, 85, 0, 0.5);
         transform: translateY(-1px);
     }}
+
+    /* Menú de navegación superior (st.popover "☰ MENÚ DE NAVEGACIÓN") — ver
+       render del menú en pvp_dashboard.py. Mismo tratamiento neón que el
+       botón de la barra lateral, para que se note que es LA forma de
+       navegar incluso si la barra lateral está colapsada. */
+    [data-testid="stPopoverButton"] {{
+        background: {BG_CARD} !important;
+        border: 1px solid rgba(255, 85, 0, 0.45) !important;
+        border-radius: 8px !important;
+        color: {ACCENT_ORANGE} !important;
+        font-family: {FONT_HEADING};
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        font-size: 0.8rem;
+        width: auto !important;
+        min-width: max-content !important;
+        white-space: nowrap;
+        transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
+    }}
+    [data-testid="stPopoverButton"]:hover {{
+        border-color: {ACCENT_ORANGE} !important;
+        box-shadow: 0 0 10px rgba(255, 85, 0, 0.5);
+        transform: translateY(-1px);
+    }}
+    [data-testid="stPopoverButton"] p {{
+        color: {ACCENT_ORANGE} !important;
+        font-family: {FONT_HEADING};
+    }}
+    [data-testid="stPopoverBody"] {{
+        background: {BG_CARD} !important;
+        border: 1px solid {BORDER} !important;
+        border-radius: 12px !important;
+    }}
     </style>
     """
 
