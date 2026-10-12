@@ -23,9 +23,17 @@ from __future__ import annotations
 import html
 import json
 import random
+import sys
 from pathlib import Path
 
 import streamlit as st
+
+_ENGINE_DIR = Path(__file__).resolve().parent
+_PVP_ROOT = _ENGINE_DIR.parent
+if str(_PVP_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PVP_ROOT))
+
+import kurama_theme  # noqa: E402
 
 from blockchain_connector import (
     BlockchainConnector,
@@ -59,8 +67,8 @@ from pvp_engine import (
     start_match,
 )
 
-ENGINE_DIR = Path(__file__).resolve().parent
-PVP_ROOT = ENGINE_DIR.parent
+ENGINE_DIR = _ENGINE_DIR
+PVP_ROOT = _PVP_ROOT
 DATABASE_PATH = ENGINE_DIR / "cards_database.json"
 
 
@@ -509,6 +517,10 @@ catalog_dicts = load_catalog()
 catalog = [Card.from_dict(d) for d in catalog_dicts]
 pool_27 = [c for c in catalog if c.category in (CardCategory.STANDARD, CardCategory.RARE)]
 cards_by_id = {c.id: c for c in catalog}
+
+# Tema compartido con el Marketplace (../kurama_theme.py): fondo oscuro,
+# tipografías gaming y badges de rareza/estado comunes a los dos paneles.
+st.markdown(kurama_theme.base_css(), unsafe_allow_html=True)
 
 st.title("⚔️ Kurama Run — Simulador PVP")
 st.caption("Prototipo local y desacoplado — motor de combate + lectura BSC simulada. No usa fondos reales.")

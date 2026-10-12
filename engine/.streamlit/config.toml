@@ -1,0 +1,11 @@
+# Tema nativo de Streamlit para el panel PVP — DEBE coincidir con la
+# paleta de ../../kurama_theme.py y con MARKETPLACE/.streamlit/config.toml.
+# Streamlit no permite importar esto desde Python; si cambias los colores
+# en kurama_theme.py, actualiza este archivo y el otro a mano.
+[theme]
+base = "dark"
+primaryColor = "#FF5500"
+backgroundColor = "#0C0C0E"
+secondaryBackgroundColor = "#17171B"
+textColor = "#F5F5F7"
+font = "sans serif"
