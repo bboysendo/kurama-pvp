@@ -306,5 +306,7 @@ if __name__ == "__main__":
     # Solo cuando se ejecuta standalone (`streamlit run marketplace_app.py`)
     # — embebido, `pvp_dashboard.py` ya llamó a st.set_page_config() y a
     # render() directamente, este bloque no se ejecuta (ver import vs. run).
-    st.set_page_config(page_title="Kurama Run · Marketplace", page_icon="🛒", layout="wide")
+    st.set_page_config(
+        page_title="Kurama Run · Marketplace", page_icon="🛒", layout="wide", initial_sidebar_state="expanded"
+    )
     render(show_sidebar=True)

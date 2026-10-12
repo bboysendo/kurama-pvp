@@ -553,7 +553,9 @@ def render_marketplace_panel(connector: BlockchainConnector, wallet_address: str
         )
 
 
-st.set_page_config(page_title="Kurama Run · PVP Simulator", page_icon="⚔️", layout="wide")
+st.set_page_config(
+    page_title="Kurama Run · PVP Simulator", page_icon="⚔️", layout="wide", initial_sidebar_state="expanded"
+)
 init_state()
 catalog_dicts = load_catalog()
 catalog = [Card.from_dict(d) for d in catalog_dicts]

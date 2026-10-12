@@ -173,6 +173,48 @@ def base_css() -> str:
         color: {TEXT_MUTED};
         font-size: 0.8rem;
     }}
+
+    /* Botón de colapsar/desplegar la barra lateral: por defecto Streamlit
+       solo pinta un icono "»" diminuto y poco visible (sobre todo cuando la
+       barra está contraída, stExpandSidebarButton en la esquina superior
+       izquierda). Lo convertimos en un botón con fondo oscuro, borde
+       naranja y la etiqueta "☰ MENÚ" para que sea evidente que ahí se abre
+       la navegación. stSidebarCollapseButton (el de "cerrar", dentro de la
+       propia barra ya abierta) recibe el mismo estilo por consistencia. */
+    [data-testid="stExpandSidebarButton"],
+    [data-testid="stSidebarCollapseButton"] button {{
+        background: {BG_CARD} !important;
+        border: 1px solid rgba(255, 85, 0, 0.45) !important;
+        border-radius: 8px !important;
+        width: auto !important;
+        height: auto !important;
+        padding: 0.35rem 0.7rem !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        gap: 0.35rem;
+        transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
+    }}
+    [data-testid="stExpandSidebarButton"] svg,
+    [data-testid="stSidebarCollapseButton"] button svg {{
+        fill: {ACCENT_ORANGE} !important;
+        color: {ACCENT_ORANGE} !important;
+    }}
+    [data-testid="stExpandSidebarButton"]::after,
+    [data-testid="stSidebarCollapseButton"] button::after {{
+        content: "☰ MENÚ";
+        font-family: {FONT_HEADING};
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+        color: {ACCENT_ORANGE};
+        white-space: nowrap;
+    }}
+    [data-testid="stExpandSidebarButton"]:hover,
+    [data-testid="stSidebarCollapseButton"] button:hover {{
+        border-color: {ACCENT_ORANGE} !important;
+        box-shadow: 0 0 10px rgba(255, 85, 0, 0.5);
+        transform: translateY(-1px);
+    }}
     </style>
     """
 
