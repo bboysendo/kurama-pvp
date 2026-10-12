@@ -1010,6 +1010,19 @@ st.markdown(
         font-size: 0.78rem !important;
         line-height: 1.25em !important;
     }
+    /* Energía disponible: destacada y grande junto a la barra de vida de
+       cada jugador (antes iba metida en una caption pequeña junto a otros
+       datos secundarios como mazo/descarte). */
+    .energy-display {
+        font-size: 1.4rem;
+        font-weight: 700;
+        color: #ffd54a;
+        margin: 0.15rem 0 0.1rem;
+        line-height: 1.2em;
+    }
+    .energy-display.energy-low {
+        color: #ff6b6b;
+    }
     /* Wallet + NFT equipado (render_wallet_and_nft_bar): una sola fila
        horizontal y compacta — imagen de NFT chica, métricas con poco
        relleno y fuente reducida para que ocupe el mínimo alto posible. */
@@ -1135,8 +1148,13 @@ with st.container(key="battle_header"):
         with col:
             st.subheader(p["name"])
             st.progress(max(0.0, p["hp"] / p["max_hp"]), text=f"{p['hp']} / {p['max_hp']} HP")
+            remaining_energy = min(MAX_ENERGY_SPEND_PER_TURN, p["energy"]) - p["energy_spent_this_turn"]
+            st.markdown(
+                f"<div class='energy-display'>⚡ Energía: {remaining_energy} / {p['energy']}</div>",
+                unsafe_allow_html=True,
+            )
             st.caption(
-                f"Energía: {p['energy']} (gastado este turno: {p['energy_spent_this_turn']}) · "
+                f"Gastado este turno: {p['energy_spent_this_turn']} (tope {MAX_ENERGY_SPEND_PER_TURN}) · "
                 f"Mazo: {p['deck_remaining']} · Descarte: {p['discard_count']}"
             )
             st.caption(f"Zonas dañadas (combo tripartito): {', '.join(p['zones_damaged']) or '—'} "
@@ -1177,7 +1195,13 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
     la misma altura (vía CSS/placeholder) para que Zona y Jugar queden
     alineados en la misma línea entre cartas, tengan o no habilidad especial."""
     p = state[f"player_{player_key}"]
-    st.markdown(f"**Mano de {label}**")
+    remaining_energy = min(MAX_ENERGY_SPEND_PER_TURN, p["energy"]) - p["energy_spent_this_turn"]
+    energy_css_class = "energy-low" if remaining_energy <= 0 else ""
+    st.markdown(
+        f"**Mano de {label}** · <span class='energy-display {energy_css_class}' "
+        f"style='font-size:1.05rem'>⚡ {remaining_energy} disponible{'s' if remaining_energy != 1 else ''}</span>",
+        unsafe_allow_html=True,
+    )
     if not p["hand"]:
         st.caption("Sin cartas en mano.")
         return
@@ -1200,8 +1224,15 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                     format_func=lambda z: ZONE_LABELS.get(z, z),
                     label_visibility="collapsed",
                 )
+                affordable = card_dict["cost_energy"] <= remaining_energy
                 label_btn = "⚔️ Jugar" if auto_resolve else "Jugar"
-                if st.button(label_btn, key=f"play_{player_key}_{card_dict['id']}", width="stretch", type="primary" if auto_resolve else "secondary"):
+                if st.button(
+                    label_btn,
+                    key=f"play_{player_key}_{card_dict['id']}",
+                    width="stretch",
+                    type="primary" if auto_resolve else "secondary",
+                    disabled=not affordable,
+                ):
                     log_before = len(match.log)
                     try:
                         play_card(match, player_key, card_dict["id"], Zone(zone))
@@ -1213,6 +1244,8 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                             end_turn(match)
                         _fire_event_toasts(log_before)
                     st.rerun()
+                if not affordable:
+                    st.caption("⚠️ Energía insuficiente")
 
     if p["staged_plays"]:
         staged_txt = ", ".join(
