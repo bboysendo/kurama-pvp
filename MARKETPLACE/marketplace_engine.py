@@ -164,6 +164,22 @@ class SimulatedWallet:
         del self.my_listings[token_id]
         return True, f"Listado de Fox #{token_id} cancelado."
 
+    def sync_external_state(self, *, address: str, owned_token_ids: set, kur_balance: float) -> None:
+        """Sincroniza esta wallet con un origen externo — p. ej. la wallet
+        simulada del PVP cuando este Marketplace se embebe en
+        `../engine/pvp_dashboard.py` (ver `render_marketplace_panel()` ahí):
+        actualiza dirección/NFTs/balance y limpia los listados que hayan
+        dejado de tener sentido (un Fox que ya no posees no puede seguir "en
+        venta" tuyo; uno que acabas de recibir no puede seguir apareciendo
+        en venta por "otro vendedor"). Sigue sin tocar ninguna red real —
+        esta clase no sabe nada del PVP, solo recibe los valores ya leídos
+        por quien la llama."""
+        self.address = address
+        self.kur_balance = kur_balance
+        self.owned_token_ids = set(owned_token_ids)
+        self.my_listings = {tid: p for tid, p in self.my_listings.items() if tid in self.owned_token_ids}
+        self.other_listings = {tid: p for tid, p in self.other_listings.items() if tid not in self.owned_token_ids}
+
     def add_funds(self, kur: float = 0.0, usdt: float = 0.0) -> None:
         self.kur_balance = round(self.kur_balance + max(0.0, kur), 2)
         self.usdt_balance = round(self.usdt_balance + max(0.0, usdt), 2)

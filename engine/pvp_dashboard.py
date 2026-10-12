@@ -30,10 +30,14 @@ import streamlit as st
 
 _ENGINE_DIR = Path(__file__).resolve().parent
 _PVP_ROOT = _ENGINE_DIR.parent
+_MARKETPLACE_DIR = _PVP_ROOT / "MARKETPLACE"
 if str(_PVP_ROOT) not in sys.path:
     sys.path.insert(0, str(_PVP_ROOT))
+if str(_MARKETPLACE_DIR) not in sys.path:
+    sys.path.insert(0, str(_MARKETPLACE_DIR))
 
 import kurama_theme  # noqa: E402
+import marketplace_app  # noqa: E402  (MARKETPLACE/ — ver render_marketplace_panel() más abajo)
 
 from blockchain_connector import (
     BlockchainConnector,
@@ -511,6 +515,44 @@ def render_tutorial(catalog_dicts: list[dict]) -> None:
             st.progress(max(0.0, step["hp_b"] / 50), text=f"Rival: {step['hp_b']} / 50 HP")
 
 
+# --------------------------------------------------------------------------- #
+# Integración del Marketplace: el código vive 100% en MARKETPLACE/ (import
+# arriba) — aquí solo se llama a su marketplace_app.render() y se sincroniza
+# su wallet simulada con la de este panel (misma dirección, mismos NFTs,
+# mismo balance $KUR) en los dos sentidos, para que "Modo Batalla" y
+# "Marketplace NFT" cuenten siempre la misma historia dentro de la sesión.
+# Ver "Integración modular" en MARKETPLACE/README.md.
+# --------------------------------------------------------------------------- #
+def render_marketplace_panel(connector: BlockchainConnector, wallet_address: str) -> None:
+    mkt_wallet = marketplace_app.get_wallet()
+
+    # Solo se tira (pull) del estado del PVP al ENTRAR a esta pestaña o al
+    # cambiar de dirección — nunca en cada rerun. Si se sincronizara siempre,
+    # el st.rerun() interno del modal de Comprar/Vender (marketplace_app.py)
+    # cortaría la función antes de llegar al push-back de más abajo, y el
+    # siguiente rerun pisaría la compra recién hecha con el estado viejo del
+    # PVP. Con el guard, una vez sincronizada una dirección, la wallet del
+    # Marketplace manda hasta que cambie la dirección, y cada rerun hace
+    # push-back de su estado actual hacia el PVP sin perder nada por medio.
+    if st.session_state.get("_mkt_synced_address") != wallet_address:
+        mkt_wallet.sync_external_state(
+            address=wallet_address,
+            owned_token_ids=set(connector.owned_token_ids(wallet_address)),
+            kur_balance=connector.kur_balance(wallet_address),
+        )
+        st.session_state["_mkt_synced_address"] = wallet_address
+
+    marketplace_app.render(show_sidebar=False)
+
+    # Marketplace -> PVP: cualquier compra/venta hecha arriba se refleja de
+    # inmediato en la wallet simulada del PVP (mismo backend en memoria),
+    # para que al volver a "Modo Batalla" se vea el NFT/balance nuevo.
+    if connector.simulated_backend is not None:
+        connector.simulated_backend.seed_wallet(
+            wallet_address, sorted(mkt_wallet.owned_token_ids), mkt_wallet.kur_balance
+        )
+
+
 st.set_page_config(page_title="Kurama Run · PVP Simulator", page_icon="⚔️", layout="wide")
 init_state()
 catalog_dicts = load_catalog()
@@ -671,7 +713,9 @@ st.markdown(
 with st.sidebar:
     st.header("📺 Panel")
     panel_mode = st.radio(
-        "Modo", ["⚔️ Modo Batalla", "🎓 Tutorial Interactivo", "📖 Catálogo de Cartas"], key="panel_mode"
+        "Modo",
+        ["⚔️ Modo Batalla", "🎓 Tutorial Interactivo", "📖 Catálogo de Cartas", "🛒 Marketplace NFT ($KUR)"],
+        key="panel_mode",
     )
     st.divider()
 
@@ -743,6 +787,10 @@ if panel_mode.startswith("🎓"):
 
 if panel_mode.startswith("📖"):
     render_gallery(catalog_dicts)
+    st.stop()
+
+if panel_mode.startswith("🛒"):
+    render_marketplace_panel(connector, wallet)
     st.stop()
 
 match = st.session_state.match

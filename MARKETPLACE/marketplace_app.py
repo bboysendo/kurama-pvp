@@ -272,21 +272,39 @@ def render_sidebar(wallet: SimulatedWallet) -> None:
             st.rerun()
 
 
-st.set_page_config(page_title="Kurama Run · Marketplace", page_icon="🛒", layout="wide")
-st.markdown(kurama_theme.base_css(), unsafe_allow_html=True)
-st.markdown(MARKETPLACE_CSS, unsafe_allow_html=True)
+def render(show_sidebar: bool = True) -> None:
+    """Punto de entrada reutilizable del Marketplace: inyecta su CSS y
+    dibuja título + pestañas Explorar/Mi Inventario. Pensado para pintarse
+    tanto standalone (`streamlit run marketplace_app.py`, con su propia
+    wallet en la barra lateral) como EMBEBIDO dentro de
+    `../engine/pvp_dashboard.py` (`show_sidebar=False`: el PVP ya tiene su
+    propia sección de wallet en la barra lateral, sincronizada con la de
+    aquí por quien nos llama — ver "Integración modular" en README.md).
+    Nunca llama a `st.set_page_config()` por su cuenta: eso solo puede
+    pasar una vez por sesión y lo decide el script que se ejecuta primero."""
+    st.markdown(kurama_theme.base_css(), unsafe_allow_html=True)
+    st.markdown(MARKETPLACE_CSS, unsafe_allow_html=True)
 
-active_wallet = get_wallet()
-render_sidebar(active_wallet)
+    active_wallet = get_wallet()
+    if show_sidebar:
+        render_sidebar(active_wallet)
 
-st.title("🛒 Kurama Run — Marketplace")
-st.caption(
-    "Prototipo local y desacoplado — catálogo + wallet 100% SIMULADOS, sin contratos reales. "
-    f"{len(active_wallet.other_listings) + len(active_wallet.my_listings)} Fox a la venta de {NFT_COLLECTION_SUPPLY}."
-)
+    st.title("🛒 Kurama Run — Marketplace")
+    st.caption(
+        "Catálogo + wallet 100% SIMULADOS, sin contratos reales. "
+        f"{len(active_wallet.other_listings) + len(active_wallet.my_listings)} Fox a la venta de {NFT_COLLECTION_SUPPLY}."
+    )
 
-tab_explore, tab_inventory = st.tabs(["🛒 Explorar", "🎒 Mi Inventario"])
-with tab_explore:
-    render_explore(active_wallet)
-with tab_inventory:
-    render_inventory(active_wallet)
+    tab_explore, tab_inventory = st.tabs(["🛒 Explorar", "🎒 Mi Inventario"])
+    with tab_explore:
+        render_explore(active_wallet)
+    with tab_inventory:
+        render_inventory(active_wallet)
+
+
+if __name__ == "__main__":
+    # Solo cuando se ejecuta standalone (`streamlit run marketplace_app.py`)
+    # — embebido, `pvp_dashboard.py` ya llamó a st.set_page_config() y a
+    # render() directamente, este bloque no se ejecuta (ver import vs. run).
+    st.set_page_config(page_title="Kurama Run · Marketplace", page_icon="🛒", layout="wide")
+    render(show_sidebar=True)
