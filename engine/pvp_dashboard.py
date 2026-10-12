@@ -582,16 +582,14 @@ def render_marketplace_panel(connector: BlockchainConnector, wallet_address: str
 
 
 # --------------------------------------------------------------------------- #
-# Barra de configuración contextual (navbar superior, a la derecha del menú
-# ☰): única fuente de controles para Modo/Oponente/Nueva partida (y, en modo
-# Competitivo, Apuesta en KUR) — no hay barra lateral que los duplique. Cada
-# botón fija su clave de session_state (match_mode, opponent_choice) y hace
-# st.rerun() de inmediato, mismo patrón que usa el menú ☰ con panel_mode.
+# Barra compacta de Modo/Oponente/Nueva partida (y, en modo Competitivo,
+# Apuesta en KUR): vive en la página de Batalla, justo debajo del panel de
+# Wallet + NFT equipado y antes del tablero de turnos — no hay barra lateral
+# que la duplique. Cada botón fija su clave de session_state (match_mode,
+# opponent_choice) y hace st.rerun() de inmediato.
 # --------------------------------------------------------------------------- #
-def render_context_bar(
-    current_panel_mode: str, connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]
-) -> None:
-    if current_panel_mode.startswith("⚔️"):
+def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
+    with st.container(key="battle_mode_bar"):
         # Fila plana (sin columnas anidadas) — con sub-columnas agrupadas
         # por "Modo"/"Oponente" el texto de los botones largos ("💰
         # Competitivo") se recortaba en pantallas normales; así cada botón
@@ -664,26 +662,33 @@ def render_context_bar(
             economy = compute_match_economy(st.session_state.match_mode, 0.0)
             st.caption(f"Victoria: +{economy.win_elo} ELO · {economy.win_kur_reward:.0f} KUR · Derrota: {economy.loss_elo} ELO")
 
-    elif current_panel_mode.startswith("🛒"):
-        kur_balance = connector.kur_balance(wallet_address)
-        owned_count = len(connector.owned_token_ids(wallet_address))
-        info_col, explore_col, inv_col = st.columns([2.2, 1.3, 1.3])
-        with info_col:
-            st.markdown(
-                "<div class='kr-muted'>Balance rápido</div>"
-                f"<div class='kr-price' style='font-size:0.95rem'>{kur_balance:,.2f} $KUR · {owned_count} Fox</div>",
-                unsafe_allow_html=True,
-            )
-        with explore_col:
-            st.caption("​")
-            if st.button("🛒 Explorar", key="navbar_mkt_explore", width="stretch"):
-                st.session_state["mkt_active_tab"] = marketplace_app.TAB_EXPLORE
-                st.rerun()
-        with inv_col:
-            st.caption("​")
-            if st.button("🎒 Inventario", key="navbar_mkt_inventory", width="stretch"):
-                st.session_state["mkt_active_tab"] = marketplace_app.TAB_INVENTORY
-                st.rerun()
+
+# --------------------------------------------------------------------------- #
+# Barra rápida del Marketplace (navbar superior, a la derecha del menú ☰):
+# balance + accesos directos a Explorar/Inventario, visible solo en el panel
+# 🛒 — independiente de render_battle_mode_bar (esa vive en la página de
+# Batalla, no aquí).
+# --------------------------------------------------------------------------- #
+def render_marketplace_quickbar(connector: BlockchainConnector, wallet_address: str) -> None:
+    kur_balance = connector.kur_balance(wallet_address)
+    owned_count = len(connector.owned_token_ids(wallet_address))
+    info_col, explore_col, inv_col = st.columns([2.2, 1.3, 1.3])
+    with info_col:
+        st.markdown(
+            "<div class='kr-muted'>Balance rápido</div>"
+            f"<div class='kr-price' style='font-size:0.95rem'>{kur_balance:,.2f} $KUR · {owned_count} Fox</div>",
+            unsafe_allow_html=True,
+        )
+    with explore_col:
+        st.caption("​")
+        if st.button("🛒 Explorar", key="navbar_mkt_explore", width="stretch"):
+            st.session_state["mkt_active_tab"] = marketplace_app.TAB_EXPLORE
+            st.rerun()
+    with inv_col:
+        st.caption("​")
+        if st.button("🎒 Inventario", key="navbar_mkt_inventory", width="stretch"):
+            st.session_state["mkt_active_tab"] = marketplace_app.TAB_INVENTORY
+            st.rerun()
 
 
 def render_wallet_and_nft_bar(connector: BlockchainConnector, wallet_address: str) -> None:
@@ -827,11 +832,11 @@ st.session_state.vs_bot = st.session_state.opponent_choice == "Bot"
 st.markdown(kurama_theme.base_css(), unsafe_allow_html=True)
 
 # --------------------------------------------------------------------------- #
-# Navbar superior: menú ☰ + badge de wallet en la primera fila, barra de
-# configuración contextual en una segunda fila a todo el ancho justo debajo
-# (con las 5 columnas de la fila 1 no quedaba espacio para que botones como
-# "💰 Competitivo" o "🔥 NUEVA PARTIDA" se leyeran sin recortarse). No hay
-# barra lateral: toda la navegación y configuración vive aquí, en el área
+# Navbar superior: solo menú ☰ + badge de wallet (y, en el panel 🛒, la
+# barra rápida de Marketplace). Los controles de Modo/Oponente/Nueva
+# partida ya no viven aquí — están más abajo, en la página de Batalla
+# (render_battle_mode_bar), debajo del panel de Wallet + NFT equipado. No
+# hay barra lateral: toda la navegación y configuración vive en el área
 # principal.
 # --------------------------------------------------------------------------- #
 st.session_state.setdefault("panel_mode", PANEL_OPTIONS[0])
@@ -855,7 +860,8 @@ with nav_wallet_col:
     render_wallet_badge(connector, current_wallet_address)
 
 panel_mode = st.session_state.panel_mode
-render_context_bar(panel_mode, connector, current_wallet_address, pool_27)
+if panel_mode.startswith("🛒"):
+    render_marketplace_quickbar(connector, current_wallet_address)
 
 st.title("⚔️ Kurama Run — Simulador PVP")
 st.caption("Prototipo local y desacoplado — motor de combate + lectura BSC simulada. No usa fondos reales.")
@@ -1033,6 +1039,34 @@ st.markdown(
         font-size: 0.72rem !important;
         margin: 0.1rem 0 0 !important;
     }
+    /* Barra de Modo/Oponente/Nueva partida (render_battle_mode_bar): botones
+       bastante más chicos que el tamaño por defecto de Streamlit — menos
+       padding, fuente reducida y altura fija — para que no domine la
+       pantalla ahora que vive debajo del panel de Wallet + NFT. */
+    [class*="st-key-battle_mode_bar"] [data-testid="stVerticalBlock"] {
+        gap: 0.3rem !important;
+    }
+    [class*="st-key-battle_mode_bar"] [data-testid="stHorizontalBlock"] {
+        gap: 0.4rem !important;
+    }
+    [class*="st-key-battle_mode_bar"] .stButton > button {
+        padding: 0.15rem 0.5rem !important;
+        font-size: 0.72rem !important;
+        min-height: 1.9rem !important;
+        height: 1.9rem !important;
+    }
+    [class*="st-key-battle_mode_bar"] [data-testid="stNumberInput"] input {
+        font-size: 0.72rem !important;
+        padding: 0.2rem 0.5rem !important;
+        height: 1.9rem !important;
+    }
+    [class*="st-key-battle_mode_bar"] [data-testid="stNumberInput"] label p {
+        font-size: 0.68rem !important;
+    }
+    [class*="st-key-battle_mode_bar"] [data-testid="stCaptionContainer"] p {
+        font-size: 0.68rem !important;
+        margin: 0.15rem 0 0 !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -1052,12 +1086,15 @@ if panel_mode.startswith("🛒"):
     st.stop()
 
 # --------------------------------------------------------------------------- #
-# Página de Batalla: tarjeta de estado de la wallet (horizontal, siempre
-# visible) + herramientas de testeo plegadas en un expander, para que no
-# estorben durante la partida — ver render_wallet_status_bar/
-# render_wallet_config_expander más arriba (antes vivían en la barra lateral).
+# Página de Batalla: tarjeta de estado de la wallet + NFT equipado, barra
+# compacta de Modo/Oponente/Nueva partida justo debajo, y herramientas de
+# testeo plegadas en un expander para que no estorben durante la partida —
+# ver render_wallet_and_nft_bar / render_battle_mode_bar /
+# render_wallet_config_expander más arriba (antes vivían en la barra lateral
+# o en el navbar superior).
 # --------------------------------------------------------------------------- #
 render_wallet_and_nft_bar(connector, current_wallet_address)
+render_battle_mode_bar(connector, current_wallet_address, pool_27)
 render_wallet_config_expander(connector, current_wallet_address)
 
 match = st.session_state.match
