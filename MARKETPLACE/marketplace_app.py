@@ -41,6 +41,13 @@ from card_schema import NFTRarity  # noqa: E402  (resuelto vía engine/, inserta
 PAGE_SIZE = 20
 GRID_COLUMNS = 4
 
+# Nombres exactos de vista — exportados para que quien embeba este panel
+# (../engine/pvp_dashboard.py, barra de configuración contextual) pueda
+# saltar directamente a una vista fijando st.session_state["mkt_active_tab"]
+# con el mismo valor, sin tener que conocer el string literal.
+TAB_EXPLORE = "🛒 Explorar"
+TAB_INVENTORY = "🎒 Mi Inventario"
+
 RARITY_FILTER_OPTIONS = ["all", *[r.value for r in (NFTRarity.COMMON, NFTRarity.RARE, NFTRarity.EPIC, NFTRarity.LEGENDARY)]]
 RARITY_FILTER_LABELS = {"all": "Todas las clases", **kurama_theme.RARITY_LABELS}
 
@@ -295,10 +302,23 @@ def render(show_sidebar: bool = True) -> None:
         f"{len(active_wallet.other_listings) + len(active_wallet.my_listings)} Fox a la venta de {NFT_COLLECTION_SUPPLY}."
     )
 
-    tab_explore, tab_inventory = st.tabs(["🛒 Explorar", "🎒 Mi Inventario"])
-    with tab_explore:
+    # st.radio en vez de st.tabs: un accesso externo (la barra de
+    # configuración contextual de pvp_dashboard.py, botones "🛒 Explorar" /
+    # "🎒 Inventario") puede saltar a una vista fijando
+    # st.session_state["mkt_active_tab"] antes de llamar a render() — algo
+    # que st.tabs no permite controlar desde fuera.
+    st.session_state.setdefault("mkt_active_tab", TAB_EXPLORE)
+    active_tab = st.radio(
+        "Vista",
+        [TAB_EXPLORE, TAB_INVENTORY],
+        key="mkt_active_tab",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    st.divider()
+    if active_tab == TAB_EXPLORE:
         render_explore(active_wallet)
-    with tab_inventory:
+    else:
         render_inventory(active_wallet)
 
 

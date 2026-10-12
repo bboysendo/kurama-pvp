@@ -111,6 +111,15 @@ def init_state() -> None:
         st.session_state.vs_bot = True
     if "tutorial_step" not in st.session_state:
         st.session_state.tutorial_step = 0
+    # Fuente de verdad para Modo/Oponente — tanto la barra de configuración
+    # contextual de arriba como el "🏆 Modo de partida" de la barra lateral
+    # leen y escriben estas mismas claves (mismo key= en el widget de la
+    # barra lateral; la de arriba son botones que las fijan y hacen
+    # st.rerun() antes de que ese widget se instancie, igual que panel_mode).
+    if "match_mode" not in st.session_state:
+        st.session_state.match_mode = "free"
+    if "opponent_choice" not in st.session_state:
+        st.session_state.opponent_choice = "Bot" if st.session_state.vs_bot else "Hotseat (2 jugadores locales)"
 
 
 def rarity_label(rarity: NFTRarity) -> str:
@@ -560,6 +569,120 @@ def render_marketplace_panel(connector: BlockchainConnector, wallet_address: str
         )
 
 
+# --------------------------------------------------------------------------- #
+# Barra de configuración contextual (navbar superior, a la derecha del menú
+# ☰): repite en el área principal los controles que antes solo vivían en la
+# barra lateral, para que sigan accesibles aunque esta esté colapsada.
+# Comparte estado con la barra lateral vía las mismas claves de
+# session_state (match_mode, opponent_choice, panel_mode de Marketplace):
+# cada botón de aquí fija esa clave y hace st.rerun() ANTES de que el widget
+# correspondiente de la barra lateral se instancie más abajo en el script —
+# mismo patrón, ya probado, que el menú ☰ usa con panel_mode.
+# --------------------------------------------------------------------------- #
+def render_context_bar(
+    current_panel_mode: str, connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]
+) -> None:
+    if current_panel_mode.startswith("⚔️"):
+        # Fila plana (sin columnas anidadas) — con sub-columnas agrupadas
+        # por "Modo"/"Oponente" el texto de los botones largos ("💰
+        # Competitivo") se recortaba en pantallas normales; así cada botón
+        # recibe más ancho real.
+        free_col, comp_col, bot_col, hotseat_col, btn_col = st.columns([1.0, 1.3, 0.9, 1.1, 1.7])
+        with free_col:
+            if st.button(
+                "🆓 Free",
+                key="navbar_mode_free",
+                width="stretch",
+                type="primary" if st.session_state.match_mode == "free" else "secondary",
+            ):
+                st.session_state.match_mode = "free"
+                st.rerun()
+        with comp_col:
+            if st.button(
+                "💰 Competitivo",
+                key="navbar_mode_competitive",
+                width="stretch",
+                type="primary" if st.session_state.match_mode == "competitive" else "secondary",
+            ):
+                st.session_state.match_mode = "competitive"
+                st.rerun()
+        with bot_col:
+            if st.button(
+                "🤖 Bot",
+                key="navbar_opp_bot",
+                width="stretch",
+                type="primary" if st.session_state.opponent_choice == "Bot" else "secondary",
+            ):
+                st.session_state.opponent_choice = "Bot"
+                st.rerun()
+        with hotseat_col:
+            if st.button(
+                "👥 Hotseat",
+                key="navbar_opp_hotseat",
+                width="stretch",
+                type="primary" if st.session_state.opponent_choice != "Bot" else "secondary",
+            ):
+                st.session_state.opponent_choice = "Hotseat (2 jugadores locales)"
+                st.rerun()
+        with btn_col:
+            if st.button("🔥 NUEVA PARTIDA", key="navbar_new_match", width="stretch", type="primary"):
+                rarity = connector.best_rarity_for_wallet(wallet_address)
+                base_hp = compute_base_hp(rarity)
+                rng = random.Random()
+                deck_a = build_deck_from_pool(pool_27, rng=rng)
+                deck_b = build_deck_from_pool(pool_27, rng=rng)
+                deck_a = apply_nft_buffs_to_deck(deck_a, rarity)
+                hp_b = compute_base_hp(NFTRarity.NONE) if st.session_state.vs_bot else base_hp
+                st.session_state.match = start_match(
+                    deck_a, deck_b, hp_a=base_hp, hp_b=hp_b,
+                    name_a="Tú (Jugador A)", name_b="Bot" if st.session_state.vs_bot else "Jugador B",
+                )
+                st.rerun()
+
+    elif current_panel_mode.startswith("🛒"):
+        kur_balance = connector.kur_balance(wallet_address)
+        owned_count = len(connector.owned_token_ids(wallet_address))
+        info_col, explore_col, inv_col = st.columns([2.2, 1.3, 1.3])
+        with info_col:
+            st.markdown(
+                "<div class='kr-muted'>Balance rápido</div>"
+                f"<div class='kr-price' style='font-size:0.95rem'>{kur_balance:,.2f} $KUR · {owned_count} Fox</div>",
+                unsafe_allow_html=True,
+            )
+        with explore_col:
+            st.caption("​")
+            if st.button("🛒 Explorar", key="navbar_mkt_explore", width="stretch"):
+                st.session_state["mkt_active_tab"] = marketplace_app.TAB_EXPLORE
+                st.rerun()
+        with inv_col:
+            st.caption("​")
+            if st.button("🎒 Inventario", key="navbar_mkt_inventory", width="stretch"):
+                st.session_state["mkt_active_tab"] = marketplace_app.TAB_INVENTORY
+                st.rerun()
+
+
+def render_wallet_badge(connector: BlockchainConnector, wallet_address: str) -> None:
+    kur_balance = connector.kur_balance(wallet_address)
+    short_addr = f"{wallet_address[:6]}…{wallet_address[-4:]}" if len(wallet_address) > 12 else wallet_address
+    with st.popover(f"🦊 {short_addr} · {kur_balance:,.2f} $KUR", width="stretch"):
+        st.caption("Wallet simulada — recargar balance / NFTs (misma wallet de toda la sesión)")
+        owned = connector.owned_token_ids(wallet_address)
+        new_ids = st.text_input(
+            "Token IDs (separados por coma)", value=",".join(str(i) for i in owned), key="navbar_wallet_ids"
+        )
+        new_kur = st.number_input(
+            "$KUR simulado", min_value=0.0, value=float(kur_balance), step=10.0, key="navbar_wallet_kur"
+        )
+        if st.button("💾 Guardar", key="navbar_wallet_save", width="stretch", type="primary"):
+            try:
+                ids = [int(x.strip()) for x in new_ids.split(",") if x.strip()]
+            except ValueError:
+                ids = []
+            if connector.simulated_backend is not None:
+                connector.simulated_backend.seed_wallet(wallet_address, ids, new_kur)
+            st.rerun()
+
+
 st.set_page_config(
     page_title="Kurama Run · PVP Simulator", page_icon="⚔️", layout="wide", initial_sidebar_state="expanded"
 )
@@ -569,31 +692,52 @@ catalog = [Card.from_dict(d) for d in catalog_dicts]
 pool_27 = [c for c in catalog if c.category in (CardCategory.STANDARD, CardCategory.RARE)]
 cards_by_id = {c.id: c for c in catalog}
 
+# Disponibles pronto, antes de la barra lateral, para que la barra de
+# configuración contextual de arriba (render_context_bar/render_wallet_badge)
+# pueda leer la wallet y lanzar partidas sin esperar a que el bloque
+# `with st.sidebar:` se ejecute más abajo — ambos leen el mismo
+# st.session_state.connector / .wallet_address, nunca se desincronizan.
+connector: BlockchainConnector = st.session_state.connector
+current_wallet_address = st.session_state.wallet_address
+st.session_state.vs_bot = st.session_state.opponent_choice == "Bot"
+
 # Tema compartido con el Marketplace (../kurama_theme.py): fondo oscuro,
 # tipografías gaming y badges de rareza/estado comunes a los dos paneles.
 st.markdown(kurama_theme.base_css(), unsafe_allow_html=True)
 
 # --------------------------------------------------------------------------- #
-# Menú de navegación superior (st.popover): vive en el área principal, no en
-# la barra lateral — así navega igual aunque la barra esté colapsada, lo que
-# en la versión online (Streamlit Cloud) hace que el icono nativo de abrirla
-# pase desapercibido. Comparte el mismo st.session_state["panel_mode"] que
-# el st.radio de la barra lateral (mismo key, ver más abajo), así que elegir
-# aquí navega al instante y deja el radio sincronizado, y viceversa.
+# Navbar superior: menú ☰ + badge de wallet en la primera fila, barra de
+# configuración contextual en una segunda fila a todo el ancho justo debajo
+# (con las 5 columnas de la fila 1 no quedaba espacio para que botones como
+# "💰 Competitivo" o "🔥 NUEVA PARTIDA" se leyeran sin recortarse). Los tres
+# bloques viven en el área principal, no en la barra lateral — así todo
+# sigue accesible aunque esta esté colapsada (en la versión online el icono
+# nativo de abrirla pasa desapercibido) — y comparten estado con ella vía
+# las mismas claves de session_state (panel_mode, match_mode,
+# opponent_choice): elegir algo aquí navega/actualiza al instante y deja
+# los widgets de la barra lateral sincronizados, y viceversa.
 # --------------------------------------------------------------------------- #
 st.session_state.setdefault("panel_mode", PANEL_OPTIONS[0])
 
-with st.popover("☰ MENÚ DE NAVEGACIÓN"):
-    st.caption("Ir directamente a:")
-    for _option in PANEL_OPTIONS:
-        if st.button(
-            _option,
-            key=f"nav_top_{_option}",
-            width="stretch",
-            type="primary" if st.session_state.panel_mode == _option else "secondary",
-        ):
-            st.session_state.panel_mode = _option
-            st.rerun()
+nav_menu_col, _nav_spacer, nav_wallet_col = st.columns([1.5, 5.1, 2.1])
+
+with nav_menu_col:
+    with st.popover("☰ MENÚ DE NAVEGACIÓN"):
+        st.caption("Ir directamente a:")
+        for _option in PANEL_OPTIONS:
+            if st.button(
+                _option,
+                key=f"nav_top_{_option}",
+                width="stretch",
+                type="primary" if st.session_state.panel_mode == _option else "secondary",
+            ):
+                st.session_state.panel_mode = _option
+                st.rerun()
+
+with nav_wallet_col:
+    render_wallet_badge(connector, current_wallet_address)
+
+render_context_bar(st.session_state.panel_mode, connector, current_wallet_address, pool_27)
 
 st.title("⚔️ Kurama Run — Simulador PVP")
 st.caption("Prototipo local y desacoplado — motor de combate + lectura BSC simulada. No usa fondos reales.")
@@ -782,7 +926,12 @@ with st.sidebar:
 
     st.divider()
     st.header("🏆 Modo de partida")
-    mode = st.radio("Modo", ["free", "competitive"], format_func=lambda m: "Free / Vs. Bot" if m == "free" else "Competitivo (con Cristales/KUR)")
+    mode = st.radio(
+        "Modo",
+        ["free", "competitive"],
+        format_func=lambda m: "Free / Vs. Bot" if m == "free" else "Competitivo (con Cristales/KUR)",
+        key="match_mode",
+    )
     stake = 0.0
     if mode == "competitive":
         stake = st.number_input("Apuesta en KUR", min_value=0.0, value=10.0, step=1.0)
@@ -793,7 +942,10 @@ with st.sidebar:
     )
 
     st.divider()
-    st.session_state.vs_bot = st.radio("Oponente", ["Bot", "Hotseat (2 jugadores locales)"]) == "Bot"
+    opponent_choice = st.radio(
+        "Oponente", ["Bot", "Hotseat (2 jugadores locales)"], key="opponent_choice"
+    )
+    st.session_state.vs_bot = opponent_choice == "Bot"
 
     if st.button("🆕 Nueva partida", width="stretch", type="primary"):
         rng = random.Random()
