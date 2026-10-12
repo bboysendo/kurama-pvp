@@ -75,11 +75,10 @@ ENGINE_DIR = _ENGINE_DIR
 PVP_ROOT = _PVP_ROOT
 DATABASE_PATH = ENGINE_DIR / "cards_database.json"
 
-# Única fuente de verdad para las 4 secciones del panel — la usan tanto el
-# menú superior (st.popover, ver más abajo) como el st.radio de la barra
-# lateral, los dos atados al mismo st.session_state["panel_mode"] (mismo
-# key="panel_mode" en ambos widgets) para que cualquiera de los dos navegue
-# igual, sin depender de si la barra lateral está colapsada o no.
+# Única fuente de verdad para las 4 secciones del panel — la navegación vive
+# exclusivamente en el menú superior (st.popover "☰ MENÚ DE NAVEGACIÓN", ver
+# más abajo), que lee y escribe st.session_state["panel_mode"]. No hay barra
+# lateral: se eliminó por completo.
 PANEL_OPTIONS = ["⚔️ Modo Batalla", "🎓 Tutorial Interactivo", "📖 Catálogo de Cartas", "🛒 Marketplace NFT ($KUR)"]
 
 
@@ -571,13 +570,10 @@ def render_marketplace_panel(connector: BlockchainConnector, wallet_address: str
 
 # --------------------------------------------------------------------------- #
 # Barra de configuración contextual (navbar superior, a la derecha del menú
-# ☰): repite en el área principal los controles que antes solo vivían en la
-# barra lateral, para que sigan accesibles aunque esta esté colapsada.
-# Comparte estado con la barra lateral vía las mismas claves de
-# session_state (match_mode, opponent_choice, panel_mode de Marketplace):
-# cada botón de aquí fija esa clave y hace st.rerun() ANTES de que el widget
-# correspondiente de la barra lateral se instancie más abajo en el script —
-# mismo patrón, ya probado, que el menú ☰ usa con panel_mode.
+# ☰): única fuente de controles para Modo/Oponente/Nueva partida (y, en modo
+# Competitivo, Apuesta en KUR) — no hay barra lateral que los duplique. Cada
+# botón fija su clave de session_state (match_mode, opponent_choice) y hace
+# st.rerun() de inmediato, mismo patrón que usa el menú ☰ con panel_mode.
 # --------------------------------------------------------------------------- #
 def render_context_bar(
     current_panel_mode: str, connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]
@@ -639,6 +635,22 @@ def render_context_bar(
                 )
                 st.rerun()
 
+        if st.session_state.match_mode == "competitive":
+            stake_col, economy_col = st.columns([1, 3])
+            with stake_col:
+                stake = st.number_input(
+                    "Apuesta en KUR", min_value=0.0, value=10.0, step=1.0, key="navbar_stake"
+                )
+            economy = compute_match_economy(st.session_state.match_mode, stake)
+            with economy_col:
+                st.caption(
+                    f"Victoria: +{economy.win_elo} ELO · {economy.win_kur_reward:.0f} KUR · "
+                    f"Derrota: {economy.loss_elo} ELO · comisión {economy.fee_kur:.2f} KUR"
+                )
+        else:
+            economy = compute_match_economy(st.session_state.match_mode, 0.0)
+            st.caption(f"Victoria: +{economy.win_elo} ELO · {economy.win_kur_reward:.0f} KUR · Derrota: {economy.loss_elo} ELO")
+
     elif current_panel_mode.startswith("🛒"):
         kur_balance = connector.kur_balance(wallet_address)
         owned_count = len(connector.owned_token_ids(wallet_address))
@@ -659,6 +671,66 @@ def render_context_bar(
             if st.button("🎒 Inventario", key="navbar_mkt_inventory", width="stretch"):
                 st.session_state["mkt_active_tab"] = marketplace_app.TAB_INVENTORY
                 st.rerun()
+
+
+def render_wallet_status_bar(connector: BlockchainConnector, wallet_address: str) -> None:
+    """Tarjeta horizontal con el estado de la wallet simulada, visible en la
+    página de Batalla — antes esta misma información (Dirección, NFTs,
+    Rareza, Balance $KUR) solo vivía como st.metric apilados en la barra
+    lateral, ya eliminada."""
+    owned = connector.owned_token_ids(wallet_address)
+    kur_balance = connector.kur_balance(wallet_address)
+    rarity = connector.best_rarity_for_wallet(wallet_address)
+    short_addr = f"{wallet_address[:6]}…{wallet_address[-4:]}" if len(wallet_address) > 12 else wallet_address
+
+    with st.container(key="wallet_status_bar"):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("🦊 Dirección", short_addr)
+        c2.metric("NFTs en la wallet", len(owned))
+        c3.metric("Rareza más alta", rarity_label(rarity))
+        c4.metric("Balance $KUR (simulado)", f"{kur_balance:,.2f}")
+
+
+def render_wallet_config_expander(connector: BlockchainConnector, wallet_address: str) -> None:
+    """Herramientas de testeo de la wallet simulada (cambiar dirección,
+    previsualizar un NFT, recargar Token IDs/$KUR) — antes en la barra
+    lateral, ahora plegadas en la página de Batalla para no molestar
+    durante la partida."""
+    with st.expander("🛠️ Configuración y Recarga de Wallet Simulada"):
+        st.caption(f"Modo: {'SIMULACIÓN' if connector.is_simulated else 'BSC real'}")
+        new_address = st.text_input("Dirección de wallet", value=wallet_address, key="battle_wallet_address_input")
+        if new_address != wallet_address:
+            st.session_state.wallet_address = new_address
+            st.rerun()
+
+        owned = connector.owned_token_ids(wallet_address)
+        kur_balance = connector.kur_balance(wallet_address)
+
+        if owned:
+            preview_id = st.selectbox("Previsualizar NFT", owned, key="preview_nft")
+            fox_path = PVP_ROOT / "GAMENFT" / f"fox_{preview_id}.png"
+            if fox_path.exists():
+                st.image(
+                    str(fox_path),
+                    caption=f"Fox #{preview_id} · {rarity_label(derive_placeholder_rarity(preview_id))}",
+                    width="stretch",
+                )
+
+        st.divider()
+        st.caption("Recargar wallet de prueba con otros NFTs/KUR:")
+        new_ids = st.text_input(
+            "Token IDs (separados por coma)", value=",".join(str(i) for i in owned), key="battle_wallet_ids"
+        )
+        new_kur = st.number_input(
+            "$KUR simulado", min_value=0.0, value=float(kur_balance), step=10.0, key="battle_wallet_kur"
+        )
+        if st.button("💾 Actualizar wallet simulada", width="stretch", key="battle_wallet_update"):
+            try:
+                ids = [int(x.strip()) for x in new_ids.split(",") if x.strip()]
+            except ValueError:
+                ids = []
+            connector.simulated_backend.seed_wallet(wallet_address, ids, new_kur)
+            st.rerun()
 
 
 def render_wallet_badge(connector: BlockchainConnector, wallet_address: str) -> None:
@@ -684,7 +756,7 @@ def render_wallet_badge(connector: BlockchainConnector, wallet_address: str) -> 
 
 
 st.set_page_config(
-    page_title="Kurama Run · PVP Simulator", page_icon="⚔️", layout="wide", initial_sidebar_state="expanded"
+    page_title="Kurama Run · PVP Simulator", page_icon="⚔️", layout="wide", initial_sidebar_state="collapsed"
 )
 init_state()
 catalog_dicts = load_catalog()
@@ -692,11 +764,10 @@ catalog = [Card.from_dict(d) for d in catalog_dicts]
 pool_27 = [c for c in catalog if c.category in (CardCategory.STANDARD, CardCategory.RARE)]
 cards_by_id = {c.id: c for c in catalog}
 
-# Disponibles pronto, antes de la barra lateral, para que la barra de
+# Disponibles pronto, antes de renderizar nada, para que la barra de
 # configuración contextual de arriba (render_context_bar/render_wallet_badge)
-# pueda leer la wallet y lanzar partidas sin esperar a que el bloque
-# `with st.sidebar:` se ejecute más abajo — ambos leen el mismo
-# st.session_state.connector / .wallet_address, nunca se desincronizan.
+# pueda leer la wallet y lanzar partidas de inmediato — todo el panel lee el
+# mismo st.session_state.connector / .wallet_address, nunca se desincroniza.
 connector: BlockchainConnector = st.session_state.connector
 current_wallet_address = st.session_state.wallet_address
 st.session_state.vs_bot = st.session_state.opponent_choice == "Bot"
@@ -709,13 +780,9 @@ st.markdown(kurama_theme.base_css(), unsafe_allow_html=True)
 # Navbar superior: menú ☰ + badge de wallet en la primera fila, barra de
 # configuración contextual en una segunda fila a todo el ancho justo debajo
 # (con las 5 columnas de la fila 1 no quedaba espacio para que botones como
-# "💰 Competitivo" o "🔥 NUEVA PARTIDA" se leyeran sin recortarse). Los tres
-# bloques viven en el área principal, no en la barra lateral — así todo
-# sigue accesible aunque esta esté colapsada (en la versión online el icono
-# nativo de abrirla pasa desapercibido) — y comparten estado con ella vía
-# las mismas claves de session_state (panel_mode, match_mode,
-# opponent_choice): elegir algo aquí navega/actualiza al instante y deja
-# los widgets de la barra lateral sincronizados, y viceversa.
+# "💰 Competitivo" o "🔥 NUEVA PARTIDA" se leyeran sin recortarse). No hay
+# barra lateral: toda la navegación y configuración vive aquí, en el área
+# principal.
 # --------------------------------------------------------------------------- #
 st.session_state.setdefault("panel_mode", PANEL_OPTIONS[0])
 
@@ -737,7 +804,8 @@ with nav_menu_col:
 with nav_wallet_col:
     render_wallet_badge(connector, current_wallet_address)
 
-render_context_bar(st.session_state.panel_mode, connector, current_wallet_address, pool_27)
+panel_mode = st.session_state.panel_mode
+render_context_bar(panel_mode, connector, current_wallet_address, pool_27)
 
 st.title("⚔️ Kurama Run — Simulador PVP")
 st.caption("Prototipo local y desacoplado — motor de combate + lectura BSC simulada. No usa fondos reales.")
@@ -750,6 +818,16 @@ st.caption("Prototipo local y desacoplado — motor de combate + lectura BSC sim
 st.markdown(
     """
     <style>
+    /* Sin barra lateral: se oculta por completo, junto con su botón de
+       abrir/cerrar (kurama_theme.py lo restylea como "☰ MENÚ", pero ya hay
+       un menú real arriba — este oculta ese botón huérfano también). */
+    [data-testid="stSidebar"],
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="collapsedControl"],
+    [data-testid="stExpandSidebarButton"],
+    [data-testid="stSidebarCollapseButton"] {
+        display: none !important;
+    }
     /* Mano de cartas: imágenes algo más grandes, columnas de ancho fijo
        (no estiradas a todo el contenedor) y centradas como grupo en vez de
        repartidas a los lados con huecos en blanco. */
@@ -882,84 +960,6 @@ st.markdown(
 )
 
 
-# --------------------------------------------------------------------------- #
-# Sidebar: modo del panel, wallet / NFT / economía
-# --------------------------------------------------------------------------- #
-with st.sidebar:
-    st.header("📺 Panel")
-    panel_mode = st.radio("Modo", PANEL_OPTIONS, key="panel_mode")
-    st.divider()
-
-    st.header("🦊 Wallet (simulada)")
-    connector: BlockchainConnector = st.session_state.connector
-    st.caption(f"Modo: {'SIMULACIÓN' if connector.is_simulated else 'BSC real'}")
-    wallet = st.text_input("Dirección de wallet", value=st.session_state.wallet_address)
-    st.session_state.wallet_address = wallet
-
-    owned = connector.owned_token_ids(wallet)
-    kur_balance = connector.kur_balance(wallet)
-    rarity = connector.best_rarity_for_wallet(wallet)
-    base_hp = compute_base_hp(rarity)
-
-    st.metric("NFTs en la wallet", len(owned))
-    st.metric("Rareza más alta", rarity_label(rarity))
-    st.metric("HP base de combate", base_hp)
-    st.metric("Balance $KUR (simulado)", f"{kur_balance:,.2f}")
-
-    if owned:
-        preview_id = st.selectbox("Previsualizar NFT", owned, key="preview_nft")
-        fox_path = PVP_ROOT / "GAMENFT" / f"fox_{preview_id}.png"
-        if fox_path.exists():
-            st.image(str(fox_path), caption=f"Fox #{preview_id} · {rarity_label(derive_placeholder_rarity(preview_id))}", width="stretch")
-
-    st.divider()
-    st.caption("Recargar wallet de prueba con otros NFTs/KUR:")
-    new_ids = st.text_input("Token IDs (separados por coma)", value=",".join(str(i) for i in owned))
-    new_kur = st.number_input("$KUR simulado", min_value=0.0, value=float(kur_balance), step=10.0)
-    if st.button("💾 Actualizar wallet simulada", width="stretch"):
-        try:
-            ids = [int(x.strip()) for x in new_ids.split(",") if x.strip()]
-        except ValueError:
-            ids = []
-        connector.simulated_backend.seed_wallet(wallet, ids, new_kur)
-        st.rerun()
-
-    st.divider()
-    st.header("🏆 Modo de partida")
-    mode = st.radio(
-        "Modo",
-        ["free", "competitive"],
-        format_func=lambda m: "Free / Vs. Bot" if m == "free" else "Competitivo (con Cristales/KUR)",
-        key="match_mode",
-    )
-    stake = 0.0
-    if mode == "competitive":
-        stake = st.number_input("Apuesta en KUR", min_value=0.0, value=10.0, step=1.0)
-    economy = compute_match_economy(mode, stake)
-    st.caption(
-        f"Victoria: +{economy.win_elo} ELO · {economy.win_kur_reward:.0f} KUR · "
-        f"Derrota: {economy.loss_elo} ELO" + (f" · comisión {economy.fee_kur:.2f} KUR" if mode == "competitive" else "")
-    )
-
-    st.divider()
-    opponent_choice = st.radio(
-        "Oponente", ["Bot", "Hotseat (2 jugadores locales)"], key="opponent_choice"
-    )
-    st.session_state.vs_bot = opponent_choice == "Bot"
-
-    if st.button("🆕 Nueva partida", width="stretch", type="primary"):
-        rng = random.Random()
-        deck_a = build_deck_from_pool(pool_27, rng=rng)
-        deck_b = build_deck_from_pool(pool_27, rng=rng)
-        deck_a = apply_nft_buffs_to_deck(deck_a, rarity)
-        hp_a = base_hp
-        hp_b = compute_base_hp(NFTRarity.NONE) if st.session_state.vs_bot else base_hp
-        st.session_state.match = start_match(
-            deck_a, deck_b, hp_a=hp_a, hp_b=hp_b,
-            name_a="Tú (Jugador A)", name_b="Bot" if st.session_state.vs_bot else "Jugador B",
-        )
-        st.rerun()
-
 if panel_mode.startswith("🎓"):
     render_tutorial(catalog_dicts)
     st.stop()
@@ -969,12 +969,21 @@ if panel_mode.startswith("📖"):
     st.stop()
 
 if panel_mode.startswith("🛒"):
-    render_marketplace_panel(connector, wallet)
+    render_marketplace_panel(connector, current_wallet_address)
     st.stop()
+
+# --------------------------------------------------------------------------- #
+# Página de Batalla: tarjeta de estado de la wallet (horizontal, siempre
+# visible) + herramientas de testeo plegadas en un expander, para que no
+# estorben durante la partida — ver render_wallet_status_bar/
+# render_wallet_config_expander más arriba (antes vivían en la barra lateral).
+# --------------------------------------------------------------------------- #
+render_wallet_status_bar(connector, current_wallet_address)
+render_wallet_config_expander(connector, current_wallet_address)
 
 match = st.session_state.match
 if match is None:
-    st.info("Pulsa **Nueva partida** en la barra lateral para empezar a jugar.")
+    st.info("Pulsa **🔥 NUEVA PARTIDA** arriba para empezar a jugar.")
     st.stop()
 
 state = get_match_state(match)
