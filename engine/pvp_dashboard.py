@@ -686,63 +686,59 @@ def render_context_bar(
                 st.rerun()
 
 
-def render_wallet_status_bar(connector: BlockchainConnector, wallet_address: str) -> None:
-    """Tarjeta horizontal con el estado de la wallet simulada, visible en la
-    página de Batalla — antes esta misma información (Dirección, NFTs,
-    Rareza, Balance $KUR) solo vivía como st.metric apilados en la barra
-    lateral, ya eliminada."""
+def render_wallet_and_nft_bar(connector: BlockchainConnector, wallet_address: str) -> None:
+    """Wallet + NFT equipado en una única fila compacta y horizontal:
+    imagen pequeña del NFT junto a los datos de la wallet y el selector —
+    antes eran dos secciones apiladas (tarjeta de métricas + selector con
+    imagen a ancho completo) que ocupaban bastante más alto. La rareza del
+    NFT elegido aquí decide el HP base y el buff de mazo (ver
+    resolve_equipped_rarity, usado por 🔥 NUEVA PARTIDA)."""
     owned = connector.owned_token_ids(wallet_address)
     kur_balance = connector.kur_balance(wallet_address)
-    rarity = connector.best_rarity_for_wallet(wallet_address)
     short_addr = f"{wallet_address[:6]}…{wallet_address[-4:]}" if len(wallet_address) > 12 else wallet_address
 
-    with st.container(key="wallet_status_bar"):
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("🦊 Dirección", short_addr)
-        c2.metric("NFTs en la wallet", len(owned))
-        c3.metric("Rareza más alta", rarity_label(rarity))
-        c4.metric("Balance $KUR (simulado)", f"{kur_balance:,.2f}")
+    with st.container(key="wallet_nft_bar"):
+        if not owned:
+            st.session_state.equipped_token_id = None
+            w1, w2, w3 = st.columns(3)
+            w1.metric("🦊 Dirección", short_addr)
+            w2.metric("NFTs", 0)
+            w3.metric("Balance $KUR", f"{kur_balance:,.2f}")
+            st.caption("Sin NFTs en esta wallet — jugarás con el HP base por defecto (sin NFT).")
+            return
 
+        if st.session_state.get("equipped_token_id") not in owned:
+            best = connector.best_rarity_for_wallet(wallet_address)
+            st.session_state.equipped_token_id = next(
+                (tid for tid in owned if derive_placeholder_rarity(tid) == best), owned[0]
+            )
 
-def render_nft_equip_section(connector: BlockchainConnector, wallet_address: str) -> None:
-    """Selector del NFT a equipar para la próxima partida — su rareza decide
-    el HP base y el buff de ATK/DEF del mazo (resolve_equipped_rarity, usado
-    por el botón 🔥 NUEVA PARTIDA). Vive en la página de Batalla, justo
-    debajo de la tarjeta de estado de la wallet, para poder alternar entre
-    NFTs de prueba (Común/Raro/Épico/Legendario) antes de jugar."""
-    owned = connector.owned_token_ids(wallet_address)
-    if not owned:
-        st.info("Esta wallet no tiene NFTs — jugarás con el HP base por defecto (sin NFT).")
-        st.session_state.equipped_token_id = None
-        return
+        img_col, wallet_col, select_col, stats_col = st.columns([0.7, 1.4, 1.6, 2.1])
 
-    if st.session_state.get("equipped_token_id") not in owned:
-        best = connector.best_rarity_for_wallet(wallet_address)
-        st.session_state.equipped_token_id = next(
-            (tid for tid in owned if derive_placeholder_rarity(tid) == best), owned[0]
-        )
-
-    with st.container(key="nft_equip_section"):
-        sel_col, img_col, stats_col = st.columns([1.3, 1, 2])
-        with sel_col:
+        with select_col:
             equipped_id = st.selectbox(
-                "🎴 NFT equipado para la próxima partida",
+                "🎴 NFT equipado",
                 owned,
                 format_func=lambda tid: f"Fox #{tid} · {rarity_label(derive_placeholder_rarity(tid))}",
                 key="equipped_token_id",
             )
         rarity = derive_placeholder_rarity(equipped_id)
+
         with img_col:
             fox_path = PVP_ROOT / "GAMENFT" / f"fox_{equipped_id}.png"
             if fox_path.exists():
-                st.image(str(fox_path), width="stretch")
+                st.image(str(fox_path), width=130)
+
+        with wallet_col:
+            st.metric("🦊 Dirección", short_addr)
+            st.metric("NFTs · $KUR", f"{len(owned)} · {kur_balance:,.0f}")
+
         with stats_col:
             buff_pct = DECK_STAT_BUFF_PCT.get(rarity, 0.0)
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Rareza", rarity_label(rarity))
-            m2.metric("HP base de combate", compute_base_hp(rarity))
-            m3.metric("Buff ATK/DEF de mazo", f"+{buff_pct:.0%}" if buff_pct else "—")
-            st.caption("Decide tu HP inicial y el bono de ataque/defensa del mazo al pulsar 🔥 NUEVA PARTIDA.")
+            s1, s2, s3 = st.columns(3)
+            s1.metric("Rareza", rarity_label(rarity))
+            s2.metric("HP base", compute_base_hp(rarity))
+            s3.metric("Buff mazo", f"+{buff_pct:.0%}" if buff_pct else "—")
 
 
 def render_wallet_config_expander(connector: BlockchainConnector, wallet_address: str) -> None:
@@ -1008,6 +1004,35 @@ st.markdown(
         font-size: 0.78rem !important;
         line-height: 1.25em !important;
     }
+    /* Wallet + NFT equipado (render_wallet_and_nft_bar): una sola fila
+       horizontal y compacta — imagen de NFT chica, métricas con poco
+       relleno y fuente reducida para que ocupe el mínimo alto posible. */
+    [class*="st-key-wallet_nft_bar"] [data-testid="stVerticalBlock"] {
+        gap: 0.25rem !important;
+    }
+    [class*="st-key-wallet_nft_bar"] [data-testid="stHorizontalBlock"] {
+        gap: 0.6rem !important;
+        align-items: center !important;
+    }
+    [class*="st-key-wallet_nft_bar"] [data-testid="stMetric"] {
+        padding: 0.15rem 0.4rem !important;
+    }
+    [class*="st-key-wallet_nft_bar"] [data-testid="stMetricValue"] {
+        font-size: 1rem !important;
+    }
+    [class*="st-key-wallet_nft_bar"] [data-testid="stMetricLabel"] {
+        font-size: 0.68rem !important;
+    }
+    [class*="st-key-wallet_nft_bar"] [data-testid="stImage"] img {
+        border-radius: 6px;
+    }
+    [class*="st-key-wallet_nft_bar"] [data-testid="stSelectbox"] label p {
+        font-size: 0.78rem !important;
+    }
+    [class*="st-key-wallet_nft_bar"] [data-testid="stCaptionContainer"] p {
+        font-size: 0.72rem !important;
+        margin: 0.1rem 0 0 !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -1032,8 +1057,7 @@ if panel_mode.startswith("🛒"):
 # estorben durante la partida — ver render_wallet_status_bar/
 # render_wallet_config_expander más arriba (antes vivían en la barra lateral).
 # --------------------------------------------------------------------------- #
-render_wallet_status_bar(connector, current_wallet_address)
-render_nft_equip_section(connector, current_wallet_address)
+render_wallet_and_nft_bar(connector, current_wallet_address)
 render_wallet_config_expander(connector, current_wallet_address)
 
 match = st.session_state.match
