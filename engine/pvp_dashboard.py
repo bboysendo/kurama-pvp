@@ -1487,7 +1487,7 @@ with st.container(key="battle_header"):
                 unsafe_allow_html=True,
             )
             with st.container(key="turn_timeout_trigger"):
-                st.button("⏱", key="turn_timeout_btn", label_visibility="collapsed")
+                st.button("⏱", key="turn_timeout_btn")
             components.html(
                 f"""<script>
                 (function () {{
@@ -1535,9 +1535,14 @@ def _format_log_entry(line: str, name_a: str, name_b: str) -> str:
     que se lea como un log de TCG en vez de texto plano."""
     if line.startswith("--- Turno"):
         return f"<div class='log-turn-sep'>{html.escape(line)}</div>"
-    if name_a in line:
+    # El motor siempre pone el nombre de quien actúa primero en la frase
+    # (ej. "Bot inflige ... de Tú (Jugador A)."), así que cuando aparecen los
+    # dos nombres gana el que sale antes en el texto, no "name_a in line".
+    idx_a = line.find(name_a)
+    idx_b = line.find(name_b)
+    if idx_a != -1 and (idx_b == -1 or idx_a < idx_b):
         side_class, side_icon = "log-side-a", "🔵"
-    elif name_b in line:
+    elif idx_b != -1:
         side_class, side_icon = "log-side-b", "🔴"
     else:
         side_class, side_icon = "log-side-neutral", "ℹ️"
