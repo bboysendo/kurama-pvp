@@ -867,6 +867,56 @@ st.session_state.vs_bot = st.session_state.opponent_choice == "Bot"
 st.markdown(kurama_theme.base_css(), unsafe_allow_html=True)
 
 # --------------------------------------------------------------------------- #
+# SFX 8-bit al interactuar (botones, zona, Resolver turno): un solo listener
+# global de click en window.parent.document (mismo truco que el resto del
+# JS del archivo), instalado una vez (guard en window.parent) para que no se
+# duplique en cada rerun de Streamlit. El pitido se sintetiza con WebAudio
+# (sin archivo de audio, sin latencia) y se calla solo si el reproductor de
+# música de fondo (nav_music_player, único control de mute que existe hoy)
+# está silenciado o pausado — así respeta el mismo mute que la música.
+# --------------------------------------------------------------------------- #
+components.html(
+    """<script>
+    (function () {
+        const w = window.parent;
+        if (w.__kuramaSfxInstalled) { return; }
+        w.__kuramaSfxInstalled = true;
+        let audioCtx = null;
+
+        function isMusicMuted() {
+            const el = w.document.querySelector('[class*="st-key-nav_music_player"] audio');
+            return el ? (el.muted || el.volume === 0) : false;
+        }
+
+        function playBlip() {
+            if (isMusicMuted()) { return; }
+            try {
+                const AC = w.AudioContext || w.webkitAudioContext;
+                if (!audioCtx) { audioCtx = new AC(); }
+                if (audioCtx.state === 'suspended') { audioCtx.resume(); }
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'square';
+                osc.frequency.setValueAtTime(1100, audioCtx.currentTime);
+                gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.08);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.08);
+            } catch (e) { /* navegador sin WebAudio: no interrumpe la UI */ }
+        }
+
+        w.document.addEventListener('click', function (ev) {
+            const hit = ev.target.closest('button, [role="option"], [role="combobox"], [data-baseweb="select"]');
+            if (hit) { playBlip(); }
+        }, true);
+    })();
+    </script>""",
+    height=0,
+)
+
+# --------------------------------------------------------------------------- #
 # Navbar superior: solo menú ☰ + badge de wallet (y, en el panel 🛒, la
 # barra rápida de Marketplace). Los controles de Modo/Oponente/Nueva
 # partida ya no viven aquí — están más abajo, en la página de Batalla
