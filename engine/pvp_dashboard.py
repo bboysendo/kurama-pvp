@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 _ENGINE_DIR = Path(__file__).resolve().parent
 _PVP_ROOT = _ENGINE_DIR.parent
@@ -667,6 +668,7 @@ def render_new_match_button(connector: BlockchainConnector, wallet_address: str,
                 deck_a, deck_b, hp_a=base_hp, hp_b=hp_b,
                 name_a="Tú (Jugador A)", name_b="Bot" if st.session_state.vs_bot else "Jugador B",
             )
+            st.session_state["scroll_to_battle"] = True
             st.rerun()
 
 
@@ -1213,14 +1215,24 @@ if panel_mode.startswith("🛒"):
 # render_wallet_config_expander más arriba (antes vivían en la barra lateral
 # o en el navbar superior).
 # --------------------------------------------------------------------------- #
-left_info_col, cta_col = st.columns([1, 1])
-with left_info_col:
-    with st.container(key="left_info_panel"):
-        render_wallet_and_nft_bar(connector, current_wallet_address)
-with cta_col:
-    render_new_match_button(connector, current_wallet_address, pool_27)
-    render_battle_mode_bar(connector, current_wallet_address, pool_27)
+game_started = st.session_state.match is not None
+with st.expander("⚙️ Configuración de Partida y NFT", expanded=not game_started):
+    left_info_col, cta_col = st.columns([1, 1])
+    with left_info_col:
+        with st.container(key="left_info_panel"):
+            render_wallet_and_nft_bar(connector, current_wallet_address)
+    with cta_col:
+        render_new_match_button(connector, current_wallet_address, pool_27)
+        render_battle_mode_bar(connector, current_wallet_address, pool_27)
 render_wallet_config_expander(connector, current_wallet_address)
+
+st.markdown('<div id="battle-area"></div>', unsafe_allow_html=True)
+if st.session_state.pop("scroll_to_battle", False):
+    components.html(
+        "<script>window.parent.document.getElementById('battle-area')"
+        ".scrollIntoView({behavior: 'smooth', block: 'start'});</script>",
+        height=0,
+    )
 
 match = st.session_state.match
 if match is None:
