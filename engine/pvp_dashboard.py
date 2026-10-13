@@ -1001,19 +1001,25 @@ st.markdown(
     [data-testid="stSidebarCollapseButton"] {
         display: none !important;
     }
-    /* Mano de cartas: imágenes algo más grandes, columnas de ancho fijo
-       (no estiradas a todo el contenedor) y centradas como grupo en vez de
+    /* Mano de cartas: ancho de columna fijo, imágenes TODAS al mismo
+       tamaño exacto (160x240, object-fit: contain para no deformar el
+       arte aunque cada PNG traiga su propio recorte/proporción — con
+       "cover" se vería bien pero recortaría parte del dibujo en las
+       cartas que no encajen justo en 2:3), centradas como grupo en vez de
        repartidas a los lados con huecos en blanco. */
     [class*="st-key-battle_hand"] img {
-        max-height: 225px !important;
-        width: auto !important;
+        width: 160px !important;
+        height: 240px !important;
         max-width: 100% !important;
         object-fit: contain;
+        background: rgba(255, 255, 255, 0.04);
+        border-radius: 8px;
         display: block;
         margin: 0 auto;
     }
     [class*="st-key-battle_hand"] [data-testid="stHorizontalBlock"] {
         justify-content: center !important;
+        align-items: stretch !important;
         flex-wrap: wrap;
         gap: 1.5rem !important;
     }
@@ -1022,6 +1028,21 @@ st.markdown(
         width: 240px !important;
         max-width: 240px !important;
         min-width: 180px;
+    }
+    /* Cada carta completa (imagen + nombre + info + zona + jugar) a la
+       misma altura que sus vecinas de la fila (align-items:stretch arriba
+       iguala las columnas; esto reparte ese alto dentro de cada carta para
+       que el botón "Jugar" quede siempre a la misma altura entre cartas,
+       tengan o no línea de habilidad). */
+    [class*="st-key-battle_hand"] [data-testid="stColumn"] [data-testid="stVerticalBlock"] {
+        height: 100%;
+    }
+    [class*="st-key-card_glow_playable"],
+    [class*="st-key-card_glow_locked"] {
+        display: flex !important;
+        flex-direction: column;
+        justify-content: space-between;
+        height: 100%;
     }
     .card-name {
         font-weight: 600;
@@ -1548,7 +1569,8 @@ st.markdown(
             min-width: 130px !important;
         }
         [class*="st-key-battle_hand"] img {
-            max-height: 160px !important;
+            width: 107px !important;
+            height: 160px !important;
         }
         [class*="st-key-battle_hand"] .stButton > button {
             font-size: 0.72rem !important;
