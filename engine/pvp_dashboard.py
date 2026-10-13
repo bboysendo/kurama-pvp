@@ -1598,7 +1598,7 @@ if state["status"] != MatchStatus.ONGOING.value:
         MatchStatus.DRAW.value: "🤝 Empate.",
     }[state["status"]]
     st.success(banner)
-    if st.button("🔄 Jugar otra partida"):
+    if st.button("🔄 Jugar otra partida", type="primary"):
         st.session_state.match = None
         st.rerun()
 
