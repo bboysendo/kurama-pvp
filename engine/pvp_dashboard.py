@@ -724,7 +724,7 @@ def render_wallet_and_nft_bar(connector: BlockchainConnector, wallet_address: st
             )
             fox_path = PVP_ROOT / "GAMENFT" / f"fox_{equipped_id}.png"
             if fox_path.exists():
-                st.image(str(fox_path), width="stretch")
+                st.image(str(fox_path), width=160)
         rarity = derive_placeholder_rarity(equipped_id)
 
         with wallet_col:
@@ -1036,6 +1036,9 @@ st.markdown(
     }
     [class*="st-key-wallet_nft_bar"] [data-testid="stImage"] img {
         border-radius: 6px;
+        max-height: 160px;
+        width: auto !important;
+        object-fit: contain;
     }
     [class*="st-key-wallet_nft_bar"] [data-testid="stSelectbox"] label p {
         font-size: 0.78rem !important;
@@ -1055,29 +1058,58 @@ st.markdown(
         gap: 0.4rem !important;
     }
     /* Selectores de Modo (Free/Competitivo) y Oponente (Bot/Hotseat):
-       st.segmented_control, de selección única y excluyente — el grupo en
-       gris oscuro con borde, la opción activa (aria-checked="true") en
-       naranja/rojo vivo y las inactivas en gris apagado. */
+       st.segmented_control, de selección única y excluyente — el grupo
+       ocupa todo el ancho disponible (botones grandes, sin huecos a los
+       lados), en gris oscuro con borde; la opción activa
+       (aria-checked="true") en naranja/rojo vivo y las inactivas en gris
+       apagado. */
+    [class*="st-key-battle_mode_bar"] [data-testid="stElementContainer"] {
+        width: 100% !important;
+    }
     [class*="st-key-battle_mode_bar"] [data-testid="stButtonGroup"] {
+        display: flex !important;
+        width: 100% !important;
         background: rgba(255, 255, 255, 0.04);
         border: 1px solid rgba(135, 135, 135, 0.3);
         border-radius: 8px;
-        padding: 2px;
-        gap: 2px !important;
+        padding: 3px;
+        gap: 3px !important;
+    }
+    [class*="st-key-battle_mode_bar"] [data-testid="stButtonGroup"] > div {
+        flex: 1 1 0 !important;
+        display: flex !important;
+        width: 100% !important;
+        max-width: none !important;
     }
     [class*="st-key-battle_mode_bar"] [data-testid="stButtonGroup"] button {
+        flex: 1 1 0 !important;
+        width: 100% !important;
         background: transparent !important;
         border: none !important;
         color: rgba(170, 170, 170, 0.85) !important;
-        font-size: 0.72rem !important;
-        min-height: 1.9rem !important;
-        height: 1.9rem !important;
+        font-size: 0.92rem !important;
+        font-weight: 600 !important;
+        padding: 0.75rem 0.3rem !important;
+        min-height: 3.4rem !important;
+        height: auto !important;
         border-radius: 6px !important;
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+        line-height: 1.2 !important;
     }
     [class*="st-key-battle_mode_bar"] [data-testid="stButtonGroup"] button[aria-checked="true"] {
         background: linear-gradient(135deg, #FF3B30, #E63946) !important;
         color: #fff !important;
         font-weight: 700 !important;
+    }
+    /* El bloque de Modo/Oponente es, igual que el panel de NFT, una tarjeta
+       propia con borde — para que los 4 botones se lean como parte de un
+       panel delimitado y no floten sueltos con huecos vacíos alrededor. */
+    [class*="st-key-battle_mode_bar"] {
+        border: 1px solid rgba(135, 135, 135, 0.25);
+        border-radius: 10px;
+        padding: 0.7rem 0.8rem;
     }
     [class*="st-key-battle_mode_bar"] [data-testid="stNumberInput"] input {
         font-size: 0.72rem !important;
@@ -1091,13 +1123,16 @@ st.markdown(
         font-size: 0.68rem !important;
         margin: 0.15rem 0 0 !important;
     }
-    /* Bloque compacto a la izquierda (Wallet + NFT equipado y, justo debajo,
-       Modo/Oponente): un solo panel con borde para que se lea como una sola
-       unidad, en vez de dos secciones sueltas una encima de la otra. */
+    /* Panel compacto de Wallet + NFT equipado, a la izquierda: tarjeta con
+       borde a juego con la de Modo/Oponente (misma línea/radio) y estirada
+       a la misma altura que la columna de acción de la derecha (CTA +
+       Modo/Oponente), para que ambos bloques queden simétricos. */
     [class*="st-key-left_info_panel"] {
         border: 1px solid rgba(135, 135, 135, 0.25);
         border-radius: 10px;
         padding: 0.6rem 0.8rem 0.4rem;
+        height: 100%;
+        box-sizing: border-box;
     }
     /* CTA principal "🔥 NUEVA PARTIDA" (render_new_match_button): grande,
        ancha y en rojo/naranja vivo para que sea la acción principal de la
