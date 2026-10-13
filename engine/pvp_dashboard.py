@@ -975,6 +975,22 @@ st.caption("Prototipo local y desacoplado — motor de combate + lectura BSC sim
 st.markdown(
     """
     <style>
+    /* Efecto "presionado" (:active) global para todos los botones del
+       juego (⚔️ JUGAR, ℹ️ Detalles, Jugar otra partida, Resolver turno...):
+       el botón se hunde y la sombra se aplana al pulsar — un <button> real
+       (lo que genera cada st.button/st.popover) dispara :active igual con
+       click de ratón que con tap táctil, sin JS necesario. La CTA grande
+       "NUEVA PARTIDA" tiene su propio override más abajo (misma física,
+       sombra a su escala). */
+    .stButton > button,
+    .stPopover button {
+        transition: transform 0.05s ease, box-shadow 0.05s ease;
+    }
+    .stButton > button:active,
+    .stPopover button:active {
+        transform: translateY(2px) scale(0.98);
+        box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.45) !important;
+    }
     /* Sin barra lateral: se oculta por completo, junto con su botón de
        abrir/cerrar (kurama_theme.py lo restylea como "☰ MENÚ", pero ya hay
        un menú real arriba — este oculta ese botón huérfano también). */
@@ -1422,6 +1438,11 @@ st.markdown(
         transform: scale(1.04);
         box-shadow: 0 8px 28px rgba(255, 107, 0, 0.85);
         color: #fff !important;
+    }
+    [class*="st-key-new_match_cta"] .stButton > button:active {
+        transform: translateY(2px) scale(0.98) !important;
+        box-shadow: 0 2px 8px rgba(255, 85, 0, 0.5) !important;
+        transition: transform 0.05s ease, box-shadow 0.05s ease !important;
     }
     /* Exclusivo para móvil: el escritorio se queda con el diseño original
        (fuera de esta media query no hay ningún override de estas reglas) —
