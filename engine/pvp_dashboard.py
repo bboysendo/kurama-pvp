@@ -582,19 +582,16 @@ def render_marketplace_panel(connector: BlockchainConnector, wallet_address: str
 
 
 # --------------------------------------------------------------------------- #
-# Barra compacta de Modo/Oponente/Nueva partida (y, en modo Competitivo,
-# Apuesta en KUR): vive en la página de Batalla, justo debajo del panel de
-# Wallet + NFT equipado y antes del tablero de turnos — no hay barra lateral
-# que la duplique. Cada botón fija su clave de session_state (match_mode,
-# opponent_choice) y hace st.rerun() de inmediato.
+# Barra compacta de Modo/Oponente (y, en modo Competitivo, Apuesta en KUR):
+# vive integrada dentro del panel de Wallet + NFT equipado (bloque compacto
+# a la izquierda, ver render_wallet_and_nft_bar / el layout de más abajo).
+# Cada botón fija su clave de session_state (match_mode, opponent_choice) y
+# hace st.rerun() de inmediato. El botón "🔥 NUEVA PARTIDA" vive aparte, como
+# CTA grande e independiente (ver render_new_match_button).
 # --------------------------------------------------------------------------- #
 def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
     with st.container(key="battle_mode_bar"):
-        # Fila plana (sin columnas anidadas) — con sub-columnas agrupadas
-        # por "Modo"/"Oponente" el texto de los botones largos ("💰
-        # Competitivo") se recortaba en pantallas normales; así cada botón
-        # recibe más ancho real.
-        free_col, comp_col, bot_col, hotseat_col, btn_col = st.columns([1.0, 1.3, 0.9, 1.1, 1.7])
+        free_col, comp_col, bot_col, hotseat_col = st.columns(4)
         with free_col:
             if st.button(
                 "🆓 Free",
@@ -631,20 +628,6 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
             ):
                 st.session_state.opponent_choice = "Hotseat (2 jugadores locales)"
                 st.rerun()
-        with btn_col:
-            if st.button("🔥 NUEVA PARTIDA", key="navbar_new_match", width="stretch", type="primary"):
-                rarity = resolve_equipped_rarity(connector, wallet_address)
-                base_hp = compute_base_hp(rarity)
-                rng = random.Random()
-                deck_a = build_deck_from_pool(pool_27, rng=rng)
-                deck_b = build_deck_from_pool(pool_27, rng=rng)
-                deck_a = apply_nft_buffs_to_deck(deck_a, rarity)
-                hp_b = compute_base_hp(NFTRarity.NONE) if st.session_state.vs_bot else base_hp
-                st.session_state.match = start_match(
-                    deck_a, deck_b, hp_a=base_hp, hp_b=hp_b,
-                    name_a="Tú (Jugador A)", name_b="Bot" if st.session_state.vs_bot else "Jugador B",
-                )
-                st.rerun()
 
         if st.session_state.match_mode == "competitive":
             stake_col, economy_col = st.columns([1, 3])
@@ -661,6 +644,30 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
         else:
             economy = compute_match_economy(st.session_state.match_mode, 0.0)
             st.caption(f"Victoria: +{economy.win_elo} ELO · {economy.win_kur_reward:.0f} KUR · Derrota: {economy.loss_elo} ELO")
+
+
+# --------------------------------------------------------------------------- #
+# CTA principal de la pantalla de Batalla: botón grande, ancho y llamativo
+# (rojo/naranja vivo, ver CSS ".new-match-cta" más abajo) para lanzar la
+# partida con el Modo/Oponente ya elegidos en render_battle_mode_bar. Vive
+# aparte del bloque compacto de NFT para que destaque como la acción
+# principal antes de empezar a jugar.
+# --------------------------------------------------------------------------- #
+def render_new_match_button(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
+    with st.container(key="new_match_cta"):
+        if st.button("🔥 NUEVA PARTIDA", key="navbar_new_match", width="stretch", type="primary"):
+            rarity = resolve_equipped_rarity(connector, wallet_address)
+            base_hp = compute_base_hp(rarity)
+            rng = random.Random()
+            deck_a = build_deck_from_pool(pool_27, rng=rng)
+            deck_b = build_deck_from_pool(pool_27, rng=rng)
+            deck_a = apply_nft_buffs_to_deck(deck_a, rarity)
+            hp_b = compute_base_hp(NFTRarity.NONE) if st.session_state.vs_bot else base_hp
+            st.session_state.match = start_match(
+                deck_a, deck_b, hp_a=base_hp, hp_b=hp_b,
+                name_a="Tú (Jugador A)", name_b="Bot" if st.session_state.vs_bot else "Jugador B",
+            )
+            st.rerun()
 
 
 # --------------------------------------------------------------------------- #
@@ -1080,6 +1087,49 @@ st.markdown(
         font-size: 0.68rem !important;
         margin: 0.15rem 0 0 !important;
     }
+    /* Bloque compacto a la izquierda (Wallet + NFT equipado y, justo debajo,
+       Modo/Oponente): un solo panel con borde para que se lea como una sola
+       unidad, en vez de dos secciones sueltas una encima de la otra. */
+    [class*="st-key-left_info_panel"] {
+        border: 1px solid rgba(135, 135, 135, 0.25);
+        border-radius: 10px;
+        padding: 0.6rem 0.8rem 0.4rem;
+    }
+    /* CTA principal "🔥 NUEVA PARTIDA" (render_new_match_button): grande,
+       ancha y en rojo/naranja vivo para que sea la acción principal de la
+       pantalla antes de empezar a jugar. */
+    [class*="st-key-new_match_cta"] {
+        height: 100%;
+        display: flex;
+        align-items: stretch;
+    }
+    [class*="st-key-new_match_cta"] [data-testid="stVerticalBlock"] {
+        height: 100%;
+        display: flex;
+        align-items: stretch;
+    }
+    [class*="st-key-new_match_cta"] .stButton {
+        width: 100%;
+        height: 100%;
+    }
+    [class*="st-key-new_match_cta"] .stButton > button {
+        background: linear-gradient(135deg, #FF3B30, #E63946) !important;
+        border: none !important;
+        color: #fff !important;
+        font-size: 1.4rem !important;
+        font-weight: 800 !important;
+        letter-spacing: 0.02em;
+        min-height: 6rem !important;
+        height: 100% !important;
+        border-radius: 12px !important;
+        box-shadow: 0 4px 16px rgba(230, 57, 70, 0.55);
+        transition: transform 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+    }
+    [class*="st-key-new_match_cta"] .stButton > button:hover {
+        transform: scale(1.03);
+        box-shadow: 0 6px 22px rgba(230, 57, 70, 0.75);
+        color: #fff !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -1106,8 +1156,13 @@ if panel_mode.startswith("🛒"):
 # render_wallet_config_expander más arriba (antes vivían en la barra lateral
 # o en el navbar superior).
 # --------------------------------------------------------------------------- #
-render_wallet_and_nft_bar(connector, current_wallet_address)
-render_battle_mode_bar(connector, current_wallet_address, pool_27)
+left_info_col, cta_col = st.columns([2.3, 1])
+with left_info_col:
+    with st.container(key="left_info_panel"):
+        render_wallet_and_nft_bar(connector, current_wallet_address)
+        render_battle_mode_bar(connector, current_wallet_address, pool_27)
+with cta_col:
+    render_new_match_button(connector, current_wallet_address, pool_27)
 render_wallet_config_expander(connector, current_wallet_address)
 
 match = st.session_state.match
