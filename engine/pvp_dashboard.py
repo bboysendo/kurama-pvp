@@ -1226,14 +1226,6 @@ with st.expander("⚙️ Configuración de Partida y NFT", expanded=not game_sta
         render_battle_mode_bar(connector, current_wallet_address, pool_27)
 render_wallet_config_expander(connector, current_wallet_address)
 
-st.markdown('<div id="battle-area" style="scroll-margin-top: 90px;"></div>', unsafe_allow_html=True)
-if st.session_state.pop("scroll_to_battle", False):
-    components.html(
-        "<script>window.parent.document.getElementById('battle-area')"
-        ".scrollIntoView({behavior: 'smooth', block: 'start'});</script>",
-        height=0,
-    )
-
 match = st.session_state.match
 if match is None:
     st.info("Pulsa **🔥 NUEVA PARTIDA** arriba para empezar a jugar.")
@@ -1264,8 +1256,25 @@ def _fire_event_toasts(log_before: int) -> None:
 
 # --------------------------------------------------------------------------- #
 # Cabecera: HP / energía / estado (contenedor con key propia para poder
-# compactarla por CSS sin afectar a cabeceras de otras secciones)
+# compactarla por CSS sin afectar a cabeceras de otras secciones). El ancla
+# "battle-header" vive justo aquí (no antes, donde todavía podía quedar por
+# encima el panel de Configuración animándose al colapsar) para que el
+# auto-scroll al pulsar NUEVA PARTIDA alinee el borde superior de la ventana
+# justo encima de las barras de HP / TURNO — el setTimeout espera a que
+# termine la transición CSS de colapso del expander antes de medir la
+# posición, si no el scroll se calcula con el layout aún alto y queda corto.
 # --------------------------------------------------------------------------- #
+st.markdown('<div id="battle-header" style="scroll-margin-top: 20px;"></div>', unsafe_allow_html=True)
+if st.session_state.pop("scroll_to_battle", False):
+    components.html(
+        """<script>
+        setTimeout(function () {
+            const el = window.parent.document.getElementById('battle-header');
+            if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }
+        }, 350);
+        </script>""",
+        height=0,
+    )
 with st.container(key="battle_header"):
     col_a, col_vs, col_b = st.columns([5, 1, 5])
     for col, p, key in ((col_a, state["player_a"], "a"), (col_b, state["player_b"], "b")):
