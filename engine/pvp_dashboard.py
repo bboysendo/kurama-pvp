@@ -1189,6 +1189,71 @@ st.markdown(
         box-shadow: 0 8px 28px rgba(255, 59, 48, 0.85);
         color: #fff !important;
     }
+    /* Móvil / landscape: marcador en una sola fila delgada (Streamlit apila
+       las columnas verticalmente por debajo de ~640px por defecto — aquí se
+       fuerza de vuelta a fila) y mano de cartas en carrusel horizontal
+       scrollable en vez de apiladas, para que quepa de un vistazo. */
+    @media (max-width: 768px), (orientation: landscape) {
+        [class*="st-key-battle_header"] [data-testid="stHorizontalBlock"] {
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+            gap: 0.3rem !important;
+        }
+        [class*="st-key-battle_header"] [data-testid="stColumn"] {
+            min-width: 0 !important;
+            flex: 1 1 0 !important;
+            padding: 0 !important;
+        }
+        [class*="st-key-battle_header"] [data-testid="stVerticalBlock"] {
+            gap: 0.1rem !important;
+        }
+        [class*="st-key-battle_header"] [data-testid="stHeading"] h3 {
+            font-size: 0.75rem !important;
+        }
+        [class*="st-key-battle_header"] [data-testid="stHeading"] h2 {
+            font-size: 0.8rem !important;
+        }
+        [class*="st-key-battle_header"] [data-testid="stProgressBarTrack"] {
+            height: 4px !important;
+        }
+        [class*="st-key-battle_header"] .energy-display {
+            font-size: 0.82rem !important;
+            margin: 0 !important;
+        }
+        [class*="st-key-battle_header"] [data-testid="stCaptionContainer"] p {
+            font-size: 0.6rem !important;
+            line-height: 1.1em !important;
+        }
+        [class*="st-key-battle_hand"] [data-testid="stHorizontalBlock"] {
+            flex-wrap: nowrap !important;
+            overflow-x: auto !important;
+            justify-content: flex-start !important;
+            gap: 0.5rem !important;
+            padding-bottom: 0.3rem;
+            -webkit-overflow-scrolling: touch;
+        }
+        [class*="st-key-battle_hand"] [data-testid="stColumn"] {
+            flex: 0 0 130px !important;
+            width: 130px !important;
+            max-width: 130px !important;
+            min-width: 130px !important;
+        }
+        [class*="st-key-battle_hand"] img {
+            max-height: 160px !important;
+        }
+        [class*="st-key-battle_hand"] .stButton > button {
+            font-size: 0.72rem !important;
+            padding: 0.3rem 0.4rem !important;
+            min-height: 2rem !important;
+        }
+        [class*="st-key-battle_hand"] .card-name {
+            font-size: 0.7rem !important;
+            min-height: 1.8em !important;
+        }
+        [class*="st-key-battle_hand"] .card-ability {
+            font-size: 0.6rem !important;
+        }
+    }
     </style>
     """,
     unsafe_allow_html=True,
