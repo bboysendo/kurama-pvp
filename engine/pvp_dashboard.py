@@ -1226,7 +1226,7 @@ with st.expander("⚙️ Configuración de Partida y NFT", expanded=not game_sta
         render_battle_mode_bar(connector, current_wallet_address, pool_27)
 render_wallet_config_expander(connector, current_wallet_address)
 
-st.markdown('<div id="battle-area"></div>', unsafe_allow_html=True)
+st.markdown('<div id="battle-area" style="scroll-margin-top: 90px;"></div>', unsafe_allow_html=True)
 if st.session_state.pop("scroll_to_battle", False):
     components.html(
         "<script>window.parent.document.getElementById('battle-area')"
