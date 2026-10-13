@@ -591,30 +591,42 @@ def render_marketplace_panel(connector: BlockchainConnector, wallet_address: str
 # el resto del panel (match_mode, opponent_choice), así el widget es la
 # única fuente de verdad. El CSS de más abajo (st-key-battle_mode_bar) pinta
 # la opción activa en naranja/rojo y las inactivas en gris apagado.
+#
+# segmented_control permite deseleccionar su propia opción activa (vuelve
+# None) — para que el modo nunca quede "vacío" sin violar las reglas de
+# Streamlit, la reposición al valor por defecto se hace en un callback
+# on_change (el único momento en que es válido reescribir el key de un
+# widget ya instanciado); hacerlo en el cuerpo del script después de crear
+# el widget, como antes, disparaba StreamlitWidgetAlreadyInstantiatedError.
 # --------------------------------------------------------------------------- #
+def _reset_match_mode_if_empty() -> None:
+    if st.session_state.get("match_mode") is None:
+        st.session_state.match_mode = "free"
+
+
+def _reset_opponent_choice_if_empty() -> None:
+    if st.session_state.get("opponent_choice") is None:
+        st.session_state.opponent_choice = "Bot"
+
+
 def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
     with st.container(key="battle_mode_bar"):
-        mode_value = st.segmented_control(
+        st.segmented_control(
             "Modo",
             options=["free", "competitive"],
             format_func=lambda v: "🆓 Free" if v == "free" else "💰 Competitivo",
             key="match_mode",
+            on_change=_reset_match_mode_if_empty,
             label_visibility="collapsed",
         )
-        if mode_value is None:
-            st.session_state.match_mode = "free"
-            st.rerun()
-
-        opponent_value = st.segmented_control(
+        st.segmented_control(
             "Oponente",
             options=["Bot", "Hotseat (2 jugadores locales)"],
             format_func=lambda v: "🤖 Bot" if v == "Bot" else "👥 Hotseat",
             key="opponent_choice",
+            on_change=_reset_opponent_choice_if_empty,
             label_visibility="collapsed",
         )
-        if opponent_value is None:
-            st.session_state.opponent_choice = "Bot"
-            st.rerun()
 
         if st.session_state.match_mode == "competitive":
             stake_col, economy_col = st.columns([1, 3])
