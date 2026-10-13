@@ -174,6 +174,32 @@ def card_type_label(card_dict: dict) -> str:
     return "Especial"
 
 
+def card_effect_text(card_dict: dict) -> str:
+    """Efecto exacto en combate de una carta, según su habilidad especial
+    (misma mecánica que resuelve pvp_engine.py `_resolve_direction` /
+    `_collect_counter_hits`) o, si no tiene, según si ataca y/o defiende."""
+    ability = card_dict.get("ability", "none")
+    if ability == "heal_potion":
+        heal = card_dict.get("heal_amount") or 0
+        return (
+            f"🧪 Bloquea la zona elegida: si el rival te ataca ahí, conviertes "
+            f"ese daño en HP (mínimo {heal})."
+        )
+    if ability == "piercing":
+        return "🗡️ Ignora la defensa rival de la zona elegida: tu ataque pasa directo, sin bloqueo."
+    if ability == "counter":
+        dmg = card_dict.get("counter_damage") or 0
+        return f"↩️ Si el rival no ataca esa zona este turno, le devuelves {dmg} de daño."
+    atk, defense = card_dict["atk"], card_dict["defense"]
+    if atk > 0 and defense > 0:
+        return "⚔️🛡️ Ataca y defiende la zona elegida a la vez."
+    if atk > 0:
+        return "⚔️ Inflige daño directo a la zona elegida (daño real = tu ATK − DEF rival)."
+    if defense > 0:
+        return "🛡️ Defiende la zona elegida, bloqueando el daño entrante."
+    return "✨ Efecto especial — ver descripción."
+
+
 def render_gallery(catalog_dicts: list[dict]) -> None:
     st.header("📖 Catálogo de Cartas")
     st.caption(
@@ -952,6 +978,17 @@ st.markdown(
         line-height: 1.3em;
         margin: 0.1rem 0 0.2rem;
     }
+    /* Botón "ℹ️ Detalles" (popover de tipo/efecto por carta): compacto para
+       no competir en altura con Zona/Jugar, y el cuerpo del popover acotado
+       al ancho de pantalla para que no se corte ni desborde en móvil. */
+    [class*="st-key-battle_hand"] .stPopover button {
+        font-size: 0.72rem !important;
+        padding: 0.1rem 0.5rem !important;
+        min-height: 1.6rem !important;
+    }
+    div[data-testid="stPopoverBody"] {
+        max-width: min(320px, 90vw);
+    }
     /* Catálogo de cartas: imagen a altura fija (object-fit: contain, en vez
        de estirar al ancho y dejar que la relación de aspecto de cada arte
        decida la altura de la fila) y cajas de texto de altura fija para la
@@ -1690,6 +1727,11 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                 ability = card_dict.get("ability")
                 ability_text = f"✨ {html.escape(ability)}" if ability and ability != "none" else "&nbsp;"
                 st.markdown(f"<div class='card-ability'>{ability_text}</div>", unsafe_allow_html=True)
+                with st.popover("ℹ️ Detalles", key=f"card_info_{player_key}_{card_dict['id']}"):
+                    st.markdown(f"**{card_type_label(card_dict)}**")
+                    st.caption(card_effect_text(card_dict))
+                    if card_dict.get("description"):
+                        st.caption(html.escape(card_dict["description"]))
                 zone = st.selectbox(
                     "Zona",
                     [z.value for z in Zone],
