@@ -850,7 +850,7 @@ st.markdown(kurama_theme.base_css(), unsafe_allow_html=True)
 # --------------------------------------------------------------------------- #
 st.session_state.setdefault("panel_mode", PANEL_OPTIONS[0])
 
-nav_menu_col, _nav_spacer, nav_wallet_col = st.columns([1.5, 5.1, 2.1])
+nav_menu_col, _nav_spacer, nav_music_col, nav_wallet_col = st.columns([1.5, 4.0, 1.5, 2.1])
 
 with nav_menu_col:
     with st.popover("☰ MENÚ DE NAVEGACIÓN"):
@@ -864,6 +864,17 @@ with nav_menu_col:
             ):
                 st.session_state.panel_mode = _option
                 st.rerun()
+
+with nav_music_col:
+    # Chiptune de fondo discreto: "Spooky Dungeon" de Memoraphile (OpenGameArt,
+    # CC0/CC-BY), en loop — el reproductor nativo de Streamlit ya trae su
+    # propio botón de play/pausa, así que no hace falta JS ni autoplay
+    # forzado (los navegadores lo bloquean con sonido de todas formas).
+    with st.container(key="nav_music_player"):
+        st.audio(
+            "https://opengameart.org/sites/default/files/Memoraphile%20-%20Spooky%20Dungeon.mp3",
+            loop=True,
+        )
 
 with nav_wallet_col:
     render_wallet_badge(connector, current_wallet_address)
@@ -1076,6 +1087,12 @@ st.markdown(
     .deck-discard-count {
         font-size: 0.78rem;
         color: rgba(200, 200, 200, 0.75);
+    }
+    /* Reproductor de música de fondo en la navbar: discreto, no todo el
+       ancho de la columna que Streamlit le da por defecto. */
+    [class*="st-key-nav_music_player"] audio {
+        height: 32px;
+        max-width: 210px;
     }
     /* Temporizador de turno (col_vs, junto a "Turno N"): barra que se vacía
        vía JS (ver components.html más abajo) + número de segundos. El botón
