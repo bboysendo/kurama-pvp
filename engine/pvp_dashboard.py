@@ -867,17 +867,18 @@ with nav_menu_col:
 
 with nav_music_col:
     # Chiptune de fondo discreto: "Spooky Dungeon" de Memoraphile (OpenGameArt,
-    # CC0/CC-BY), en loop — el reproductor nativo de Streamlit ya trae su
-    # propio botón de play/pausa (sirve de silenciar), así que no hace falta
-    # JS ni autoplay forzado. Solo se renderiza en combate activo: antes de
-    # pulsar NUEVA PARTIDA o tras Victoria/Derrota/Empate, match es None o su
-    # status ya no es ONGOING, y el reproductor desaparece junto con el audio.
+    # CC0/CC-BY), en loop y autoplay — el reproductor nativo de Streamlit ya
+    # trae su propio botón de play/pausa (sirve de silenciar). Solo se
+    # renderiza en combate activo: antes de pulsar NUEVA PARTIDA o tras
+    # Victoria/Derrota/Empate, match es None o su status ya no es ONGOING, y
+    # el reproductor se desmonta deteniendo el audio al instante.
     _active_match = st.session_state.get("match")
     if _active_match is not None and _active_match.status == MatchStatus.ONGOING:
         with st.container(key="nav_music_player"):
             st.audio(
                 "https://opengameart.org/sites/default/files/Memoraphile%20-%20Spooky%20Dungeon.mp3",
                 loop=True,
+                autoplay=True,
             )
 
 with nav_wallet_col:
