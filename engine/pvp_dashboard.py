@@ -1117,7 +1117,7 @@ st.markdown(
         line-height: 1.2 !important;
     }
     [class*="st-key-battle_mode_bar"] [data-testid="stButtonGroup"] button[aria-checked="true"] {
-        background: linear-gradient(135deg, #FF3B30, #E63946) !important;
+        background: linear-gradient(135deg, #FF5500, #FF6B00) !important;
         color: #fff !important;
         font-weight: 700 !important;
     }
@@ -1170,7 +1170,7 @@ st.markdown(
         height: 100%;
     }
     [class*="st-key-new_match_cta"] .stButton > button {
-        background: linear-gradient(135deg, #FF3B30, #E63946) !important;
+        background: linear-gradient(135deg, #FF5500, #FF6B00) !important;
         border: none !important;
         color: #fff !important;
         font-size: 1.5rem !important;
@@ -1181,12 +1181,12 @@ st.markdown(
         min-height: 6rem !important;
         height: 100% !important;
         border-radius: 12px !important;
-        box-shadow: 0 4px 16px rgba(230, 57, 70, 0.55);
+        box-shadow: 0 4px 16px rgba(255, 85, 0, 0.55);
         transition: transform 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
     }
     [class*="st-key-new_match_cta"] .stButton > button:hover {
         transform: scale(1.04);
-        box-shadow: 0 8px 28px rgba(255, 59, 48, 0.85);
+        box-shadow: 0 8px 28px rgba(255, 107, 0, 0.85);
         color: #fff !important;
     }
     /* Exclusivo para móvil: el escritorio se queda con el diseño original
