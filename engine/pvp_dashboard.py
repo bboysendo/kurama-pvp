@@ -699,12 +699,13 @@ def render_marketplace_quickbar(connector: BlockchainConnector, wallet_address: 
 
 
 def render_wallet_and_nft_bar(connector: BlockchainConnector, wallet_address: str) -> None:
-    """Wallet + NFT equipado en bloque cuadrado/compacto: avatar + selector
-    arriba a la izquierda, Dirección/NFTs·$KUR arriba a la derecha, y
-    Rareza/HP base/Buff mazo en una fila de 3 debajo — en vez de una única
-    fila de 4 columnas estirada a lo ancho. La rareza del NFT elegido aquí
-    decide el HP base y el buff de mazo (ver resolve_equipped_rarity, usado
-    por 🔥 NUEVA PARTIDA)."""
+    """Wallet + NFT equipado en disposición lateral/paralela, en dos
+    columnas únicamente (nunca una tercera fila que vuelva a estirar el
+    panel verticalmente): selector + avatar a la izquierda, y Dirección /
+    NFTs·$KUR / Rareza / HP base / Buff mazo apilados a la derecha, todo a
+    la misma altura que el avatar. La rareza del NFT elegido aquí decide el
+    HP base y el buff de mazo (ver resolve_equipped_rarity, usado por
+    🔥 NUEVA PARTIDA)."""
     owned = connector.owned_token_ids(wallet_address)
     kur_balance = connector.kur_balance(wallet_address)
     short_addr = f"{wallet_address[:6]}…{wallet_address[-4:]}" if len(wallet_address) > 12 else wallet_address
@@ -742,12 +743,11 @@ def render_wallet_and_nft_bar(connector: BlockchainConnector, wallet_address: st
         with wallet_col:
             st.metric("🦊 Dirección", short_addr)
             st.metric("NFTs · $KUR", f"{len(owned)} · {kur_balance:,.0f}")
-
-        buff_pct = DECK_STAT_BUFF_PCT.get(rarity, 0.0)
-        s1, s2, s3 = st.columns(3)
-        s1.metric("Rareza", rarity_label(rarity))
-        s2.metric("HP base", compute_base_hp(rarity))
-        s3.metric("Buff mazo", f"+{buff_pct:.0%}" if buff_pct else "—")
+            buff_pct = DECK_STAT_BUFF_PCT.get(rarity, 0.0)
+            s1, s2, s3 = st.columns(3)
+            s1.metric("Rareza", rarity_label(rarity))
+            s2.metric("HP base", compute_base_hp(rarity))
+            s3.metric("Buff mazo", f"+{buff_pct:.0%}" if buff_pct else "—")
 
 
 def render_wallet_config_expander(connector: BlockchainConnector, wallet_address: str) -> None:
@@ -1038,13 +1038,17 @@ st.markdown(
         align-items: center !important;
     }
     [class*="st-key-wallet_nft_bar"] [data-testid="stMetric"] {
-        padding: 0.15rem 0.4rem !important;
+        padding: 0.15rem 0.3rem !important;
     }
     [class*="st-key-wallet_nft_bar"] [data-testid="stMetricValue"] {
         font-size: 1rem !important;
     }
-    [class*="st-key-wallet_nft_bar"] [data-testid="stMetricLabel"] {
-        font-size: 0.68rem !important;
+    [class*="st-key-wallet_nft_bar"] [data-testid="stMetricLabel"] p {
+        font-size: 0.65rem !important;
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+        line-height: 1.1 !important;
     }
     [class*="st-key-wallet_nft_bar"] [data-testid="stImage"] img {
         border-radius: 6px;
