@@ -24,6 +24,7 @@ import html
 import json
 import random
 import sys
+import time
 from pathlib import Path
 
 import streamlit as st
@@ -65,6 +66,7 @@ from pvp_engine import (
     EngineError,
     MatchStatus,
     Zone,
+    auto_skip_turn,
     bot_choose_plays,
     build_deck_from_pool,
     end_turn,
@@ -669,6 +671,7 @@ def render_new_match_button(connector: BlockchainConnector, wallet_address: str,
                 name_a="Tú (Jugador A)", name_b="Bot" if st.session_state.vs_bot else "Jugador B",
             )
             st.session_state["scroll_to_battle"] = True
+            st.session_state["turn_start_time"] = time.time()
             st.rerun()
 
 
@@ -993,6 +996,47 @@ st.markdown(
         overflow-y: auto;
         margin-bottom: 0.4rem;
     }
+    /* Tarjetas del log (feed compacto y registro completo, ver
+       _format_log_entry): color por bando y separador de turno, para que se
+       lea como un log de TCG en vez de texto plano. */
+    .log-entry {
+        padding: 3px 8px;
+        margin: 2px 0;
+        border-radius: 6px;
+        border-left: 3px solid transparent;
+    }
+    .log-entry.log-side-a {
+        background: rgba(66, 135, 245, 0.12);
+        border-left-color: #4287f5;
+    }
+    .log-entry.log-side-b {
+        background: rgba(230, 57, 70, 0.12);
+        border-left-color: #e63946;
+    }
+    .log-entry.log-side-neutral {
+        background: rgba(135, 135, 135, 0.1);
+        border-left-color: rgba(135, 135, 135, 0.4);
+    }
+    .log-turn-sep {
+        text-align: center;
+        font-weight: 700;
+        text-transform: uppercase;
+        font-size: 0.72rem;
+        letter-spacing: 0.05em;
+        color: rgba(255, 255, 255, 0.5);
+        margin: 6px 0 2px;
+    }
+    /* Resplandor en cartas jugables (coste <= energía disponible) y
+       atenuado en las que no se pueden pagar — ver el key dinámico
+       card_glow_playable_*/card_glow_locked_* en render_hand. */
+    [class*="st-key-card_glow_playable"] img {
+        box-shadow: 0 0 12px rgba(0, 255, 136, 0.7);
+        border: 1px solid #00ff88;
+        border-radius: 8px;
+    }
+    [class*="st-key-card_glow_locked"] {
+        opacity: 0.7;
+    }
     /* Cabecera de combate (HP/energía/turno) más compacta, para que el
        tablero entero quepa de un vistazo sin tanto scroll. */
     [class*="st-key-battle_header"] [data-testid="stVerticalBlock"] {
@@ -1028,6 +1072,38 @@ st.markdown(
     }
     .energy-display.energy-low {
         color: #ff6b6b;
+    }
+    .deck-discard-count {
+        font-size: 0.78rem;
+        color: rgba(200, 200, 200, 0.75);
+    }
+    /* Temporizador de turno (col_vs, junto a "Turno N"): barra que se vacía
+       vía JS (ver components.html más abajo) + número de segundos. El botón
+       que dispara el fin de turno automático al llegar a 0 está forzado
+       invisible — sigue siendo "clicable" por JS (.click() dispara su
+       listener real aunque esté display:none), solo no debe verse. */
+    .turn-timer-wrap {
+        margin-top: 0.3rem;
+    }
+    .turn-timer-track {
+        height: 5px;
+        border-radius: 3px;
+        background: rgba(135, 135, 135, 0.25);
+        overflow: hidden;
+    }
+    .turn-timer-fill {
+        height: 100%;
+        background: linear-gradient(90deg, #00ff88, #ffd54a 60%, #ff6b6b);
+        transition: width 0.3s linear;
+    }
+    .turn-timer-label {
+        text-align: center;
+        font-size: 0.78rem;
+        color: rgba(220, 220, 220, 0.85);
+        margin-top: 0.15rem;
+    }
+    [class*="st-key-turn_timeout_trigger"] {
+        display: none !important;
     }
     /* Wallet + NFT equipado (render_wallet_and_nft_bar): una sola fila
        horizontal y compacta — imagen de NFT chica, métricas con poco
@@ -1313,8 +1389,6 @@ if match is None:
     st.info("Pulsa **🔥 NUEVA PARTIDA** arriba para empezar a jugar.")
     st.stop()
 
-state = get_match_state(match)
-
 
 def _fire_event_toasts(log_before: int) -> None:
     """Un toast rápido por cada línea de log que generó la última jugada
@@ -1334,6 +1408,31 @@ def _fire_event_toasts(log_before: int) -> None:
         else:
             icon = "ℹ️"
         st.toast(line, icon=icon)
+
+
+# --------------------------------------------------------------------------- #
+# Temporizador de turno (TURN_TIMER_SECONDS = 20s, card_schema.py): si pasa
+# el tiempo sin que el jugador actúe, el turno se resuelve solo (motor:
+# auto_skip_turn + end_turn, ya existían en pvp_engine.py sin usar desde
+# ningún sitio). st.session_state.turn_start_time se arma en NUEVA PARTIDA y
+# se reinicia en cada end_turn() (los 2 sitios donde ya se llamaba, más este
+# de aquí) — así el reloj siempre refleja el inicio real del turno actual,
+# aunque Streamlit solo re-ejecute este script ante una interacción.
+# --------------------------------------------------------------------------- #
+st.session_state.setdefault("turn_start_time", time.time())
+if match.status == MatchStatus.ONGOING:
+    elapsed = time.time() - st.session_state.turn_start_time
+    if elapsed >= TURN_TIMER_SECONDS:
+        log_before = len(match.log)
+        if st.session_state.vs_bot:
+            auto_skip_turn(match, "a")
+            bot_choose_plays(match, "b")
+        end_turn(match)
+        st.session_state.turn_start_time = time.time()
+        _fire_event_toasts(log_before)
+        st.rerun()
+
+state = get_match_state(match)
 
 
 # --------------------------------------------------------------------------- #
@@ -1376,6 +1475,44 @@ with st.container(key="battle_header"):
                        f"{'✅' if p['tripartite_claimed'] else ''}")
     with col_vs:
         st.markdown(f"<h2 style='text-align:center'>Turno {state['turn_number']}</h2>", unsafe_allow_html=True)
+        if state["status"] == MatchStatus.ONGOING.value:
+            remaining = max(0.0, TURN_TIMER_SECONDS - (time.time() - st.session_state.turn_start_time))
+            pct = (remaining / TURN_TIMER_SECONDS) * 100
+            st.markdown(
+                f"<div class='turn-timer-wrap'>"
+                f"<div class='turn-timer-track'><div class='turn-timer-fill' id='turn-timer-fill' "
+                f"style='width:{pct:.1f}%'></div></div>"
+                f"<div class='turn-timer-label'>⏱️ <span id='turn-timer-seconds'>{int(remaining)}</span>s</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            with st.container(key="turn_timeout_trigger"):
+                st.button("⏱", key="turn_timeout_btn", label_visibility="collapsed")
+            components.html(
+                f"""<script>
+                (function () {{
+                    const totalMs = {TURN_TIMER_SECONDS * 1000};
+                    const remainingMs = {remaining * 1000:.0f};
+                    const startedAt = Date.now();
+                    const fill = window.parent.document.getElementById('turn-timer-fill');
+                    const label = window.parent.document.getElementById('turn-timer-seconds');
+                    const btn = window.parent.document.querySelector(
+                        '[class*="st-key-turn_timeout_trigger"] button'
+                    );
+                    const iv = setInterval(function () {{
+                        const left = Math.max(0, remainingMs - (Date.now() - startedAt));
+                        const pct = Math.max(0, Math.min(100, (left / totalMs) * 100));
+                        if (fill) fill.style.width = pct + '%';
+                        if (label) label.textContent = Math.ceil(left / 1000);
+                        if (left <= 0) {{
+                            clearInterval(iv);
+                            if (btn) btn.click();
+                        }}
+                    }}, 250);
+                }})();
+                </script>""",
+                height=0,
+            )
 
 if state["status"] != MatchStatus.ONGOING.value:
     banner = {
@@ -1392,10 +1529,34 @@ elif st.session_state.vs_bot:
 else:
     st.info("🔵 Elige las cartas de **ambos** jugadores y pulsa **Resolver turno** para aplicarlas a la vez.")
 
+def _format_log_entry(line: str, name_a: str, name_b: str) -> str:
+    """Una línea del log como tarjeta con color por bando (🔵 TÚ / 🔴 BOT) y un
+    emoji de acción (⚔️ daño/combo, 🛡️ curación/bloqueo/contraataque), para
+    que se lea como un log de TCG en vez de texto plano."""
+    if line.startswith("--- Turno"):
+        return f"<div class='log-turn-sep'>{html.escape(line)}</div>"
+    if name_a in line:
+        side_class, side_icon = "log-side-a", "🔵"
+    elif name_b in line:
+        side_class, side_icon = "log-side-b", "🔴"
+    else:
+        side_class, side_icon = "log-side-neutral", "ℹ️"
+    if "inflige" in line or "Combo" in line:
+        action_icon = "⚔️ "
+    elif "cura" in line or "bloquea" in line or "contraataca" in line:
+        action_icon = "🛡️ "
+    else:
+        action_icon = ""
+    return f"<div class='log-entry {side_class}'>{side_icon} {action_icon}{html.escape(line)}</div>"
+
+
 # Feed de combate compacto (últimas 4 líneas, fijo justo sobre las cartas) —
 # complementa el registro completo (más abajo, colapsado) y los toasts.
 if state["log"]:
-    recent_lines = "".join(f"<div>{html.escape(line)}</div>" for line in reversed(state["log"][-4:]))
+    recent_lines = "".join(
+        _format_log_entry(line, state["player_a"]["name"], state["player_b"]["name"])
+        for line in reversed(state["log"][-4:])
+    )
     st.markdown(f'<div class="combat-feed">{recent_lines}</div>', unsafe_allow_html=True)
 
 ZONE_LABELS = {"head": "🗣️ Cabeza", "torso": "🫁 Tronco", "legs": "🦵 Piernas"}
@@ -1414,7 +1575,8 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
     energy_css_class = "energy-low" if remaining_energy <= 0 else ""
     st.markdown(
         f"**Mano de {label}** · <span class='energy-display {energy_css_class}' "
-        f"style='font-size:1.05rem'>⚡ {remaining_energy} disponible{'s' if remaining_energy != 1 else ''}</span>",
+        f"style='font-size:1.05rem'>⚡ {remaining_energy} disponible{'s' if remaining_energy != 1 else ''}</span> · "
+        f"<span class='deck-discard-count'>🂠 Mazo: {p['deck_remaining']} · 🗑️ Descarte: {p['discard_count']}</span>",
         unsafe_allow_html=True,
     )
     if not p["hand"]:
@@ -1423,7 +1585,9 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
     with st.container(key=f"battle_hand_{player_key}"):
         cols = st.columns(len(p["hand"]))
         for col, card_dict in zip(cols, p["hand"]):
-            with col:
+            affordable = card_dict["cost_energy"] <= remaining_energy
+            glow_key = f"card_glow_{'playable' if affordable else 'locked'}_{player_key}_{card_dict['id']}"
+            with col, st.container(key=glow_key):
                 img = card_image_path(card_dict)
                 if img:
                     st.image(str(img), width="stretch")
@@ -1439,7 +1603,6 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                     format_func=lambda z: ZONE_LABELS.get(z, z),
                     label_visibility="collapsed",
                 )
-                affordable = card_dict["cost_energy"] <= remaining_energy
                 label_btn = "⚔️ Jugar" if auto_resolve else "Jugar"
                 if st.button(
                     label_btn,
@@ -1457,6 +1620,7 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                         if auto_resolve:
                             bot_choose_plays(match, "b")
                             end_turn(match)
+                            st.session_state.turn_start_time = time.time()
                         _fire_event_toasts(log_before)
                     st.rerun()
                 if not affordable:
@@ -1478,12 +1642,16 @@ if state["status"] == MatchStatus.ONGOING.value:
         if st.button("⏭️ Resolver turno", type="primary", width="stretch"):
             log_before = len(match.log)
             end_turn(match)
+            st.session_state.turn_start_time = time.time()
             _fire_event_toasts(log_before)
             st.rerun()
 
 with st.expander("📜 Registro completo de la partida", expanded=False):
-    for line in reversed(state["log"][-40:]):
-        st.text(line)
+    log_html = "".join(
+        _format_log_entry(line, state["player_a"]["name"], state["player_b"]["name"])
+        for line in reversed(state["log"][-40:])
+    )
+    st.markdown(log_html, unsafe_allow_html=True)
 
 with st.expander("🗂️ Catálogo de cartas (27 competitivas + 2 legendarias)"):
     tabs = st.tabs(["Estándar (18)", "Raras (9)", "Legendarias (fuera de pool)"])
