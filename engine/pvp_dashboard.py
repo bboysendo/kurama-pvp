@@ -1101,6 +1101,7 @@ st.markdown(
         gap: 0.35rem;
         margin: 0.2rem 0 0.1rem;
         flex-wrap: wrap;
+        cursor: help;
     }
     .zone-badge {
         display: inline-flex;
@@ -1125,6 +1126,12 @@ st.markdown(
         font-size: 0.78rem;
         font-weight: 700;
         color: #ffd54a;
+        margin-left: 0.1rem;
+    }
+    .zone-combo-progress {
+        font-size: 0.78rem;
+        font-weight: 600;
+        color: rgba(220, 220, 220, 0.65);
         margin-left: 0.1rem;
     }
     /* Reproductor de música de fondo en la navbar: discreto, no todo el
@@ -1484,8 +1491,17 @@ def _render_zone_badges(p: dict) -> None:
             f"<span class='{css_class}' title='{_ZONE_LABELS[zone]}'>"
             f"{_ZONE_ICONS[zone]}{mark}</span>"
         )
-    claimed = " <span class='zone-combo-claimed'>🔥 Combo Tripartito</span>" if p["tripartite_claimed"] else ""
-    st.markdown(f"<div class='zone-badges'>{''.join(badges)}{claimed}</div>", unsafe_allow_html=True)
+    if p["tripartite_claimed"]:
+        combo_tag = " <span class='zone-combo-claimed'>🔥 Combo Tripartito</span>"
+    else:
+        combo_tag = f" <span class='zone-combo-progress'>🔥 Progreso: {len(damaged)}/3</span>"
+    tooltip = (
+        "Completa las 3 zonas (🗣️ Cabeza, 👕 Torso, 🦵 Piernas) para activar el Combo Tripartito"
+    )
+    st.markdown(
+        f"<div class='zone-badges' title='{tooltip}'>{''.join(badges)}{combo_tag}</div>",
+        unsafe_allow_html=True,
+    )
 
 
 # --------------------------------------------------------------------------- #
