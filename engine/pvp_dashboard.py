@@ -1044,24 +1044,61 @@ st.markdown(
         line-height: 1.3em;
         margin: 0.1rem 0 0.2rem;
     }
-    /* Botón "ℹ️ Detalles" (popover de tipo/efecto por carta): compacto para
-       no competir en altura con Zona/Jugar, y el cuerpo del popover acotado
-       al ancho de pantalla para que no se corte ni desborde en móvil. Por
-       encima (z-index) del zoom de la imagen al pasar el ratón (z-index:100
-       más abajo) — si no, la imagen ampliada se pinta encima del botón y
-       se come el click/tap aunque el botón siga ahí debajo; con esto se
-       mantiene siempre clicable sin tocar el efecto de zoom en sí. */
-    [class*="st-key-battle_hand"] .stPopover {
+    /* "ℹ️ Info" por carta: tooltip 100% CSS (sin widget de Streamlit, sin
+       rerun del servidor) para que se vea al INSTANTE con el ratón encima —
+       antes era un st.popover que había que pulsar, y con los 20s de
+       cuenta atrás del turno cada click de más cuenta. :hover lo abre en
+       PC; :focus hace lo mismo al tocar con el dedo en móvil (un <button>
+       real recibe foco al tap). z-index por encima del zoom de la imagen
+       (z-index:100 más abajo) para que no se la coma ese hover. */
+    .card-info-wrap {
+        position: relative;
+        display: inline-block;
+    }
+    .card-info-trigger {
         position: relative;
         z-index: 150;
+        display: inline-block;
+        font-size: 0.72rem;
+        padding: 0.1rem 0.5rem;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.25);
+        color: inherit;
+        cursor: pointer;
     }
-    [class*="st-key-battle_hand"] .stPopover button {
-        font-size: 0.72rem !important;
-        padding: 0.1rem 0.5rem !important;
-        min-height: 1.6rem !important;
+    .card-info-panel {
+        position: absolute;
+        z-index: 200;
+        top: 100%;
+        left: 0;
+        margin-top: 0.3rem;
+        width: max-content;
+        max-width: min(260px, 85vw);
+        padding: 0.5rem 0.65rem;
+        border-radius: 8px;
+        background: rgba(20, 20, 22, 0.97);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.5);
+        font-size: 0.78rem;
+        line-height: 1.3em;
+        opacity: 0;
+        visibility: hidden;
+        transition: opacity 0.08s ease;
+        pointer-events: none;
     }
-    div[data-testid="stPopoverBody"] {
-        max-width: min(320px, 90vw);
+    .card-info-trigger:hover + .card-info-panel,
+    .card-info-trigger:focus + .card-info-panel {
+        opacity: 1;
+        visibility: visible;
+    }
+    .card-info-panel .card-info-name {
+        font-weight: 700;
+        margin-bottom: 0.2rem;
+    }
+    .card-info-panel .card-info-desc {
+        color: rgba(210, 210, 210, 0.85);
+        margin-top: 0.15rem;
     }
     /* Catálogo de cartas: imagen a altura fija (object-fit: contain, en vez
        de estirar al ancho y dejar que la relación de aspecto de cada arte
@@ -1806,11 +1843,21 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                 ability = card_dict.get("ability")
                 ability_text = f"✨ {html.escape(ability)}" if ability and ability != "none" else "&nbsp;"
                 st.markdown(f"<div class='card-ability'>{ability_text}</div>", unsafe_allow_html=True)
-                with st.popover("ℹ️ Detalles", key=f"card_info_{player_key}_{card_dict['id']}"):
-                    st.markdown(f"**{html.escape(card_dict['name'])}** · {card_type_label(card_dict)}")
-                    st.caption(card_effect_text(card_dict))
-                    if card_dict.get("description"):
-                        st.caption(html.escape(card_dict["description"]))
+                desc_html = (
+                    f"<div class='card-info-desc'>{html.escape(card_dict['description'])}</div>"
+                    if card_dict.get("description")
+                    else ""
+                )
+                st.markdown(
+                    "<div class='card-info-wrap'>"
+                    "<button type='button' class='card-info-trigger' tabindex='0'>ℹ️ Info</button>"
+                    "<div class='card-info-panel'>"
+                    f"<div class='card-info-name'>{html.escape(card_dict['name'])} · {card_type_label(card_dict)}</div>"
+                    f"<div>{card_effect_text(card_dict)}</div>"
+                    f"{desc_html}"
+                    "</div></div>",
+                    unsafe_allow_html=True,
+                )
                 zone = st.selectbox(
                     "Zona",
                     [z.value for z in Zone],
