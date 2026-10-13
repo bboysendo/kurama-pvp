@@ -655,7 +655,7 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
 # --------------------------------------------------------------------------- #
 def render_new_match_button(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
     with st.container(key="new_match_cta"):
-        if st.button("🔥 NUEVA PARTIDA", key="navbar_new_match", width="stretch", type="primary"):
+        if st.button("🛡️⚔️ NUEVA PARTIDA ⚔️🛡️", key="navbar_new_match", width="stretch", type="primary"):
             rarity = resolve_equipped_rarity(connector, wallet_address)
             base_hp = compute_base_hp(rarity)
             rng = random.Random()
@@ -1171,9 +1171,11 @@ st.markdown(
         background: linear-gradient(135deg, #FF3B30, #E63946) !important;
         border: none !important;
         color: #fff !important;
-        font-size: 1.4rem !important;
+        font-size: 1.5rem !important;
         font-weight: 800 !important;
-        letter-spacing: 0.02em;
+        letter-spacing: 0.04em;
+        text-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+        white-space: normal !important;
         min-height: 6rem !important;
         height: 100% !important;
         border-radius: 12px !important;
@@ -1181,8 +1183,8 @@ st.markdown(
         transition: transform 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
     }
     [class*="st-key-new_match_cta"] .stButton > button:hover {
-        transform: scale(1.03);
-        box-shadow: 0 6px 22px rgba(230, 57, 70, 0.75);
+        transform: scale(1.04);
+        box-shadow: 0 8px 28px rgba(255, 59, 48, 0.85);
         color: #fff !important;
     }
     </style>
