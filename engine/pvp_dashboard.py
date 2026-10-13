@@ -1524,10 +1524,6 @@ if state["status"] != MatchStatus.ONGOING.value:
     if st.button("🔄 Jugar otra partida"):
         st.session_state.match = None
         st.rerun()
-elif st.session_state.vs_bot:
-    st.info("🟢 **¡Tu turno!** Elige una carta y pulsa **Jugar** para atacar o defender — el Bot responde al instante.")
-else:
-    st.info("🔵 Elige las cartas de **ambos** jugadores y pulsa **Resolver turno** para aplicarlas a la vez.")
 
 def _format_log_entry(line: str, name_a: str, name_b: str) -> str:
     """Una línea del log como tarjeta con color por bando (🔵 TÚ / 🔴 BOT) y un
