@@ -1002,16 +1002,9 @@ st.markdown(
         font-size: 1rem !important;
         margin: 0 !important;
     }
-    /* "Turno N" central: clase propia en vez de depender del <h2> nativo de
-       Streamlit (que no vive bajo stHeading aquí y por eso no se achicaba) —
-       compacto a propósito para dejar más peso visual a las columnas de
-       los jugadores a los lados. */
-    [class*="st-key-battle_header"] .turno-badge {
-        text-align: center;
-        font-size: 1.4rem;
-        font-weight: 800;
-        line-height: 1.15;
-        margin: 0;
+    [class*="st-key-battle_header"] [data-testid="stHeading"] h2 {
+        font-size: 1.05rem !important;
+        margin: 0 !important;
     }
     [class*="st-key-battle_header"] [data-testid="stProgress"] {
         margin: 0.1rem 0 !important;
@@ -1019,24 +1012,19 @@ st.markdown(
     [class*="st-key-battle_header"] [data-testid="stProgressBarTrack"] {
         height: 6px !important;
     }
-    [class*="st-key-battle_header"] [data-testid="stProgress"] p {
-        font-size: 0.95rem !important;
-        font-weight: 600 !important;
-    }
     [class*="st-key-battle_header"] [data-testid="stCaptionContainer"] p {
         font-size: 0.78rem !important;
         line-height: 1.25em !important;
     }
     /* Energía disponible: destacada y grande junto a la barra de vida de
        cada jugador (antes iba metida en una caption pequeña junto a otros
-       datos secundarios como mazo/descarte). Margen inferior algo mayor
-       para que no se pise con la caption "Gastado este turno..." de debajo. */
+       datos secundarios como mazo/descarte). */
     .energy-display {
-        font-size: 1.5rem;
+        font-size: 1.4rem;
         font-weight: 700;
         color: #ffd54a;
-        margin: 0.2rem 0 0.3rem;
-        line-height: 1.25em;
+        margin: 0.15rem 0 0.1rem;
+        line-height: 1.2em;
     }
     .energy-display.energy-low {
         color: #ff6b6b;
@@ -1201,11 +1189,16 @@ st.markdown(
         box-shadow: 0 8px 28px rgba(255, 59, 48, 0.85);
         color: #fff !important;
     }
-    /* Móvil / landscape: marcador en una sola fila delgada (Streamlit apila
-       las columnas verticalmente por debajo de ~640px por defecto — aquí se
-       fuerza de vuelta a fila) y mano de cartas en carrusel horizontal
-       scrollable en vez de apiladas, para que quepa de un vistazo. */
-    @media (max-width: 768px), (orientation: landscape) {
+    /* Exclusivo para móvil: el escritorio se queda con el diseño original
+       (fuera de esta media query no hay ningún override de estas reglas) —
+       marcador en una sola fila delgada, proporción 42/16/42 entre columnas
+       (en vez de la [5,1,5] por defecto, que en pantallas anchas ya se ve
+       bien) y mano de cartas en carrusel horizontal scrollable en vez de
+       apiladas, para que quepa de un vistazo.
+       shortcut: max-width 768px no cubre móviles muy anchos en landscape
+       (>768px, p.ej. algunos phablets); si hace falta, añadir aquí
+       "and (max-height: 500px)" junto a un "(orientation: landscape)". */
+    @media (max-width: 768px) {
         [class*="st-key-battle_header"] [data-testid="stHorizontalBlock"] {
             flex-direction: row !important;
             flex-wrap: nowrap !important;
@@ -1215,14 +1208,24 @@ st.markdown(
             min-width: 0 !important;
             padding: 0 !important;
         }
+        [class*="st-key-battle_header"] [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(1),
+        [class*="st-key-battle_header"] [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(3) {
+            flex: 0 0 42% !important;
+            width: 42% !important;
+        }
+        [class*="st-key-battle_header"] [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) {
+            flex: 0 0 16% !important;
+            width: 16% !important;
+        }
         [class*="st-key-battle_header"] [data-testid="stVerticalBlock"] {
             gap: 0.1rem !important;
         }
         [class*="st-key-battle_header"] [data-testid="stHeading"] h3 {
             font-size: 0.75rem !important;
         }
-        [class*="st-key-battle_header"] .turno-badge {
+        [class*="st-key-battle_header"] h2 {
             font-size: 1.1rem !important;
+            margin: 0 !important;
         }
         [class*="st-key-battle_header"] [data-testid="stProgressBarTrack"] {
             height: 4px !important;
@@ -1355,7 +1358,7 @@ if st.session_state.pop("scroll_to_battle", False):
         height=0,
     )
 with st.container(key="battle_header"):
-    col_a, col_vs, col_b = st.columns([42, 16, 42])
+    col_a, col_vs, col_b = st.columns([5, 1, 5])
     for col, p, key in ((col_a, state["player_a"], "a"), (col_b, state["player_b"], "b")):
         with col:
             st.subheader(p["name"])
@@ -1372,7 +1375,7 @@ with st.container(key="battle_header"):
             st.caption(f"Zonas dañadas (combo tripartito): {', '.join(p['zones_damaged']) or '—'} "
                        f"{'✅' if p['tripartite_claimed'] else ''}")
     with col_vs:
-        st.markdown(f"<div class='turno-badge'>Turno {state['turn_number']}</div>", unsafe_allow_html=True)
+        st.markdown(f"<h2 style='text-align:center'>Turno {state['turn_number']}</h2>", unsafe_allow_html=True)
 
 if state["status"] != MatchStatus.ONGOING.value:
     banner = {
