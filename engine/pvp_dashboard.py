@@ -1030,7 +1030,15 @@ st.markdown(
     }
     /* Botón "ℹ️ Detalles" (popover de tipo/efecto por carta): compacto para
        no competir en altura con Zona/Jugar, y el cuerpo del popover acotado
-       al ancho de pantalla para que no se corte ni desborde en móvil. */
+       al ancho de pantalla para que no se corte ni desborde en móvil. Por
+       encima (z-index) del zoom de la imagen al pasar el ratón (z-index:100
+       más abajo) — si no, la imagen ampliada se pinta encima del botón y
+       se come el click/tap aunque el botón siga ahí debajo; con esto se
+       mantiene siempre clicable sin tocar el efecto de zoom en sí. */
+    [class*="st-key-battle_hand"] .stPopover {
+        position: relative;
+        z-index: 150;
+    }
     [class*="st-key-battle_hand"] .stPopover button {
         font-size: 0.72rem !important;
         padding: 0.1rem 0.5rem !important;
@@ -1778,7 +1786,7 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                 ability_text = f"✨ {html.escape(ability)}" if ability and ability != "none" else "&nbsp;"
                 st.markdown(f"<div class='card-ability'>{ability_text}</div>", unsafe_allow_html=True)
                 with st.popover("ℹ️ Detalles", key=f"card_info_{player_key}_{card_dict['id']}"):
-                    st.markdown(f"**{card_type_label(card_dict)}**")
+                    st.markdown(f"**{html.escape(card_dict['name'])}** · {card_type_label(card_dict)}")
                     st.caption(card_effect_text(card_dict))
                     if card_dict.get("description"):
                         st.caption(html.escape(card_dict["description"]))
