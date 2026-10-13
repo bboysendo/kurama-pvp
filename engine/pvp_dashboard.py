@@ -582,16 +582,15 @@ def render_marketplace_panel(connector: BlockchainConnector, wallet_address: str
 
 
 # --------------------------------------------------------------------------- #
-# Barra compacta de Modo/Oponente (y, en modo Competitivo, Apuesta en KUR):
-# vive integrada dentro del panel de Wallet + NFT equipado (bloque compacto
-# a la izquierda, ver render_wallet_and_nft_bar / el layout de más abajo).
-# Cada botón fija su clave de session_state (match_mode, opponent_choice) y
-# hace st.rerun() de inmediato. El botón "🔥 NUEVA PARTIDA" vive aparte, como
-# CTA grande e independiente (ver render_new_match_button).
+# Selector de Modo/Oponente (y, en modo Competitivo, Apuesta en KUR): vive
+# justo debajo del CTA "🔥 NUEVA PARTIDA" en la columna de acción/derecha
+# (ver el layout de más abajo) — cuadrícula 2x2, no fila de 4, porque esa
+# columna es angosta. Cada botón fija su clave de session_state (match_mode,
+# opponent_choice) y hace st.rerun() de inmediato.
 # --------------------------------------------------------------------------- #
 def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
     with st.container(key="battle_mode_bar"):
-        free_col, comp_col, bot_col, hotseat_col = st.columns(4)
+        free_col, comp_col = st.columns(2)
         with free_col:
             if st.button(
                 "🆓 Free",
@@ -610,6 +609,7 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
             ):
                 st.session_state.match_mode = "competitive"
                 st.rerun()
+        bot_col, hotseat_col = st.columns(2)
         with bot_col:
             if st.button(
                 "🤖 Bot",
@@ -648,10 +648,11 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
 
 # --------------------------------------------------------------------------- #
 # CTA principal de la pantalla de Batalla: botón grande, ancho y llamativo
-# (rojo/naranja vivo, ver CSS ".new-match-cta" más abajo) para lanzar la
-# partida con el Modo/Oponente ya elegidos en render_battle_mode_bar. Vive
-# aparte del bloque compacto de NFT para que destaque como la acción
-# principal antes de empezar a jugar.
+# (rojo/naranja vivo, ver CSS "st-key-new_match_cta" más abajo), arriba de
+# todo en la columna de acción/derecha — justo debajo va render_battle_mode_bar
+# (Modo/Oponente) en el mismo layout, ver más abajo. Vive aparte del bloque
+# compacto de NFT (izquierda) para que destaque como la acción principal
+# antes de empezar a jugar.
 # --------------------------------------------------------------------------- #
 def render_new_match_button(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
     with st.container(key="new_match_cta"):
@@ -1160,9 +1161,9 @@ left_info_col, cta_col = st.columns([2.3, 1])
 with left_info_col:
     with st.container(key="left_info_panel"):
         render_wallet_and_nft_bar(connector, current_wallet_address)
-        render_battle_mode_bar(connector, current_wallet_address, pool_27)
 with cta_col:
     render_new_match_button(connector, current_wallet_address, pool_27)
+    render_battle_mode_bar(connector, current_wallet_address, pool_27)
 render_wallet_config_expander(connector, current_wallet_address)
 
 match = st.session_state.match
