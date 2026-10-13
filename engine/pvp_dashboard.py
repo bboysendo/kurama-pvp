@@ -1002,9 +1002,16 @@ st.markdown(
         font-size: 1rem !important;
         margin: 0 !important;
     }
-    [class*="st-key-battle_header"] [data-testid="stHeading"] h2 {
-        font-size: 1.05rem !important;
-        margin: 0 !important;
+    /* "Turno N" central: clase propia en vez de depender del <h2> nativo de
+       Streamlit (que no vive bajo stHeading aquí y por eso no se achicaba) —
+       compacto a propósito para dejar más peso visual a las columnas de
+       los jugadores a los lados. */
+    [class*="st-key-battle_header"] .turno-badge {
+        text-align: center;
+        font-size: 1.4rem;
+        font-weight: 800;
+        line-height: 1.15;
+        margin: 0;
     }
     [class*="st-key-battle_header"] [data-testid="stProgress"] {
         margin: 0.1rem 0 !important;
@@ -1012,19 +1019,24 @@ st.markdown(
     [class*="st-key-battle_header"] [data-testid="stProgressBarTrack"] {
         height: 6px !important;
     }
+    [class*="st-key-battle_header"] [data-testid="stProgress"] p {
+        font-size: 0.95rem !important;
+        font-weight: 600 !important;
+    }
     [class*="st-key-battle_header"] [data-testid="stCaptionContainer"] p {
         font-size: 0.78rem !important;
         line-height: 1.25em !important;
     }
     /* Energía disponible: destacada y grande junto a la barra de vida de
        cada jugador (antes iba metida en una caption pequeña junto a otros
-       datos secundarios como mazo/descarte). */
+       datos secundarios como mazo/descarte). Margen inferior algo mayor
+       para que no se pise con la caption "Gastado este turno..." de debajo. */
     .energy-display {
-        font-size: 1.4rem;
+        font-size: 1.5rem;
         font-weight: 700;
         color: #ffd54a;
-        margin: 0.15rem 0 0.1rem;
-        line-height: 1.2em;
+        margin: 0.2rem 0 0.3rem;
+        line-height: 1.25em;
     }
     .energy-display.energy-low {
         color: #ff6b6b;
@@ -1201,7 +1213,6 @@ st.markdown(
         }
         [class*="st-key-battle_header"] [data-testid="stColumn"] {
             min-width: 0 !important;
-            flex: 1 1 0 !important;
             padding: 0 !important;
         }
         [class*="st-key-battle_header"] [data-testid="stVerticalBlock"] {
@@ -1210,15 +1221,18 @@ st.markdown(
         [class*="st-key-battle_header"] [data-testid="stHeading"] h3 {
             font-size: 0.75rem !important;
         }
-        [class*="st-key-battle_header"] [data-testid="stHeading"] h2 {
-            font-size: 0.8rem !important;
+        [class*="st-key-battle_header"] .turno-badge {
+            font-size: 1.1rem !important;
         }
         [class*="st-key-battle_header"] [data-testid="stProgressBarTrack"] {
             height: 4px !important;
         }
+        [class*="st-key-battle_header"] [data-testid="stProgress"] p {
+            font-size: 0.8rem !important;
+        }
         [class*="st-key-battle_header"] .energy-display {
-            font-size: 0.82rem !important;
-            margin: 0 !important;
+            font-size: 0.88rem !important;
+            margin: 0.1rem 0 0.15rem !important;
         }
         [class*="st-key-battle_header"] [data-testid="stCaptionContainer"] p {
             font-size: 0.6rem !important;
@@ -1341,7 +1355,7 @@ if st.session_state.pop("scroll_to_battle", False):
         height=0,
     )
 with st.container(key="battle_header"):
-    col_a, col_vs, col_b = st.columns([5, 1, 5])
+    col_a, col_vs, col_b = st.columns([42, 16, 42])
     for col, p, key in ((col_a, state["player_a"], "a"), (col_b, state["player_b"], "b")):
         with col:
             st.subheader(p["name"])
@@ -1358,7 +1372,7 @@ with st.container(key="battle_header"):
             st.caption(f"Zonas dañadas (combo tripartito): {', '.join(p['zones_damaged']) or '—'} "
                        f"{'✅' if p['tripartite_claimed'] else ''}")
     with col_vs:
-        st.markdown(f"<h2 style='text-align:center'>Turno {state['turn_number']}</h2>", unsafe_allow_html=True)
+        st.markdown(f"<div class='turno-badge'>Turno {state['turn_number']}</div>", unsafe_allow_html=True)
 
 if state["status"] != MatchStatus.ONGOING.value:
     banner = {
