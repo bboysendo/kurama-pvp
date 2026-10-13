@@ -1093,6 +1093,40 @@ st.markdown(
         font-size: 0.78rem;
         color: rgba(200, 200, 200, 0.75);
     }
+    /* Zonas dañadas (combo tripartito): badge por zona en vez del texto
+       plano anterior — intacta = gris sutil, dañada = rojo con brillo. */
+    .zone-badges {
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        margin: 0.2rem 0 0.1rem;
+        flex-wrap: wrap;
+    }
+    .zone-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.15rem;
+        font-size: 1rem;
+        padding: 0.1rem 0.45rem;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        filter: grayscale(0.7);
+        opacity: 0.7;
+    }
+    .zone-badge-damaged {
+        background: rgba(139, 0, 0, 0.35);
+        border: 1px solid #ff6b6b;
+        box-shadow: 0 0 6px rgba(255, 107, 107, 0.65);
+        filter: none;
+        opacity: 1;
+    }
+    .zone-combo-claimed {
+        font-size: 0.78rem;
+        font-weight: 700;
+        color: #ffd54a;
+        margin-left: 0.1rem;
+    }
     /* Reproductor de música de fondo en la navbar: discreto, no todo el
        ancho de la columna que Streamlit le da por defecto. */
     [class*="st-key-nav_music_player"] audio {
@@ -1432,6 +1466,28 @@ def _fire_event_toasts(log_before: int) -> None:
         st.toast(line, icon=icon)
 
 
+_ZONE_ICONS = {"head": "🗣️", "torso": "👕", "legs": "🦵"}
+_ZONE_LABELS = {"head": "Cabeza", "torso": "Torso", "legs": "Piernas"}
+
+
+def _render_zone_badges(p: dict) -> None:
+    """Badge por zona corporal (combo tripartito) en vez del texto plano
+    anterior: intacta en gris sutil, dañada resaltada en rojo con brillo y
+    check — más fácil de leer de un vistazo que una lista separada por comas."""
+    damaged = set(p["zones_damaged"])
+    badges = []
+    for zone in ("head", "torso", "legs"):
+        is_damaged = zone in damaged
+        css_class = "zone-badge zone-badge-damaged" if is_damaged else "zone-badge"
+        mark = " ✅" if is_damaged else ""
+        badges.append(
+            f"<span class='{css_class}' title='{_ZONE_LABELS[zone]}'>"
+            f"{_ZONE_ICONS[zone]}{mark}</span>"
+        )
+    claimed = " <span class='zone-combo-claimed'>🔥 Combo Tripartito</span>" if p["tripartite_claimed"] else ""
+    st.markdown(f"<div class='zone-badges'>{''.join(badges)}{claimed}</div>", unsafe_allow_html=True)
+
+
 # --------------------------------------------------------------------------- #
 # Temporizador de turno (TURN_TIMER_SECONDS = 20s, card_schema.py): si pasa
 # el tiempo sin que el jugador actúe, el turno se resuelve solo (motor:
@@ -1493,8 +1549,7 @@ with st.container(key="battle_header"):
                 f"Gastado este turno: {p['energy_spent_this_turn']} (tope {MAX_ENERGY_SPEND_PER_TURN}) · "
                 f"Mazo: {p['deck_remaining']} · Descarte: {p['discard_count']}"
             )
-            st.caption(f"Zonas dañadas (combo tripartito): {', '.join(p['zones_damaged']) or '—'} "
-                       f"{'✅' if p['tripartite_claimed'] else ''}")
+            _render_zone_badges(p)
     with col_vs:
         st.markdown(f"<h2 style='text-align:center'>Turno {state['turn_number']}</h2>", unsafe_allow_html=True)
         if state["status"] == MatchStatus.ONGOING.value:
