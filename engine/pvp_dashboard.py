@@ -461,7 +461,7 @@ def render_tutorial(catalog_dicts: list[dict]) -> None:
             with col:
                 img = card_image_path(card_dict)
                 if img:
-                    st.image(str(img), width="stretch")
+                    st.image(str(img), width=160)
                 st.markdown(f"**{card_dict['name']}**")
                 st.caption(f"{card_dict['atk']} ATK / {card_dict['defense']} DEF · Coste {card_dict['cost_energy']}")
                 if note:
@@ -561,7 +561,7 @@ def render_tutorial(catalog_dicts: list[dict]) -> None:
                     with img_col:
                         img = card_image_path(card_dict)
                         if img:
-                            st.image(str(img), width="stretch")
+                            st.image(str(img), width=160)
                     with info_col:
                         quien = "Tú jugaste" if step["actor"] == "tú" else "El rival jugó"
                         st.markdown(f"**{quien}:** {card_dict['name']}")
