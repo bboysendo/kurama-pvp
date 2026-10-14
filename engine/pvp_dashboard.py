@@ -999,17 +999,16 @@ st.markdown(
         display: none !important;
     }
     /* Mano de cartas: ancho de columna fijo, imágenes TODAS al mismo
-       tamaño exacto (160x240, object-fit: cover + scale leve para rellenar
-       la caja y comerse el marco negro sobrante que algunos PNG todavía
-       traen; el overflow:hidden del contenedor stImage de abajo recorta
-       ese zoom extra), centradas como grupo en vez de repartidas a los
-       lados con huecos en blanco. */
+       tamaño exacto (160x240, object-fit: contain para no deformar el
+       arte aunque cada PNG traiga su propio recorte/proporción — con
+       "cover" se vería bien pero recortaría parte del dibujo en las
+       cartas que no encajen justo en 2:3), centradas como grupo en vez de
+       repartidas a los lados con huecos en blanco. */
     [class*="st-key-battle_hand"] img {
         width: 160px !important;
         height: 240px !important;
         max-width: 100% !important;
-        object-fit: cover;
-        transform: scale(1.15);
+        object-fit: contain;
         background: rgba(255, 255, 255, 0.04);
         border-radius: 8px;
         display: block;
@@ -1156,38 +1155,6 @@ st.markdown(
        como en el Catálogo de Cartas y el Tutorial Interactivo: la imagen
        se amplía por encima de sus vecinas (los contenedores padres no
        recortan con overflow). */
-    /* La imagen de cada carta de la mano queda centrada en su caja: el
-       contenedor stImage la centra con flex y el <img> en sí con margin
-       auto (por si su ancho real es menor que el de la columna), para que
-       quede alineada con el nombre, Info, Zona y el botón Jugar de abajo. */
-    [class*="st-key-battle_hand"] [data-testid="stImage"] {
-        display: flex !important;
-        justify-content: center !important;
-        align-items: center !important;
-        width: fit-content !important;
-        margin: 0 auto;
-        overflow: hidden;
-    }
-    /* Al hacer hover el <img> salta a scale(1.35) (más abajo) para asomar
-       por encima de las cartas vecinas; sin esto el overflow:hidden de
-       arriba (que recorta el scale base de 1.15) también recortaría ese
-       zoom de hover. */
-    [class*="st-key-battle_hand"] [data-testid="stImage"]:has(img:hover) {
-        overflow: visible;
-    }
-    /* El div sin testid que Streamlit mete entre stFullScreenFrame y
-       stImage (para el botón de pantalla completa) es flex pero sin
-       ancho propio, así que se encoge al contenido en vez de llenar la
-       columna — por eso el 100% de stImage de arriba no bastaba y la
-       imagen quedaba pegada a la izquierda con hueco a la derecha. */
-    [class*="st-key-battle_hand"] [data-testid="stFullScreenFrame"] > div {
-        width: 100% !important;
-    }
-    [class*="st-key-battle_hand"] [data-testid="stImage"] > img {
-        display: block !important;
-        margin-left: auto !important;
-        margin-right: auto !important;
-    }
     [class*="st-key-battle_hand"] [data-testid="stImage"] img,
     [class*="st-key-gallery_grid"] [data-testid="stImage"] img,
     [class*="st-key-tutorial_card"] [data-testid="stImage"] img {
