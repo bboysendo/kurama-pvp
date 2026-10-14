@@ -730,13 +730,11 @@ def render_marketplace_quickbar(connector: BlockchainConnector, wallet_address: 
 
 
 def render_wallet_and_nft_bar(connector: BlockchainConnector, wallet_address: str) -> None:
-    """Wallet + NFT equipado en disposición lateral/paralela, en dos
-    columnas únicamente (nunca una tercera fila que vuelva a estirar el
-    panel verticalmente): selector + avatar a la izquierda, y Dirección /
-    NFTs·$KUR / Rareza / HP base / Buff mazo apilados a la derecha, todo a
-    la misma altura que el avatar. La rareza del NFT elegido aquí decide el
-    HP base y el buff de mazo (ver resolve_equipped_rarity, usado por
-    🔥 NUEVA PARTIDA)."""
+    """Wallet + NFT equipado: selector arriba (fuera de la tarjeta), debajo
+    una tarjeta horizontal compacta (imagen a la izquierda, estadísticas
+    apiladas y alineadas a la derecha) y la Dirección de wallet como pie de
+    ancho completo. La rareza del NFT elegido aquí decide el HP base y el
+    buff de mazo (ver resolve_equipped_rarity, usado por 🔥 NUEVA PARTIDA)."""
     owned = connector.owned_token_ids(wallet_address)
     kur_balance = connector.kur_balance(wallet_address)
     short_addr = f"{wallet_address[:6]}…{wallet_address[-4:]}" if len(wallet_address) > 12 else wallet_address
@@ -757,28 +755,27 @@ def render_wallet_and_nft_bar(connector: BlockchainConnector, wallet_address: st
                 (tid for tid in owned if derive_placeholder_rarity(tid) == best), owned[0]
             )
 
-        img_col, wallet_col = st.columns([1, 1.3])
+        equipped_id = st.selectbox(
+            "🎴 NFT equipado",
+            owned,
+            format_func=lambda tid: f"Fox #{tid} · {rarity_label(derive_placeholder_rarity(tid))}",
+            key="equipped_token_id",
+        )
+        rarity = derive_placeholder_rarity(equipped_id)
+        buff_pct = DECK_STAT_BUFF_PCT.get(rarity, 0.0)
 
+        img_col, stats_col = st.columns([1, 1])
         with img_col:
-            equipped_id = st.selectbox(
-                "🎴 NFT equipado",
-                owned,
-                format_func=lambda tid: f"Fox #{tid} · {rarity_label(derive_placeholder_rarity(tid))}",
-                key="equipped_token_id",
-            )
             fox_path = PVP_ROOT / "GAMENFT" / f"fox_{equipped_id}.png"
             if fox_path.exists():
-                st.image(str(fox_path), width=160)
-        rarity = derive_placeholder_rarity(equipped_id)
-
-        with wallet_col:
-            st.metric("🦊 Dirección", short_addr)
+                st.image(str(fox_path), width=120)
+        with stats_col.container(key="nft_stats_col"):
             st.metric("NFTs · $KUR", f"{len(owned)} · {kur_balance:,.0f}")
-            buff_pct = DECK_STAT_BUFF_PCT.get(rarity, 0.0)
-            s1, s2, s3 = st.columns(3)
-            s1.metric("Rareza", rarity_label(rarity))
-            s2.metric("HP base", compute_base_hp(rarity))
-            s3.metric("Buff mazo", f"+{buff_pct:.0%}" if buff_pct else "—")
+            st.metric("Rareza", rarity_label(rarity))
+            st.metric("HP base", compute_base_hp(rarity))
+            st.metric("Buff mazo", f"+{buff_pct:.0%}" if buff_pct else "—")
+
+        st.caption(f"🦊 Dirección {short_addr}")
 
 
 def render_wallet_config_expander(connector: BlockchainConnector, wallet_address: str) -> None:
@@ -1369,7 +1366,7 @@ st.markdown(
     }
     [class*="st-key-wallet_nft_bar"] [data-testid="stImage"] img {
         border-radius: 6px;
-        max-height: 160px;
+        max-height: 120px;
         width: auto !important;
         object-fit: contain;
     }
@@ -1379,6 +1376,15 @@ st.markdown(
     [class*="st-key-wallet_nft_bar"] [data-testid="stCaptionContainer"] p {
         font-size: 0.72rem !important;
         margin: 0.1rem 0 0 !important;
+    }
+    /* Columna de estadísticas de la tarjeta de NFT equipado: apiladas y
+       alineadas a la derecha, sin el padding/gap por defecto de stMetric. */
+    [class*="st-key-nft_stats_col"] [data-testid="stMetric"] {
+        text-align: right !important;
+        padding: 0.05rem 0.3rem !important;
+    }
+    [class*="st-key-nft_stats_col"] [data-testid="stMetricLabel"] {
+        justify-content: flex-end !important;
     }
     /* Barra de Modo/Oponente/Nueva partida (render_battle_mode_bar): botones
        bastante más chicos que el tamaño por defecto de Streamlit — menos
@@ -1568,6 +1574,14 @@ st.markdown(
             gap: 0.5rem !important;
             padding-bottom: 0.3rem;
             -webkit-overflow-scrolling: touch;
+        }
+        [class*="st-key-wallet_nft_bar"] [data-testid="stHorizontalBlock"] {
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+            gap: 0.5rem !important;
+        }
+        [class*="st-key-wallet_nft_bar"] [data-testid="stColumn"] {
+            min-width: 0 !important;
         }
         [class*="st-key-battle_hand"] [data-testid="stColumn"] {
             flex: 0 0 130px !important;
