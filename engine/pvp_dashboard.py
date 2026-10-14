@@ -458,7 +458,7 @@ def render_tutorial(catalog_dicts: list[dict]) -> None:
             card_dict = cards_by_id.get(card_id)
             if not card_dict:
                 return
-            with col:
+            with col, st.container(key=f"tutorial_card_{card_id}"):
                 img = card_image_path(card_dict)
                 if img:
                     st.image(str(img), width=160)
@@ -558,7 +558,7 @@ def render_tutorial(catalog_dicts: list[dict]) -> None:
                 card_dict = cards_by_id.get(step["card_id"])
                 if card_dict:
                     img_col, info_col = st.columns([1, 2])
-                    with img_col:
+                    with img_col, st.container(key=f"tutorial_card_demo_{step_idx}"):
                         img = card_image_path(card_dict)
                         if img:
                             st.image(str(img), width=160)
@@ -1155,15 +1155,18 @@ st.markdown(
         margin-top: 0.2rem;
     }
     /* Zoom al pasar el ratón por una carta, tanto en la mano de combate
-       como en el Catálogo de Cartas: la imagen se amplía por encima de
-       sus vecinas (los contenedores padres no recortan con overflow). */
+       como en el Catálogo de Cartas y el Tutorial Interactivo: la imagen
+       se amplía por encima de sus vecinas (los contenedores padres no
+       recortan con overflow). */
     [class*="st-key-battle_hand"] [data-testid="stImage"] img,
-    [class*="st-key-gallery_grid"] [data-testid="stImage"] img {
+    [class*="st-key-gallery_grid"] [data-testid="stImage"] img,
+    [class*="st-key-tutorial_card"] [data-testid="stImage"] img {
         transition: transform 0.25s ease-in-out, box-shadow 0.25s ease-in-out;
         cursor: pointer;
     }
     [class*="st-key-battle_hand"] [data-testid="stImage"] img:hover,
-    [class*="st-key-gallery_grid"] [data-testid="stImage"] img:hover {
+    [class*="st-key-gallery_grid"] [data-testid="stImage"] img:hover,
+    [class*="st-key-tutorial_card"] [data-testid="stImage"] img:hover {
         transform: scale(1.35);
         position: relative;
         z-index: 100;
