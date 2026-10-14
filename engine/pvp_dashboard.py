@@ -1278,19 +1278,23 @@ st.markdown(
     .zone-badge {
         display: inline-flex;
         align-items: center;
-        gap: 0.15rem;
+        justify-content: center;
+        flex: 0 0 2rem;
+        width: 2rem;
+        height: 2rem;
+        box-sizing: border-box;
         font-size: 1rem;
-        padding: 0.1rem 0.45rem;
+        padding: 0;
         border-radius: 999px;
-        background: rgba(255, 255, 255, 0.06);
+        background: rgba(0, 0, 0, 0.35);
         border: 1px solid rgba(255, 255, 255, 0.18);
-        filter: grayscale(0.7);
-        opacity: 0.7;
+        filter: grayscale(0.9);
+        opacity: 0.35;
     }
     .zone-badge-damaged {
-        background: rgba(139, 0, 0, 0.35);
-        border: 1px solid #ff6b6b;
-        box-shadow: 0 0 6px rgba(255, 107, 107, 0.65);
+        background: rgba(34, 197, 94, 0.2);
+        border: 1px solid #22c55e;
+        box-shadow: 0 0 6px rgba(34, 197, 94, 0.75);
         filter: none;
         opacity: 1;
     }
@@ -1664,10 +1668,9 @@ def _render_zone_badges(p: dict) -> None:
     for zone in ("head", "torso", "legs"):
         is_damaged = zone in damaged
         css_class = "zone-badge zone-badge-damaged" if is_damaged else "zone-badge"
-        mark = " ✅" if is_damaged else ""
         badges.append(
             f"<span class='{css_class}' title='{_ZONE_LABELS[zone]}'>"
-            f"{_ZONE_ICONS[zone]}{mark}</span>"
+            f"{_ZONE_ICONS[zone]}</span>"
         )
     if p["tripartite_claimed"]:
         combo_tag = " <span class='zone-combo-claimed'>🔥 Combo Tripartito</span>"
