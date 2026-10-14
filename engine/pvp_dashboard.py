@@ -1155,6 +1155,18 @@ st.markdown(
        como en el Catálogo de Cartas y el Tutorial Interactivo: la imagen
        se amplía por encima de sus vecinas (los contenedores padres no
        recortan con overflow). */
+    /* La imagen de cada carta de la mano queda centrada en su caja: el
+       contenedor stImage la centra con flex y el <img> en sí con margin
+       auto (por si su ancho real es menor que el de la columna), para que
+       quede alineada con el nombre, Info, Zona y el botón Jugar de abajo. */
+    [class*="st-key-battle_hand"] [data-testid="stImage"] {
+        display: flex;
+        justify-content: center;
+    }
+    [class*="st-key-battle_hand"] [data-testid="stImage"] img {
+        display: block;
+        margin: 0 auto;
+    }
     [class*="st-key-battle_hand"] [data-testid="stImage"] img,
     [class*="st-key-gallery_grid"] [data-testid="stImage"] img,
     [class*="st-key-tutorial_card"] [data-testid="stImage"] img {
