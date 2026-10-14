@@ -1606,6 +1606,22 @@ st.markdown(
             font-size: 0.6rem !important;
         }
     }
+
+    /* Elementos flotantes nativos de Streamlit (menú hamburguesa, footer
+       "Made with Streamlit", botón "Manage app"/deploy y el avatar de
+       usuario que lo acompaña) tapan los botones "⚔️ JUGAR" de la derecha
+       en móvil — se ocultan, y además se deja aire abajo en el contenedor
+       principal por si algún widget fijo no cae bajo estos selectores. */
+    #MainMenu,
+    footer,
+    .stAppDeployButton,
+    [data-testid="stStatusWidget"],
+    [data-testid="stDecoration"] {
+        display: none !important;
+    }
+    [data-testid="stAppViewContainer"] .block-container {
+        padding-bottom: 60px !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
