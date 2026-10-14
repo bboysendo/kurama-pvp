@@ -1160,12 +1160,15 @@ st.markdown(
        auto (por si su ancho real es menor que el de la columna), para que
        quede alineada con el nombre, Info, Zona y el botón Jugar de abajo. */
     [class*="st-key-battle_hand"] [data-testid="stImage"] {
-        display: flex;
-        justify-content: center;
+        display: flex !important;
+        justify-content: center !important;
+        align-items: center !important;
+        width: 100% !important;
     }
-    [class*="st-key-battle_hand"] [data-testid="stImage"] img {
-        display: block;
-        margin: 0 auto;
+    [class*="st-key-battle_hand"] [data-testid="stImage"] > img {
+        display: block !important;
+        margin-left: auto !important;
+        margin-right: auto !important;
     }
     [class*="st-key-battle_hand"] [data-testid="stImage"] img,
     [class*="st-key-gallery_grid"] [data-testid="stImage"] img,
