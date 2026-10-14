@@ -1165,6 +1165,14 @@ st.markdown(
         align-items: center !important;
         width: 100% !important;
     }
+    /* El div sin testid que Streamlit mete entre stFullScreenFrame y
+       stImage (para el botón de pantalla completa) es flex pero sin
+       ancho propio, así que se encoge al contenido en vez de llenar la
+       columna — por eso el 100% de stImage de arriba no bastaba y la
+       imagen quedaba pegada a la izquierda con hueco a la derecha. */
+    [class*="st-key-battle_hand"] [data-testid="stFullScreenFrame"] > div {
+        width: 100% !important;
+    }
     [class*="st-key-battle_hand"] [data-testid="stImage"] > img {
         display: block !important;
         margin-left: auto !important;
