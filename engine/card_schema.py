@@ -154,6 +154,7 @@ STARTING_ENERGY = 3      # Energía inicial (sección 2.2)
 ENERGY_PER_TURN = 1      # Energía ganada por turno subsiguiente
 MAX_ENERGY_SPEND_PER_TURN = 2  # Tope operativo de gasto por turno
 TURN_TIMER_SECONDS = 20   # Temporizador por turno
+MATCHMAKING_SECONDS = 50  # Búsqueda de rival humano antes de asignar un BOT
 TRIPARTITE_COMBO_BONUS = 3     # +3 HP de daño extra al completar las 3 zonas
 CRITICAL_COMBO_DAMAGE = 20     # Daño directo de ataque pesado en combo máximo
 CASHOUT_BATTLE_REQUIREMENT = 300  # Batallas PvP acumuladas para poder retirar fondos

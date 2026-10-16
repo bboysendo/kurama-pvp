@@ -46,14 +46,17 @@ from blockchain_connector import (
     BlockchainConnector,
     apply_nft_buffs_to_deck,
     compute_base_hp,
+    compute_challenge_payout,
     compute_match_economy,
     derive_placeholder_rarity,
+    roll_competitive_kur_reward,
 )
 from card_schema import (
     CRITICAL_COMBO_DAMAGE,
     DECK_SIZE,
     ENERGY_PER_TURN,
     HAND_SIZE,
+    MATCHMAKING_SECONDS,
     MAX_ENERGY_SPEND_PER_TURN,
     STARTING_ENERGY,
     TRIPARTITE_COMBO_BONUS,
@@ -83,7 +86,10 @@ DATABASE_PATH = ENGINE_DIR / "cards_database.json"
 # exclusivamente en el menú superior (st.popover "☰ MENÚ DE NAVEGACIÓN", ver
 # más abajo), que lee y escribe st.session_state["panel_mode"]. No hay barra
 # lateral: se eliminó por completo.
-PANEL_OPTIONS = ["⚔️ Modo Batalla", "🎓 Tutorial Interactivo", "📖 Catálogo de Cartas", "🛒 Marketplace NFT ($KUR)"]
+PANEL_OPTIONS = [
+    "⚔️ Modo Batalla", "🤝 Retos 1v1", "🎓 Tutorial Interactivo",
+    "📖 Catálogo de Cartas", "🛒 Marketplace NFT ($KUR)",
+]
 
 
 @st.cache_data
@@ -123,6 +129,13 @@ def init_state() -> None:
         st.session_state.match_mode = "free"
     if "opponent_choice" not in st.session_state:
         st.session_state.opponent_choice = "Bot" if st.session_state.vs_bot else "Hotseat (2 jugadores locales)"
+    # Búsqueda de rival humano (matchmaking) antes de caer a BOT, Reto 1v1
+    # activo y si ya se acreditó la recompensa/pozo de la partida en curso —
+    # ver render_matchmaking_search / render_challenges_panel más abajo.
+    st.session_state.setdefault("matchmaking_start", None)
+    st.session_state.setdefault("active_challenge", None)
+    st.session_state.setdefault("match_economy_mode", None)
+    st.session_state.setdefault("match_reward_settled", False)
 
 
 def rarity_label(rarity: NFTRarity) -> str:
@@ -666,12 +679,13 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
             economy = compute_match_economy(st.session_state.match_mode, stake)
             with economy_col:
                 st.caption(
-                    f"Victoria: +{economy.win_elo} ELO · {economy.win_kur_reward:.0f} KUR · "
+                    f"Victoria: +{economy.win_elo} ELO · {economy.win_kur_reward_min:.0f}-"
+                    f"{economy.win_kur_reward_max:.0f} KUR · "
                     f"Derrota: {economy.loss_elo} ELO · comisión {economy.fee_kur:.2f} KUR"
                 )
         else:
             economy = compute_match_economy(st.session_state.match_mode, 0.0)
-            st.caption(f"Victoria: +{economy.win_elo} ELO · {economy.win_kur_reward:.0f} KUR · Derrota: {economy.loss_elo} ELO")
+            st.caption(f"Victoria: +{economy.win_elo} ELO · {economy.win_kur_reward_min:.0f} KUR · Derrota: {economy.loss_elo} ELO")
 
 
 # --------------------------------------------------------------------------- #
@@ -682,23 +696,156 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
 # compacto de NFT (izquierda) para que destaque como la acción principal
 # antes de empezar a jugar.
 # --------------------------------------------------------------------------- #
+def _launch_match(
+    connector: BlockchainConnector, wallet_address: str, pool_27: list[Card],
+    name_b: str, hp_b: int | None = None,
+) -> None:
+    """Arranca una partida ya resuelta de oponente (Bot, Hotseat o rival de
+    Reto 1v1) — usado tanto por 🔥 NUEVA PARTIDA como por el desenlace de
+    render_matchmaking_search() y render_challenges_panel()."""
+    rarity = resolve_equipped_rarity(connector, wallet_address)
+    base_hp = compute_base_hp(rarity)
+    rng = random.Random()
+    deck_a = build_deck_from_pool(pool_27, rng=rng)
+    deck_b = build_deck_from_pool(pool_27, rng=rng)
+    deck_a = apply_nft_buffs_to_deck(deck_a, rarity)
+    if hp_b is None:
+        hp_b = compute_base_hp(NFTRarity.NONE) if st.session_state.vs_bot else base_hp
+    st.session_state.match = start_match(
+        deck_a, deck_b, hp_a=base_hp, hp_b=hp_b, name_a="Tú (Jugador A)", name_b=name_b,
+    )
+    st.session_state["scroll_to_battle"] = True
+    st.session_state["turn_start_time"] = time.time()
+    st.session_state["match_economy_mode"] = st.session_state.match_mode
+    st.session_state["match_reward_settled"] = False
+
+
 def render_new_match_button(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
     with st.container(key="new_match_cta"):
         if st.button("🛡️⚔️ NUEVA PARTIDA ⚔️🛡️", key="navbar_new_match", width="stretch", type="primary"):
-            rarity = resolve_equipped_rarity(connector, wallet_address)
-            base_hp = compute_base_hp(rarity)
-            rng = random.Random()
-            deck_a = build_deck_from_pool(pool_27, rng=rng)
-            deck_b = build_deck_from_pool(pool_27, rng=rng)
-            deck_a = apply_nft_buffs_to_deck(deck_a, rarity)
-            hp_b = compute_base_hp(NFTRarity.NONE) if st.session_state.vs_bot else base_hp
-            st.session_state.match = start_match(
-                deck_a, deck_b, hp_a=base_hp, hp_b=hp_b,
-                name_a="Tú (Jugador A)", name_b="Bot" if st.session_state.vs_bot else "Jugador B",
-            )
-            st.session_state["scroll_to_battle"] = True
-            st.session_state["turn_start_time"] = time.time()
+            if st.session_state.opponent_choice == "Bot":
+                # Free/Competitivo buscan rival humano hasta MATCHMAKING_SECONDS
+                # antes de caer a BOT (ver render_matchmaking_search); Hotseat
+                # ya tiene un rival local conocido, no necesita buscar.
+                st.session_state["matchmaking_start"] = time.time()
+            else:
+                _launch_match(connector, wallet_address, pool_27, name_b="Jugador B")
             st.rerun()
+
+
+def render_matchmaking_search(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
+    """Pantalla de búsqueda de partida (requisito del equipo de pruebas): si
+    pasan MATCHMAKING_SECONDS sin "encontrar" un jugador humano —este
+    prototipo local no tiene backend de matchmaking real entre wallets—, la
+    partida arranca sola contra un BOT para garantizar fluidez."""
+    elapsed = time.time() - st.session_state["matchmaking_start"]
+    remaining = max(0.0, MATCHMAKING_SECONDS - elapsed)
+    with st.container(key="matchmaking_search"):
+        st.subheader("🔎 Buscando partida…")
+        pct = (remaining / MATCHMAKING_SECONDS) * 100
+        st.markdown(
+            f"<div class='turn-timer-wrap'>"
+            f"<div class='turn-timer-track'><div class='turn-timer-fill' id='matchmaking-timer-fill' "
+            f"style='width:{pct:.1f}%'></div></div>"
+            f"<div class='turn-timer-label'>Esperando jugador humano · "
+            f"<span id='matchmaking-timer-seconds'>{int(remaining)}</span>s</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption("Si no aparece un rival a tiempo, se asigna un BOT automáticamente.")
+        if st.button("Cancelar búsqueda", key="matchmaking_cancel"):
+            st.session_state["matchmaking_start"] = None
+            st.rerun()
+    if remaining <= 0:
+        st.session_state["matchmaking_start"] = None
+        _launch_match(connector, wallet_address, pool_27, name_b="Bot")
+        st.rerun()
+    else:
+        with st.container(key="matchmaking_timeout_trigger"):
+            st.button("⏱", key="matchmaking_timeout_btn")
+        components.html(
+            f"""<script>
+            (function () {{
+                const totalMs = {MATCHMAKING_SECONDS * 1000};
+                const remainingMs = {remaining * 1000:.0f};
+                const startedAt = Date.now();
+                const fill = window.parent.document.getElementById('matchmaking-timer-fill');
+                const label = window.parent.document.getElementById('matchmaking-timer-seconds');
+                const btn = window.parent.document.querySelector(
+                    '[class*="st-key-matchmaking_timeout_trigger"] button'
+                );
+                const iv = setInterval(function () {{
+                    const left = Math.max(0, remainingMs - (Date.now() - startedAt));
+                    const pct = Math.max(0, Math.min(100, (left / totalMs) * 100));
+                    if (fill) fill.style.width = pct + '%';
+                    if (label) label.textContent = Math.ceil(left / 1000);
+                    if (left <= 0) {{
+                        clearInterval(iv);
+                        if (btn) btn.click();
+                    }}
+                }}, 250);
+            }})();
+            </script>""",
+            height=0,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Panel "🤝 Retos 1v1": apuesta 1v1 directa en $KUR (sección pedida por el
+# equipo de pruebas, separada del flujo Free/Competitivo de arriba). Al
+# lanzar el reto se descuenta el pozo de la wallet y se arranca la partida de
+# inmediato contra un rival que iguala la apuesta (sin backend de
+# matchmaking real entre wallets en este prototipo local, el rival es un
+# Bot); el pago (90% del pozo total, 10% de comisión) se liquida al terminar
+# la partida — ver el bloque "state['status'] != ONGOING" más abajo.
+# --------------------------------------------------------------------------- #
+def render_challenges_panel(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
+    st.title("🤝 Retos 1v1")
+    st.caption(
+        "Define el pozo de apuesta en $KUR. Al aceptar el rival, el ganador se lleva el pozo "
+        "total con una deducción del 10% de comisión para la sala."
+    )
+
+    active = st.session_state.get("active_challenge")
+    if active is not None:
+        payout = compute_challenge_payout(active["stake_kur"])
+        st.info(
+            f"Reto en curso contra {active['rival_name']}: pozo total {payout.pool_kur:.0f} $KUR "
+            f"(comisión {payout.fee_kur:.2f} $KUR) · si ganas te llevas {payout.payout_kur:.2f} $KUR."
+        )
+        if st.button("⚔️ Ir a la partida", key="challenge_goto_battle", type="primary"):
+            st.session_state.panel_mode = PANEL_OPTIONS[0]
+            st.rerun()
+        return
+
+    kur_balance = connector.kur_balance(wallet_address)
+    st.caption(f"Tu balance: {kur_balance:,.2f} $KUR")
+    stake = st.number_input(
+        "Pozo de apuesta por jugador ($KUR)", min_value=1.0, value=100.0, step=10.0, key="challenge_stake"
+    )
+    payout = compute_challenge_payout(stake)
+    st.caption(
+        f"Pozo total: {payout.pool_kur:.0f} $KUR · comisión 10%: {payout.fee_kur:.2f} $KUR · "
+        f"el ganador se lleva: {payout.payout_kur:.2f} $KUR"
+    )
+    insufficient = kur_balance < stake
+    if insufficient:
+        st.warning("Balance insuficiente para este pozo.")
+    if st.button(
+        "⚔️ Lanzar reto (buscar rival)", key="challenge_launch", type="primary", disabled=insufficient,
+    ):
+        connector.simulated_backend.seed_wallet(
+            wallet_address, connector.owned_token_ids(wallet_address), kur_balance - stake
+        )
+        st.session_state.active_challenge = {"stake_kur": stake, "rival_name": "Rival (Reto 1v1)"}
+        st.session_state.vs_bot = True
+        st.session_state.opponent_choice = "Bot"
+        _launch_match(
+            connector, wallet_address, pool_27,
+            name_b="Rival (Reto 1v1)", hp_b=compute_base_hp(NFTRarity.NONE),
+        )
+        st.session_state.panel_mode = PANEL_OPTIONS[0]
+        st.rerun()
 
 
 # --------------------------------------------------------------------------- #
@@ -1177,7 +1324,7 @@ st.markdown(
         padding: 6px 12px;
         font-size: 0.82rem;
         line-height: 1.35;
-        max-height: 6.5em;
+        height: 4.2em;
         overflow-y: auto;
         margin-bottom: 0.4rem;
     }
@@ -1628,6 +1775,10 @@ st.markdown(
 )
 
 
+if panel_mode.startswith("🤝"):
+    render_challenges_panel(connector, current_wallet_address, pool_27)
+    st.stop()
+
 if panel_mode.startswith("🎓"):
     render_tutorial(catalog_dicts)
     st.stop()
@@ -1661,28 +1812,11 @@ render_wallet_config_expander(connector, current_wallet_address)
 
 match = st.session_state.match
 if match is None:
-    st.info("Pulsa **🔥 NUEVA PARTIDA** arriba para empezar a jugar.")
+    if st.session_state.get("matchmaking_start") is not None:
+        render_matchmaking_search(connector, current_wallet_address, pool_27)
+    else:
+        st.info("Pulsa **🔥 NUEVA PARTIDA** arriba para empezar a jugar.")
     st.stop()
-
-
-def _fire_event_toasts(log_before: int) -> None:
-    """Un toast rápido por cada línea de log que generó la última jugada
-    (daño, curación, contraataque, carta del Bot...), en vez de un único
-    mensaje genérico — así el jugador ve el resultado real al instante sin
-    bajar al registro completo."""
-    new_lines = [line for line in match.log[log_before:] if not line.startswith("--- Turno")]
-    for line in new_lines[:4]:
-        if "inflige" in line or "Combo" in line:
-            icon = "⚔️"
-        elif "cura" in line or "bloquea" in line:
-            icon = "💚"
-        elif "contraataca" in line:
-            icon = "↩️"
-        elif "juega" in line:
-            icon = "🎴"
-        else:
-            icon = "ℹ️"
-        st.toast(line, icon=icon)
 
 
 _ZONE_ICONS = {"head": "🗣️", "torso": "👕", "legs": "🦵"}
@@ -1728,13 +1862,11 @@ st.session_state.setdefault("turn_start_time", time.time())
 if match.status == MatchStatus.ONGOING:
     elapsed = time.time() - st.session_state.turn_start_time
     if elapsed >= TURN_TIMER_SECONDS:
-        log_before = len(match.log)
         if st.session_state.vs_bot:
             auto_skip_turn(match, "a")
             bot_choose_plays(match, "b")
         end_turn(match)
         st.session_state.turn_start_time = time.time()
-        _fire_event_toasts(log_before)
         st.rerun()
 
 state = get_match_state(match)
@@ -1819,6 +1951,37 @@ with st.container(key="battle_header"):
             )
 
 if state["status"] != MatchStatus.ONGOING.value:
+    # Liquidación de la economía de la partida (Reto 1v1 o recompensa
+    # Competitivo/Cristal) — una sola vez por partida, de ahí el flag
+    # match_reward_settled (el script entero se re-ejecuta en cada rerun
+    # mientras se muestra el banner de victoria/derrota).
+    if not st.session_state.match_reward_settled:
+        active_challenge = st.session_state.get("active_challenge")
+        if active_challenge is not None:
+            payout = compute_challenge_payout(active_challenge["stake_kur"])
+            balance = connector.kur_balance(current_wallet_address)
+            if state["status"] == MatchStatus.PLAYER_A_WINS.value:
+                new_balance = balance + payout.payout_kur
+                st.success(f"🏆 ¡Ganaste el reto! +{payout.payout_kur:.2f} $KUR (comisión {payout.fee_kur:.2f} $KUR).")
+            elif state["status"] == MatchStatus.DRAW.value:
+                new_balance = balance + active_challenge["stake_kur"]
+                st.info("🤝 Reto empatado: se te devuelve tu apuesta.")
+            else:
+                new_balance = balance
+                st.error(f"💀 Perdiste el reto: -{active_challenge['stake_kur']:.0f} $KUR.")
+            connector.simulated_backend.seed_wallet(
+                current_wallet_address, connector.owned_token_ids(current_wallet_address), new_balance
+            )
+            st.session_state.active_challenge = None
+        elif st.session_state.get("match_economy_mode") == "competitive" and state["status"] == MatchStatus.PLAYER_A_WINS.value:
+            reward = roll_competitive_kur_reward()
+            balance = connector.kur_balance(current_wallet_address)
+            connector.simulated_backend.seed_wallet(
+                current_wallet_address, connector.owned_token_ids(current_wallet_address), balance + reward
+            )
+            st.success(f"💰 Recompensa de partida Cristal: +{reward:.2f} $KUR.")
+        st.session_state.match_reward_settled = True
+
     banner = {
         MatchStatus.PLAYER_A_WINS.value: f"🏆 ¡Gana {state['player_a']['name']}!",
         MatchStatus.PLAYER_B_WINS.value: f"🏆 ¡Gana {state['player_b']['name']}!",
@@ -1827,6 +1990,8 @@ if state["status"] != MatchStatus.ONGOING.value:
     st.success(banner)
     if st.button("🔄 Jugar otra partida", type="primary"):
         st.session_state.match = None
+        st.session_state.active_challenge = None
+        st.session_state.match_reward_settled = False
         st.rerun()
 
 def _format_log_entry(line: str, name_a: str, name_b: str) -> str:
@@ -1855,14 +2020,18 @@ def _format_log_entry(line: str, name_a: str, name_b: str) -> str:
     return f"<div class='log-entry {side_class}'>{side_icon} {action_icon}{html.escape(line)}</div>"
 
 
-# Feed de combate compacto (últimas 4 líneas, fijo justo sobre las cartas) —
-# complementa el registro completo (más abajo, colapsado) y los toasts.
+# Feed de combate compacto (solo el último evento, o los 2 más recientes),
+# en un contenedor de altura fija justo sobre las cartas para que NO empuje
+# la mano ni los botones de "Jugar" al acumularse líneas — el registro
+# completo (más abajo, colapsado) conserva el historial entero.
 if state["log"]:
+    recent_events = [line for line in state["log"] if not line.startswith("--- Turno")]
     recent_lines = "".join(
         _format_log_entry(line, state["player_a"]["name"], state["player_b"]["name"])
-        for line in reversed(state["log"][-4:])
+        for line in reversed(recent_events[-2:])
     )
-    st.markdown(f'<div class="combat-feed">{recent_lines}</div>', unsafe_allow_html=True)
+    if recent_lines:
+        st.markdown(f'<div class="combat-feed">{recent_lines}</div>', unsafe_allow_html=True)
 
 ZONE_LABELS = {"head": "🗣️ Cabeza", "torso": "🫁 Tronco", "legs": "🦵 Piernas"}
 
@@ -1931,7 +2100,6 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                     type="primary" if auto_resolve else "secondary",
                     disabled=not affordable,
                 ):
-                    log_before = len(match.log)
                     try:
                         play_card(match, player_key, card_dict["id"], Zone(zone))
                     except EngineError as e:
@@ -1941,7 +2109,6 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                             bot_choose_plays(match, "b")
                             end_turn(match)
                             st.session_state.turn_start_time = time.time()
-                        _fire_event_toasts(log_before)
                     st.rerun()
                 if not affordable:
                     st.caption("⚠️ Energía insuficiente")
@@ -1960,10 +2127,8 @@ if state["status"] == MatchStatus.ONGOING.value:
         render_hand("a", state["player_a"]["name"], auto_resolve=False)
         render_hand("b", state["player_b"]["name"], auto_resolve=False)
         if st.button("⏭️ Resolver turno", type="primary", width="stretch"):
-            log_before = len(match.log)
             end_turn(match)
             st.session_state.turn_start_time = time.time()
-            _fire_event_toasts(log_before)
             st.rerun()
 
 with st.expander("📜 Registro completo de la partida", expanded=False):

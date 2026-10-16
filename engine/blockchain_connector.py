@@ -33,6 +33,7 @@ Diseño desacoplado a propósito:
 from __future__ import annotations
 
 import hashlib
+import random
 from dataclasses import dataclass
 from typing import Optional
 
@@ -86,10 +87,38 @@ FREE_MODE_ELO_LOSS = -10
 FREE_MODE_KUR_REWARD = 0.0
 COMPETITIVE_MODE_ELO_WIN = 25
 COMPETITIVE_MODE_ELO_LOSS = -25
-COMPETITIVE_MODE_KUR_REWARD = 10.0
+# Recompensa de victoria en modo Competitivo/Cristal: rango pedido por el
+# equipo de pruebas (antes era un fijo de 10 KUR).
+COMPETITIVE_MODE_KUR_REWARD_MIN = 3.0
+COMPETITIVE_MODE_KUR_REWARD_MAX = 5.0
 # Comisión aplicada a la apuesta/entrada en KUR antes de la partida (no fijada
 # explícitamente por las reglas; placeholder razonable tipo "rake" de sala).
 MATCH_FEE_PCT = 0.05
+# Comisión de la sala sobre el pozo total de un Reto 1v1 directo (sección
+# "Retos Directos" pedida por el equipo de pruebas).
+CHALLENGE_FEE_PCT = 0.10
+
+
+def roll_competitive_kur_reward() -> float:
+    """Recompensa real (aleatoria) que se acredita al ganador de una partida
+    en modo Competitivo/Cristal, dentro del rango 3-5 $KUR pedido."""
+    return round(random.uniform(COMPETITIVE_MODE_KUR_REWARD_MIN, COMPETITIVE_MODE_KUR_REWARD_MAX), 2)
+
+
+@dataclass
+class ChallengePayout:
+    stake_kur: float   # lo que aporta cada jugador
+    pool_kur: float     # pozo total (ambas aportaciones)
+    fee_kur: float       # comisión de la sala (10% del pozo)
+    payout_kur: float   # lo que se lleva el ganador
+
+
+def compute_challenge_payout(stake_kur: float) -> ChallengePayout:
+    """Economía de un Reto 1v1: cada jugador aporta `stake_kur`, la sala se
+    queda CHALLENGE_FEE_PCT del pozo total y el ganador se lleva el resto."""
+    pool = stake_kur * 2
+    fee = round(pool * CHALLENGE_FEE_PCT, 6)
+    return ChallengePayout(stake_kur=stake_kur, pool_kur=pool, fee_kur=fee, payout_kur=round(pool - fee, 6))
 
 
 def derive_placeholder_rarity(token_id: int, supply: int = NFT_COLLECTION_SUPPLY) -> NFTRarity:
@@ -138,14 +167,16 @@ class MatchEconomy:
     pool_kur: float         # lo que realmente queda en juego tras la comisión
     win_elo: int
     loss_elo: int
-    win_kur_reward: float
+    win_kur_reward_min: float
+    win_kur_reward_max: float
 
 
 def compute_match_economy(mode: str, stake_kur: float = 0.0) -> MatchEconomy:
-    """Calcula comisión/apuesta antes de la partida y la recompensa de
-    victoria, según el modo (sección 4 de PVP_Rules). No mueve fondos — el
+    """Calcula comisión/apuesta antes de la partida y el rango de recompensa
+    de victoria, según el modo (sección 4 de PVP_Rules). No mueve fondos — el
     backend con custodia de claves es quien ejecuta la transferencia real
-    usando estos importes."""
+    usando estos importes (la recompensa real y aleatoria se decide al
+    terminar la partida con roll_competitive_kur_reward())."""
     if mode not in ("free", "competitive"):
         raise ValueError("mode debe ser 'free' o 'competitive'")
 
@@ -153,14 +184,14 @@ def compute_match_economy(mode: str, stake_kur: float = 0.0) -> MatchEconomy:
         return MatchEconomy(
             mode=mode, stake_kur=0.0, fee_kur=0.0, pool_kur=0.0,
             win_elo=FREE_MODE_ELO_WIN, loss_elo=FREE_MODE_ELO_LOSS,
-            win_kur_reward=FREE_MODE_KUR_REWARD,
+            win_kur_reward_min=FREE_MODE_KUR_REWARD, win_kur_reward_max=FREE_MODE_KUR_REWARD,
         )
 
     fee = round(stake_kur * MATCH_FEE_PCT, 6)
     return MatchEconomy(
         mode=mode, stake_kur=stake_kur, fee_kur=fee, pool_kur=round(stake_kur - fee, 6),
         win_elo=COMPETITIVE_MODE_ELO_WIN, loss_elo=COMPETITIVE_MODE_ELO_LOSS,
-        win_kur_reward=COMPETITIVE_MODE_KUR_REWARD,
+        win_kur_reward_min=COMPETITIVE_MODE_KUR_REWARD_MIN, win_kur_reward_max=COMPETITIVE_MODE_KUR_REWARD_MAX,
     )
 
 
