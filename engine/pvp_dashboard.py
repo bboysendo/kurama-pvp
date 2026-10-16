@@ -20,6 +20,7 @@ BSC real si el equipo quiere probarlo con web3 instalado.
 
 from __future__ import annotations
 
+import base64
 import html
 import json
 import random
@@ -81,6 +82,9 @@ from pvp_engine import (
 ENGINE_DIR = _ENGINE_DIR
 PVP_ROOT = _PVP_ROOT
 DATABASE_PATH = ENGINE_DIR / "cards_database.json"
+ESCENARIO_PATH = PVP_ROOT / "escenario.png"
+AVATAR_A_PATH = PVP_ROOT / "playerA.png"
+AVATAR_B_PATH = PVP_ROOT / "playerB.png"
 
 # Única fuente de verdad para las 4 secciones del panel — la navegación vive
 # exclusivamente en el menú superior (st.popover "☰ MENÚ DE NAVEGACIÓN", ver
@@ -96,6 +100,14 @@ PANEL_OPTIONS = [
 def load_catalog() -> list[dict]:
     with open(DATABASE_PATH, encoding="utf-8") as f:
         return json.load(f)
+
+
+@st.cache_data
+def _image_b64(path_str: str) -> str:
+    """Imagen como data URI — para incrustarla en CSS/HTML plano (arena de
+    combate) donde no vale un st.image (necesitamos <img>/background-image
+    dentro de un único bloque de markdown, no un widget aparte)."""
+    return base64.b64encode(Path(path_str).read_bytes()).decode("ascii")
 
 
 def card_image_path(card_dict: dict) -> Path | None:
@@ -136,6 +148,12 @@ def init_state() -> None:
     st.session_state.setdefault("active_challenge", None)
     st.session_state.setdefault("match_economy_mode", None)
     st.session_state.setdefault("match_reward_settled", False)
+    # Selección táctica de la ronda actual (puntos rojo/verde + carta elegida
+    # antes de "Confirmar Turno" — ver render_tactical_points/render_hand).
+    for _pk in ("a", "b"):
+        st.session_state.setdefault(f"sel_card_{_pk}", None)
+        st.session_state.setdefault(f"atk_zone_{_pk}", None)
+        st.session_state.setdefault(f"def_zone_{_pk}", None)
 
 
 def rarity_label(rarity: NFTRarity) -> str:
@@ -696,6 +714,17 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
 # compacto de NFT (izquierda) para que destaque como la acción principal
 # antes de empezar a jugar.
 # --------------------------------------------------------------------------- #
+def _reset_tactical_selection(player_key: str | None = None) -> None:
+    """Limpia la carta/zona de ataque/zona de defensa elegidas en la arena
+    (puntos tácticos) — tras arrancar partida, confirmar un turno o terminar
+    uno (la mano se renueva entera, así que cualquier card_id elegido deja de
+    existir). `player_key=None` limpia ambos jugadores a la vez."""
+    for pk in (player_key,) if player_key else ("a", "b"):
+        st.session_state[f"sel_card_{pk}"] = None
+        st.session_state[f"atk_zone_{pk}"] = None
+        st.session_state[f"def_zone_{pk}"] = None
+
+
 def _launch_match(
     connector: BlockchainConnector, wallet_address: str, pool_27: list[Card],
     name_b: str, hp_b: int | None = None,
@@ -718,6 +747,7 @@ def _launch_match(
     st.session_state["turn_start_time"] = time.time()
     st.session_state["match_economy_mode"] = st.session_state.match_mode
     st.session_state["match_reward_settled"] = False
+    _reset_tactical_selection()
 
 
 def render_new_match_button(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
@@ -1358,9 +1388,10 @@ st.markdown(
         color: rgba(255, 255, 255, 0.5);
         margin: 6px 0 2px;
     }
-    /* Resplandor en cartas jugables (coste <= energía disponible) y
-       atenuado en las que no se pueden pagar — ver el key dinámico
-       card_glow_playable_*/card_glow_locked_* en render_hand. */
+    /* Resplandor en cartas jugables (coste <= energía disponible), atenuado
+       en las que no se pueden pagar, y aro dorado en la carta ELEGIDA para
+       este turno — ver el key dinámico card_glow_playable_*/locked_*/sel_*
+       en render_hand. */
     [class*="st-key-card_glow_playable"] img {
         box-shadow: 0 0 12px rgba(0, 255, 136, 0.7);
         border: 1px solid #00ff88;
@@ -1369,28 +1400,10 @@ st.markdown(
     [class*="st-key-card_glow_locked"] {
         opacity: 0.7;
     }
-    /* Cabecera de combate (HP/energía/turno) más compacta, para que el
-       tablero entero quepa de un vistazo sin tanto scroll. */
-    [class*="st-key-battle_header"] [data-testid="stVerticalBlock"] {
-        gap: 0.5rem !important;
-    }
-    [class*="st-key-battle_header"] [data-testid="stHeading"] h3 {
-        font-size: 1rem !important;
-        margin: 0 !important;
-    }
-    [class*="st-key-battle_header"] [data-testid="stHeading"] h2 {
-        font-size: 1.05rem !important;
-        margin: 0 !important;
-    }
-    [class*="st-key-battle_header"] [data-testid="stProgress"] {
-        margin: 0.1rem 0 !important;
-    }
-    [class*="st-key-battle_header"] [data-testid="stProgressBarTrack"] {
-        height: 6px !important;
-    }
-    [class*="st-key-battle_header"] [data-testid="stCaptionContainer"] p {
-        font-size: 0.78rem !important;
-        line-height: 1.25em !important;
+    [class*="st-key-card_glow_sel"] img {
+        box-shadow: 0 0 16px rgba(255, 200, 0, 0.9);
+        border: 2px solid #ffc800;
+        border-radius: 8px;
     }
     /* Energía disponible: destacada y grande junto a la barra de vida de
        cada jugador (antes iba metida en una caption pequeña junto a otros
@@ -1664,56 +1677,12 @@ st.markdown(
     }
     /* Exclusivo para móvil: el escritorio se queda con el diseño original
        (fuera de esta media query no hay ningún override de estas reglas) —
-       marcador en una sola fila delgada, proporción 42/16/42 entre columnas
-       (en vez de la [5,1,5] por defecto, que en pantallas anchas ya se ve
-       bien) y mano de cartas en carrusel horizontal scrollable en vez de
-       apiladas, para que quepa de un vistazo.
+       mano de cartas en carrusel horizontal scrollable en vez de apiladas,
+       para que quepa de un vistazo.
        shortcut: max-width 768px no cubre móviles muy anchos en landscape
        (>768px, p.ej. algunos phablets); si hace falta, añadir aquí
        "and (max-height: 500px)" junto a un "(orientation: landscape)". */
     @media (max-width: 768px) {
-        [class*="st-key-battle_header"] [data-testid="stHorizontalBlock"] {
-            flex-direction: row !important;
-            flex-wrap: nowrap !important;
-            gap: 0.3rem !important;
-        }
-        [class*="st-key-battle_header"] [data-testid="stColumn"] {
-            min-width: 0 !important;
-            padding: 0 !important;
-        }
-        [class*="st-key-battle_header"] [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(1),
-        [class*="st-key-battle_header"] [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(3) {
-            flex: 0 0 42% !important;
-            width: 42% !important;
-        }
-        [class*="st-key-battle_header"] [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) {
-            flex: 0 0 16% !important;
-            width: 16% !important;
-        }
-        [class*="st-key-battle_header"] [data-testid="stVerticalBlock"] {
-            gap: 0.1rem !important;
-        }
-        [class*="st-key-battle_header"] [data-testid="stHeading"] h3 {
-            font-size: 0.75rem !important;
-        }
-        [class*="st-key-battle_header"] h2 {
-            font-size: 1.1rem !important;
-            margin: 0 !important;
-        }
-        [class*="st-key-battle_header"] [data-testid="stProgressBarTrack"] {
-            height: 4px !important;
-        }
-        [class*="st-key-battle_header"] [data-testid="stProgress"] p {
-            font-size: 0.8rem !important;
-        }
-        [class*="st-key-battle_header"] .energy-display {
-            font-size: 0.88rem !important;
-            margin: 0.1rem 0 0.15rem !important;
-        }
-        [class*="st-key-battle_header"] [data-testid="stCaptionContainer"] p {
-            font-size: 0.6rem !important;
-            line-height: 1.1em !important;
-        }
         [class*="st-key-battle_hand"] [data-testid="stHorizontalBlock"] {
             flex-wrap: nowrap !important;
             overflow-x: auto !important;
@@ -1753,6 +1722,93 @@ st.markdown(
             font-size: 0.6rem !important;
         }
     }
+
+    /* Arena de combate (render_arena): escenario.png de fondo con las
+       barras de HP/energía y el turno superpuestos arriba (gradiente oscuro
+       para que se lean sobre cualquier parte de la imagen) y el avatar de
+       cada luchador en los marcos laterales del escenario. Todo este bloque
+       es HTML plano no interactivo — los puntos tácticos clicables van
+       aparte, justo debajo, como botones reales de Streamlit (ver
+       render_tactical_points). */
+    .arena-bg {
+        position: relative;
+        width: 100%;
+        aspect-ratio: 2042 / 770;
+        background-size: cover;
+        background-position: center;
+        border-radius: 18px;
+        overflow: hidden;
+        box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 12px 30px rgba(0,0,0,0.5);
+        margin-bottom: 0.6rem;
+    }
+    .arena-topbar {
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 0.5rem;
+        padding: 0.6rem 0.8rem;
+        background: linear-gradient(to bottom, rgba(0,0,0,0.78), rgba(0,0,0,0));
+    }
+    .arena-hp { flex: 1 1 38%; min-width: 0; }
+    .arena-hp-right { text-align: right; }
+    .arena-hp-name {
+        color: #fff; font-weight: 700; font-size: 0.85rem;
+        text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .arena-hp-track {
+        position: relative; height: 14px; border-radius: 7px; overflow: hidden;
+        background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.25); margin-top: 2px;
+    }
+    .arena-hp-fill {
+        height: 100%; background: linear-gradient(90deg, #ff4d4d, #ffb84d);
+        transition: width 0.3s ease;
+    }
+    .arena-hp-right .arena-hp-fill { float: right; }
+    .arena-hp-text {
+        position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+        font-size: 0.65rem; font-weight: 700; color: #fff; text-shadow: 0 1px 2px #000;
+    }
+    .arena-energy { color: #ffe066; font-size: 0.72rem; margin-top: 1px; text-shadow: 0 1px 2px #000; }
+    .arena-turn {
+        flex: 0 0 auto; color: #fff; font-weight: 800; text-align: center; font-size: 0.85rem;
+        text-shadow: 0 1px 3px rgba(0,0,0,0.9); white-space: nowrap;
+    }
+    .arena-timer { font-size: 0.78rem; color: #9be7ff; }
+    .arena-portal {
+        position: absolute; top: 10%; height: 60%; object-fit: contain;
+        filter: drop-shadow(0 6px 10px rgba(0,0,0,0.6));
+        border-radius: 10px;
+        border: 2px solid rgba(255,255,255,0.15);
+    }
+    .arena-portal-left { left: 1%; }
+    .arena-portal-right { right: 1%; transform: scaleX(-1); }
+
+    /* Puntos tácticos (botones reales, estilo Waves Ducks): rojo = zona de
+       ataque al rival, verde = zona propia a defender. El punto activo se
+       resalta con fondo sólido; el resto queda en contorno tenue. */
+    [class*="st-key-tactical_atk"] .stButton > button,
+    [class*="st-key-tactical_def"] .stButton > button {
+        border-radius: 999px !important;
+        border: 2px solid rgba(255,255,255,0.25) !important;
+        background: rgba(0,0,0,0.35) !important;
+    }
+    [class*="st-key-tactical_atk"] .stButton > button[kind="primary"] {
+        background: #e5484d !important; border-color: #ff8a8a !important;
+        box-shadow: 0 0 14px rgba(229,72,77,0.8) !important;
+    }
+    [class*="st-key-tactical_def"] .stButton > button[kind="primary"] {
+        background: #2fb344 !important; border-color: #8cffa0 !important;
+        box-shadow: 0 0 14px rgba(47,179,68,0.8) !important;
+    }
+    .tactical-label {
+        text-align: center; font-weight: 700; font-size: 0.8rem; margin-bottom: 0.2rem;
+    }
+    .tactical-label-atk { color: #ff7a7a; }
+    .tactical-label-def { color: #6bdc7f; }
+    .confirm-turn-hint { text-align: center; opacity: 0.75; font-size: 0.82rem; margin: 0.2rem 0 0.4rem; }
 
     /* Elementos flotantes nativos de Streamlit (menú hamburguesa, footer
        "Made with Streamlit", botón "Manage app"/deploy y el avatar de
@@ -1893,62 +1949,87 @@ if st.session_state.pop("scroll_to_battle", False):
         </script>""",
         height=0,
     )
-with st.container(key="battle_header"):
-    col_a, col_vs, col_b = st.columns([5, 1, 5])
-    for col, p, key in ((col_a, state["player_a"], "a"), (col_b, state["player_b"], "b")):
-        with col:
-            st.subheader(p["name"])
-            st.progress(max(0.0, p["hp"] / p["max_hp"]), text=f"{p['hp']} / {p['max_hp']} HP")
-            remaining_energy = min(MAX_ENERGY_SPEND_PER_TURN, p["energy"]) - p["energy_spent_this_turn"]
-            st.markdown(
-                f"<div class='energy-display'>⚡ Energía: {remaining_energy} / {p['energy']}</div>",
-                unsafe_allow_html=True,
-            )
-            st.caption(
-                f"Gastado este turno: {p['energy_spent_this_turn']} (tope {MAX_ENERGY_SPEND_PER_TURN}) · "
-                f"Mazo: {p['deck_remaining']} · Descarte: {p['discard_count']}"
-            )
-            _render_zone_badges(p)
-    with col_vs:
-        st.markdown(f"<h2 style='text-align:center'>Turno {state['turn_number']}</h2>", unsafe_allow_html=True)
-        if state["status"] == MatchStatus.ONGOING.value:
-            remaining = max(0.0, TURN_TIMER_SECONDS - (time.time() - st.session_state.turn_start_time))
-            pct = (remaining / TURN_TIMER_SECONDS) * 100
-            st.markdown(
-                f"<div class='turn-timer-wrap'>"
-                f"<div class='turn-timer-track'><div class='turn-timer-fill' id='turn-timer-fill' "
-                f"style='width:{pct:.1f}%'></div></div>"
-                f"<div class='turn-timer-label'>⏱️ <span id='turn-timer-seconds'>{int(remaining)}</span>s</div>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-            with st.container(key="turn_timeout_trigger"):
-                st.button("⏱", key="turn_timeout_btn")
-            components.html(
-                f"""<script>
-                (function () {{
-                    const totalMs = {TURN_TIMER_SECONDS * 1000};
-                    const remainingMs = {remaining * 1000:.0f};
-                    const startedAt = Date.now();
-                    const fill = window.parent.document.getElementById('turn-timer-fill');
-                    const label = window.parent.document.getElementById('turn-timer-seconds');
-                    const btn = window.parent.document.querySelector(
-                        '[class*="st-key-turn_timeout_trigger"] button'
-                    );
-                    const iv = setInterval(function () {{
-                        const left = Math.max(0, remainingMs - (Date.now() - startedAt));
-                        const pct = Math.max(0, Math.min(100, (left / totalMs) * 100));
-                        if (fill) fill.style.width = pct + '%';
-                        if (label) label.textContent = Math.ceil(left / 1000);
-                        if (left <= 0) {{
-                            clearInterval(iv);
-                            if (btn) btn.click();
-                        }}
-                    }}, 250);
-                }})();
-                </script>""",
-                height=0,
-            )
+def render_arena(state: dict) -> None:
+    """Arena de combate: escenario.png de fondo con las barras de HP/Energía
+    y el contador de ronda superpuestos arriba, y el avatar (Maestro) de
+    cada luchador en los marcos laterales del escenario — un único bloque
+    HTML no interactivo (los puntos tácticos clicables van aparte, justo
+    debajo, como botones reales de Streamlit — ver render_tactical_points)."""
+    bg = _image_b64(str(ESCENARIO_PATH))
+    av_a = _image_b64(str(AVATAR_A_PATH))
+    av_b = _image_b64(str(AVATAR_B_PATH))
+    pa, pb = state["player_a"], state["player_b"]
+
+    def hp_bar(p: dict, align: str) -> str:
+        pct = max(0.0, min(1.0, p["hp"] / p["max_hp"])) * 100
+        energy_left = min(MAX_ENERGY_SPEND_PER_TURN, p["energy"]) - p["energy_spent_this_turn"]
+        return (
+            f"<div class='arena-hp arena-hp-{align}'>"
+            f"<div class='arena-hp-name'>{html.escape(p['name'])}</div>"
+            f"<div class='arena-hp-track'><div class='arena-hp-fill' style='width:{pct:.1f}%'></div>"
+            f"<span class='arena-hp-text'>{p['hp']}/{p['max_hp']}</span></div>"
+            f"<div class='arena-energy'>⚡ {energy_left}/{p['energy']}</div>"
+            f"</div>"
+        )
+
+    if state["status"] == MatchStatus.ONGOING.value:
+        remaining = max(0.0, TURN_TIMER_SECONDS - (time.time() - st.session_state.turn_start_time))
+        timer_html = (
+            f"<div class='arena-timer'>⏱️ <span id='arena-timer-seconds'>{int(remaining)}</span>s</div>"
+        )
+    else:
+        remaining = None
+        timer_html = ""
+
+    st.markdown(
+        f"""
+        <div class="arena-bg" style="background-image:url(data:image/png;base64,{bg});">
+            <div class="arena-topbar">
+                {hp_bar(pa, 'left')}
+                <div class="arena-turn">Ronda {state['turn_number']}{timer_html}</div>
+                {hp_bar(pb, 'right')}
+            </div>
+            <img class="arena-portal arena-portal-left" src="data:image/png;base64,{av_a}">
+            <img class="arena-portal arena-portal-right" src="data:image/png;base64,{av_b}">
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if remaining is not None:
+        with st.container(key="turn_timeout_trigger"):
+            st.button("⏱", key="turn_timeout_btn")
+        components.html(
+            f"""<script>
+            (function () {{
+                const totalMs = {TURN_TIMER_SECONDS * 1000};
+                const remainingMs = {remaining * 1000:.0f};
+                const startedAt = Date.now();
+                const label = window.parent.document.getElementById('arena-timer-seconds');
+                const btn = window.parent.document.querySelector(
+                    '[class*="st-key-turn_timeout_trigger"] button'
+                );
+                const iv = setInterval(function () {{
+                    const left = Math.max(0, remainingMs - (Date.now() - startedAt));
+                    if (label) label.textContent = Math.ceil(left / 1000);
+                    if (left <= 0) {{
+                        clearInterval(iv);
+                        if (btn) btn.click();
+                    }}
+                }}, 250);
+            }})();
+            </script>""",
+            height=0,
+        )
+
+    badge_a, badge_b = st.columns(2)
+    with badge_a:
+        _render_zone_badges(pa)
+    with badge_b:
+        _render_zone_badges(pb)
+
+
+render_arena(state)
 
 if state["status"] != MatchStatus.ONGOING.value:
     # Liquidación de la economía de la partida (Reto 1v1 o recompensa
@@ -2033,17 +2114,61 @@ if state["log"]:
     if recent_lines:
         st.markdown(f'<div class="combat-feed">{recent_lines}</div>', unsafe_allow_html=True)
 
-ZONE_LABELS = {"head": "🗣️ Cabeza", "torso": "🫁 Tronco", "legs": "🦵 Piernas"}
+ZONE_ORDER = (Zone.HEAD, Zone.TORSO, Zone.LEGS)
+ZONE_ICON = {"head": "🗣️", "torso": "👕", "legs": "🦵"}
+ZONE_NAME = {"head": "Cabeza", "torso": "Tronco", "legs": "Piernas"}
+
+
+def render_tactical_points(player_key: str) -> None:
+    """Puntos tácticos estilo Waves Ducks: 3 puntos verdes (zona PROPIA a
+    defender) y 3 rojos (zona del RIVAL a atacar), un clic cada uno —
+    sustituyen al desplegable de Zona que iba debajo de cada carta."""
+    col_def, col_atk = st.columns(2)
+    for col, label_cls, label_txt, state_key, prefix in (
+        (col_def, "tactical-label-def", "🟢 Defender", f"def_zone_{player_key}", "def"),
+        (col_atk, "tactical-label-atk", "🔴 Atacar", f"atk_zone_{player_key}", "atk"),
+    ):
+        with col:
+            st.markdown(f"<div class='tactical-label {label_cls}'>{label_txt}</div>", unsafe_allow_html=True)
+            with st.container(key=f"tactical_{prefix}_{player_key}"):
+                for z in ZONE_ORDER:
+                    selected = st.session_state[state_key] == z.value
+                    if st.button(
+                        f"{ZONE_ICON[z.value]} {ZONE_NAME[z.value]}",
+                        key=f"{prefix}_pt_{player_key}_{z.value}",
+                        type="primary" if selected else "secondary",
+                        width="stretch",
+                    ):
+                        st.session_state[state_key] = z.value
+                        st.rerun()
+
+
+def _describe_tactical_result(attacker, defender, atk_zone: Zone) -> str:
+    """Mensaje legible para el panel de Información, comparando la zona de
+    ataque elegida contra las zonas que el rival ya tiene defendidas este
+    turno (sus staged_plays, ya calculados vía bot_choose_plays antes de
+    llamar aquí). El daño REAL (piercing/potion/counter incluidos) lo calcula
+    igualmente pvp_engine.end_turn() justo después — esto es solo la lectura
+    rápida estilo Waves Ducks que pidió el equipo ("impacto"/"bloqueado")."""
+    defended = {sp.defense_zone for sp in defender.staged_plays}
+    atk_label = ZONE_NAME[atk_zone.value]
+    if atk_zone in defended:
+        return f"🎯 Atacaste {atk_label}: el rival defendía esa zona → ¡Ataque bloqueado!"
+    if defended:
+        other = ZONE_NAME[next(iter(defended)).value]
+        return f"🎯 Atacaste {atk_label}, el rival defendía {other} → ¡Impacto directo!"
+    return f"🎯 Atacaste {atk_label} sin encontrar defensa → ¡Impacto directo!"
 
 
 def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None:
-    """auto_resolve=True (modo Vs. Bot): cada "Jugar" ejecuta la jugada, hace
-    responder al Bot y resuelve el turno en un solo paso — sin esto, cada
-    carta se queda solo "preparada" hasta pulsar Resolver turno (modo Hotseat,
-    donde sí hace falta que ambos jugadores decidan antes de aplicar el turno
-    a la vez, sección 2.4 de PVP_Rules). Nombre y habilidad reservan siempre
-    la misma altura (vía CSS/placeholder) para que Zona y Jugar queden
-    alineados en la misma línea entre cartas, tengan o no habilidad especial."""
+    """Mano de 3 cartas: solo imagen, coste y tooltip de efecto al pasar el
+    cursor (ℹ️ Info) — clicar una carta la SELECCIONA (no la juega al
+    instante); hace falta elegir también zona de ataque/defensa en
+    render_tactical_points() y pulsar "✅ Confirmar Turno" para resolver.
+    auto_resolve=True (modo Vs. Bot): confirmar hace responder al Bot y
+    resuelve el turno entero en un solo paso; en Hotseat la jugada solo queda
+    preparada hasta pulsar "⏭️ Resolver turno" (ambos jugadores deciden antes
+    de aplicar el turno a la vez, sección 2.4 de PVP_Rules)."""
     p = state[f"player_{player_key}"]
     remaining_energy = min(MAX_ENERGY_SPEND_PER_TURN, p["energy"]) - p["energy_spent_this_turn"]
     energy_css_class = "energy-low" if remaining_energy <= 0 else ""
@@ -2056,11 +2181,20 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
     if not p["hand"]:
         st.caption("Sin cartas en mano.")
         return
+
+    sel_card_key = f"sel_card_{player_key}"
+    if st.session_state[sel_card_key] not in {c["id"] for c in p["hand"]}:
+        st.session_state[sel_card_key] = None
+
     with st.container(key=f"battle_hand_{player_key}"):
         cols = st.columns(len(p["hand"]))
         for col, card_dict in zip(cols, p["hand"]):
             affordable = card_dict["cost_energy"] <= remaining_energy
-            glow_key = f"card_glow_{'playable' if affordable else 'locked'}_{player_key}_{card_dict['id']}"
+            selected = st.session_state[sel_card_key] == card_dict["id"]
+            glow_key = (
+                f"card_glow_{'sel' if selected else ('playable' if affordable else 'locked')}"
+                f"_{player_key}_{card_dict['id']}"
+            )
             with col, st.container(key=glow_key):
                 img = card_image_path(card_dict)
                 if img:
@@ -2085,37 +2219,53 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                     "</div></div>",
                     unsafe_allow_html=True,
                 )
-                zone = st.selectbox(
-                    "Zona",
-                    [z.value for z in Zone],
-                    key=f"zone_{player_key}_{card_dict['id']}",
-                    format_func=lambda z: ZONE_LABELS.get(z, z),
-                    label_visibility="collapsed",
-                )
-                label_btn = "⚔️ Jugar" if auto_resolve else "Jugar"
+                btn_label = "✅ Elegida" if selected else "Seleccionar"
                 if st.button(
-                    label_btn,
-                    key=f"play_{player_key}_{card_dict['id']}",
+                    btn_label,
+                    key=f"select_{player_key}_{card_dict['id']}",
                     width="stretch",
-                    type="primary" if auto_resolve else "secondary",
+                    type="primary" if selected else "secondary",
                     disabled=not affordable,
                 ):
-                    try:
-                        play_card(match, player_key, card_dict["id"], Zone(zone))
-                    except EngineError as e:
-                        st.error(str(e))
-                    else:
-                        if auto_resolve:
-                            bot_choose_plays(match, "b")
-                            end_turn(match)
-                            st.session_state.turn_start_time = time.time()
+                    st.session_state[sel_card_key] = None if selected else card_dict["id"]
                     st.rerun()
                 if not affordable:
                     st.caption("⚠️ Energía insuficiente")
 
+    render_tactical_points(player_key)
+
+    sel_card_id = st.session_state[sel_card_key]
+    atk_zone_val = st.session_state[f"atk_zone_{player_key}"]
+    def_zone_val = st.session_state[f"def_zone_{player_key}"]
+    ready = sel_card_id is not None and atk_zone_val is not None and def_zone_val is not None
+    if not ready:
+        st.markdown(
+            "<div class='confirm-turn-hint'>Elige una carta y las zonas de ataque/defensa para confirmar.</div>",
+            unsafe_allow_html=True,
+        )
+    if st.button(
+        "✅ Confirmar Turno", key=f"confirm_turn_{player_key}",
+        type="primary", width="stretch", disabled=not ready,
+    ):
+        try:
+            play_card(match, player_key, sel_card_id, Zone(atk_zone_val), defense_zone=Zone(def_zone_val))
+        except EngineError as e:
+            st.error(str(e))
+        else:
+            if auto_resolve:
+                bot_choose_plays(match, "b")
+                attacker = match.player_a if player_key == "a" else match.player_b
+                defender = match.player_b if player_key == "a" else match.player_a
+                match.log.append(_describe_tactical_result(attacker, defender, Zone(atk_zone_val)))
+                end_turn(match)
+                st.session_state.turn_start_time = time.time()
+            _reset_tactical_selection(player_key)
+        st.rerun()
+
     if p["staged_plays"]:
         staged_txt = ", ".join(
-            f"{sp['card']['name']} → {sp['zone']}" for sp in p["staged_plays"]
+            f"{sp['card']['name']} → ataca {sp['zone']} / defiende {sp['defense_zone']}"
+            for sp in p["staged_plays"]
         )
         st.caption(f"Jugadas preparadas este turno: {staged_txt}")
 

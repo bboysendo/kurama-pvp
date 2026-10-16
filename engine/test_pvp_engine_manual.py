@@ -142,4 +142,18 @@ s = get_match_state(m)
 assert s["status"] == "player_a_wins", s["status"]
 print("victory condition OK, status =", s["status"])
 
+# --- Decoupled attack/defense zone (Waves Ducks style): a card can shield a
+# DIFFERENT zone than the one it attacks. ---
+deckA = [mk("a_split", 2, 3)] * 15
+deckB = [mk("b_split", 2, 0)] * 15
+m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=11)
+# A attacks HEAD but defends LEGS; B attacks LEGS -> A's LEGS shield (3) blocks it.
+play_card(m, "a", "a_split", Zone.HEAD, defense_zone=Zone.LEGS)
+play_card(m, "b", "b_split", Zone.LEGS)
+end_turn(m)
+s = get_match_state(m)
+assert s["player_b"]["hp"] == 48, s["player_b"]["hp"]  # A's 2 atk on HEAD, B unshielded there
+assert s["player_a"]["hp"] == 50, s["player_a"]["hp"]  # B's 2 atk on LEGS fully blocked by A's 3 def there
+print("decoupled attack/defense zone OK, A hp =", s["player_a"]["hp"], "B hp =", s["player_b"]["hp"])
+
 print("\nALL ENGINE ASSERTIONS PASSED")

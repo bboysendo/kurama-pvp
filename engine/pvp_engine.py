@@ -76,7 +76,8 @@ class EngineError(ValueError):
 @dataclass
 class StagedPlay:
     card: Card
-    zone: Zone
+    zone: Zone            # zona de ATAQUE (dónde pega el ATK de la carta)
+    defense_zone: Zone    # zona de DEFENSA (dónde protege el DEF de la carta) — Waves Ducks: puede diferir de `zone`
 
 
 @dataclass
@@ -157,7 +158,9 @@ def _get_player(match: MatchState, player: str) -> PlayerState:
     raise EngineError("player debe ser 'a' o 'b'")
 
 
-def play_card(match: MatchState, player: str, card_id: str, zone: Zone) -> MatchState:
+def play_card(
+    match: MatchState, player: str, card_id: str, zone: Zone, defense_zone: Optional[Zone] = None
+) -> MatchState:
     if match.status != MatchStatus.ONGOING:
         raise EngineError("La partida ya ha terminado.")
     p = _get_player(match, player)
@@ -174,9 +177,16 @@ def play_card(match: MatchState, player: str, card_id: str, zone: Zone) -> Match
     if spent + card.cost_energy > p.energy:
         raise EngineError(f"Energía insuficiente: tienes {p.energy}, ya comprometidos {spent}.")
 
+    zone = Zone(zone)
+    defense_zone = Zone(defense_zone) if defense_zone is not None else zone
     p.hand.remove(card)
-    p.staged_plays.append(StagedPlay(card=card, zone=Zone(zone)))
-    match.log.append(f"{p.name} juega {card.name} ({card.atk}/{card.defense}) en {Zone(zone).value}.")
+    p.staged_plays.append(StagedPlay(card=card, zone=zone, defense_zone=defense_zone))
+    if defense_zone == zone:
+        match.log.append(f"{p.name} juega {card.name} ({card.atk}/{card.defense}) en {zone.value}.")
+    else:
+        match.log.append(
+            f"{p.name} juega {card.name} atacando {zone.value} y defendiendo {defense_zone.value}."
+        )
     return match
 
 
@@ -200,16 +210,16 @@ def _build_zone_maps(player: PlayerState) -> _ZoneMaps:
     potion_zone, potion_card = None, None
 
     for staged in player.staged_plays:
-        card, zone = staged.card, staged.zone
+        card, zone, def_zone = staged.card, staged.zone, staged.defense_zone
         if card.ability == Ability.HEAL_POTION:
-            potion_zone, potion_card = zone, card
+            potion_zone, potion_card = def_zone, card
             continue
         attack[zone] += card.atk
-        shield[zone] += card.defense
+        shield[def_zone] += card.defense
         if card.ability == Ability.PIERCING:
             piercing_zones.add(zone)
         if card.ability == Ability.COUNTER:
-            counter_damage[zone] += card.counter_damage
+            counter_damage[def_zone] += card.counter_damage
         if card.atk == 3 and card.defense == 0:
             heavy_attack_zones.add(zone)
 
@@ -337,7 +347,8 @@ def bot_choose_plays(match: MatchState, player: str) -> None:
         if spent + card.cost_energy > min(MAX_ENERGY_SPEND_PER_TURN, p.energy):
             continue
         zone = rng.choice(list(Zone))
-        play_card(match, player, card.id, zone)
+        defense_zone = rng.choice(list(Zone))
+        play_card(match, player, card.id, zone, defense_zone=defense_zone)
 
 
 def get_match_state(match: MatchState) -> dict:
@@ -349,7 +360,10 @@ def get_match_state(match: MatchState) -> dict:
             "energy": p.energy,
             "energy_spent_this_turn": p.energy_spent_this_turn,
             "hand": [c.to_dict() for c in p.hand],
-            "staged_plays": [{"card": sp.card.to_dict(), "zone": sp.zone.value} for sp in p.staged_plays],
+            "staged_plays": [
+                {"card": sp.card.to_dict(), "zone": sp.zone.value, "defense_zone": sp.defense_zone.value}
+                for sp in p.staged_plays
+            ],
             "deck_remaining": len(p.deck),
             "discard_count": len(p.discard),
             "zones_damaged": sorted(z.value for z in p.zones_damaged),
