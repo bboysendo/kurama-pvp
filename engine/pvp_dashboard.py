@@ -1862,7 +1862,6 @@ st.markdown(
     }
     .tactical-label-atk { color: #ff7a7a; }
     .tactical-label-def { color: #6bdc7f; }
-    .confirm-turn-hint { text-align: center; opacity: 0.75; font-size: 0.82rem; margin: 0.2rem 0 0.4rem; }
 
     /* Contenedor de la arena: ancho 100% adaptativo + alto fijado por
        padding-top en % (la técnica clásica "responsive aspect ratio box",
@@ -2552,11 +2551,6 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
             and (not needs_atk or atk_zone_val is not None)
             and (not needs_def or def_zone_val is not None)
         )
-        if not ready:
-            st.markdown(
-                "<div class='confirm-turn-hint'>Elige una carta y las zonas de ataque/defensa que necesite.</div>",
-                unsafe_allow_html=True,
-            )
         if st.button(
             "✅ Pasar Turno", key=f"confirm_turn_{player_key}",
             type="primary", width="stretch", disabled=not ready,
