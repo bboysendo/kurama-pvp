@@ -1269,29 +1269,30 @@ st.markdown(
         justify-content: space-between;
         height: 100%;
     }
-    /* Mano flotante (battle_hand_overlay_*, ver render_hand/render_arena):
-       sin botón "Seleccionar" visible — clicar la carta entera (imagen +
-       nombre + stats) la selecciona. El <button> real sigue existiendo
+    /* Mano de cartas (battle_hand_*/battle_hand_overlay_*, ver
+       render_hand/render_arena): sin botón "Seleccionar" visible — clicar
+       la carta entera (imagen + nombre + stats) la selecciona, en los 2
+       modos (flotante Vs.Bot e Hotseat). El <button> real sigue existiendo
        (misma key/lógica de siempre) pero se estira invisible sobre toda la
        carta (position:absolute;inset:0) y se vuelve transparente más abajo;
        el trigger "ℹ️ Info" tiene z-index más alto (150/200, más arriba en
        este archivo) así que sigue recibiendo el click/hover por encima. */
-    [class*="st-key-battle_hand_overlay"] [class*="st-key-card_glow_playable"],
-    [class*="st-key-battle_hand_overlay"] [class*="st-key-card_glow_locked"],
-    [class*="st-key-battle_hand_overlay"] [class*="st-key-card_glow_sel"] {
+    [class*="st-key-battle_hand"] [class*="st-key-card_glow_playable"],
+    [class*="st-key-battle_hand"] [class*="st-key-card_glow_locked"],
+    [class*="st-key-battle_hand"] [class*="st-key-card_glow_sel"] {
         position: relative;
     }
-    [class*="st-key-battle_hand_overlay"] [class*="st-key-select_"] {
+    [class*="st-key-battle_hand"] [class*="st-key-select_"] {
         position: absolute !important;
         inset: 0 !important;
         z-index: 1;
     }
-    [class*="st-key-battle_hand_overlay"] [class*="st-key-select_"] .stButton,
-    [class*="st-key-battle_hand_overlay"] [class*="st-key-select_"] .stButton > button {
+    [class*="st-key-battle_hand"] [class*="st-key-select_"] .stButton,
+    [class*="st-key-battle_hand"] [class*="st-key-select_"] .stButton > button {
         width: 100% !important;
         height: 100% !important;
     }
-    [class*="st-key-battle_hand_overlay"] [class*="st-key-select_"] .stButton > button {
+    [class*="st-key-battle_hand"] [class*="st-key-select_"] .stButton > button {
         background: transparent !important;
         border: none !important;
         box-shadow: none !important;
@@ -1482,12 +1483,22 @@ st.markdown(
     /* Hover pedido específicamente para las cartas de la mano: agrandar +
        elevar (no solo zoom) para ver arte y texto completos por encima de
        las cartas vecinas — pisa el transform/transition genéricos de arriba
-       solo para battle_hand (misma especificidad, declarado después). */
+       solo para battle_hand (misma especificidad, declarado después).
+       Dispara con :hover en el CONTENEDOR (card_glow_*), no en la propia
+       <img>: el botón "select_" invisible (ver arriba) queda por encima de
+       toda la carta con su propio z-index, así que es él quien recibe el
+       :hover del ratón — pero como es descendiente del mismo contenedor,
+       :hover sigue "subiendo" hasta ese contenedor y desde ahí sí llega a
+       la imagen hermana. Un selector `img:hover` directo nunca dispararía
+       aquí (el ratón nunca toca la <img> en sí, toca el botón de encima). */
     [class*="st-key-battle_hand"] [data-testid="stImage"] img {
         transition: all 0.2s ease;
     }
-    [class*="st-key-battle_hand"] [data-testid="stImage"] img:hover {
-        transform: scale(1.25) translateY(-10px);
+    [class*="st-key-battle_hand"] [class*="st-key-card_glow_playable"]:hover [data-testid="stImage"] img,
+    [class*="st-key-battle_hand"] [class*="st-key-card_glow_locked"]:hover [data-testid="stImage"] img,
+    [class*="st-key-battle_hand"] [class*="st-key-card_glow_sel"]:hover [data-testid="stImage"] img {
+        transform: scale(1.25) translateY(-12px);
+        position: relative;
         z-index: 100;
     }
     .combat-feed {
