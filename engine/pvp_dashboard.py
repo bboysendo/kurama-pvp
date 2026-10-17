@@ -1319,10 +1319,10 @@ st.markdown(
     .card-info-panel {
         position: absolute;
         z-index: 200;
-        top: 100%;
+        bottom: 100%;
         left: 50%;
         transform: translateX(-50%);
-        margin-top: 0.3rem;
+        margin-bottom: 0.3rem;
         width: max-content;
         max-width: min(260px, 85vw);
         padding: 0.5rem 0.65rem;
@@ -2481,15 +2481,21 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                 f"_{player_key}_{card_dict['id']}"
             )
             with col, st.container(key=glow_key):
-                img = card_image_path(card_dict)
-                if img:
-                    st.image(str(img), width="stretch")
                 # Sin letreros fijos (nombre/ATK-DEF/coste/habilidad/Info):
                 # todo vive en este tooltip, revelado solo al pasar el
                 # ratón por la carta (ver el <style> aparte, más arriba,
                 # que activa .card-info-panel con :hover en el contenedor
-                # card_glow_*) — libera alto vertical para que "Resolver
-                # turno" quepa sin scroll pese a las cartas más grandes.
+                # card_glow_*) — libera alto vertical para que "Pasar Turno"
+                # quepa sin scroll pese a las cartas más grandes. Va ANTES
+                # que st.image a propósito: Streamlit envuelve cada
+                # st.markdown en su propio div position:relative, y ese
+                # envoltorio (altura ~0, el contenido real es
+                # position:absolute) es el ancestro posicionado más cercano
+                # para .card-info-panel — colocándolo primero en el flujo
+                # flex (arriba del todo, antes de la imagen) el tooltip con
+                # bottom:100% sube por encima de TODA la carta en vez de
+                # quedar anclado a mitad/abajo (donde caería si el <div>
+                # fuese el 2º hijo, entre imagen y botón).
                 ability = card_dict.get("ability")
                 ability_line = f"<div>✨ {html.escape(ability)}</div>" if ability and ability != "none" else ""
                 desc_html = (
@@ -2508,6 +2514,9 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                     "</div>",
                     unsafe_allow_html=True,
                 )
+                img = card_image_path(card_dict)
+                if img:
+                    st.image(str(img), width="stretch")
                 btn_label = "✅ Elegida" if selected else "Seleccionar"
                 if st.button(
                     btn_label,
@@ -2521,60 +2530,65 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                 if not affordable:
                     st.caption("⚠️ Energía insuficiente")
 
-    if not auto_resolve:
-        # En Vs. Bot los puntos ya están superpuestos sobre la arena (ver
-        # render_arena -> render_tactical_points(overlay=True)); en Hotseat
-        # no hay una única imagen que superponer para los 2 jugadores a la
-        # vez, así que cada uno tiene su fila de botones aquí debajo.
-        render_tactical_points(player_key)
+        # El resto del flujo (zonas + "Pasar Turno") vive DENTRO del mismo
+        # contenedor que las 3 cartas (hand_container_key), justo debajo —
+        # un solo bloque compacto (en Vs. Bot, el panel flotante sobre el
+        # escenario) en vez de la barra naranja gigante aparte de antes,
+        # que obligaba a hacer scroll para llegar a ella.
+        if not auto_resolve:
+            # En Vs. Bot los puntos ya están superpuestos sobre la arena (ver
+            # render_arena -> render_tactical_points(overlay=True)); en
+            # Hotseat no hay una única imagen que superponer para los 2
+            # jugadores a la vez, así que cada uno tiene su fila aquí.
+            render_tactical_points(player_key)
 
-    sel_card_id = st.session_state[sel_card_key]
-    sel_card = _selected_card(player_key)
-    needs_atk, needs_def = _card_zone_requirements(sel_card) if sel_card else (False, False)
-    atk_zone_val = st.session_state[f"atk_zone_{player_key}"]
-    def_zone_val = st.session_state[f"def_zone_{player_key}"]
-    ready = (
-        sel_card_id is not None
-        and (not needs_atk or atk_zone_val is not None)
-        and (not needs_def or def_zone_val is not None)
-    )
-    if not ready:
-        st.markdown(
-            "<div class='confirm-turn-hint'>Elige una carta y las zonas de ataque/defensa que necesite.</div>",
-            unsafe_allow_html=True,
+        sel_card_id = st.session_state[sel_card_key]
+        sel_card = _selected_card(player_key)
+        needs_atk, needs_def = _card_zone_requirements(sel_card) if sel_card else (False, False)
+        atk_zone_val = st.session_state[f"atk_zone_{player_key}"]
+        def_zone_val = st.session_state[f"def_zone_{player_key}"]
+        ready = (
+            sel_card_id is not None
+            and (not needs_atk or atk_zone_val is not None)
+            and (not needs_def or def_zone_val is not None)
         )
-    if st.button(
-        "✅ Pasar Turno", key=f"confirm_turn_{player_key}",
-        type="primary", width="stretch", disabled=not ready,
-    ):
-        # La carta puede no necesitar una de las 2 zonas (p.ej. 0 ATK no
-        # ataca nada): play_card exige igualmente un Zone para cada una, así
-        # que la que sobra se rellena con la otra elegida (su efecto es 0,
-        # no cambia el resultado) en vez de forzar al jugador a fijarla.
-        atk_zone_final = atk_zone_val or def_zone_val
-        def_zone_final = def_zone_val or atk_zone_val
-        try:
-            play_card(match, player_key, sel_card_id, Zone(atk_zone_final), defense_zone=Zone(def_zone_final))
-        except EngineError as e:
-            st.error(str(e))
-        else:
-            if auto_resolve:
-                bot_choose_plays(match, "b")
-                if needs_atk:
-                    attacker = match.player_a if player_key == "a" else match.player_b
-                    defender = match.player_b if player_key == "a" else match.player_a
-                    match.log.append(_describe_tactical_result(attacker, defender, Zone(atk_zone_final)))
-                end_turn(match)
-                st.session_state.turn_start_time = time.time()
-            _reset_tactical_selection(player_key)
-        st.rerun()
+        if not ready:
+            st.markdown(
+                "<div class='confirm-turn-hint'>Elige una carta y las zonas de ataque/defensa que necesite.</div>",
+                unsafe_allow_html=True,
+            )
+        if st.button(
+            "✅ Pasar Turno", key=f"confirm_turn_{player_key}",
+            type="primary", width="stretch", disabled=not ready,
+        ):
+            # La carta puede no necesitar una de las 2 zonas (p.ej. 0 ATK no
+            # ataca nada): play_card exige igualmente un Zone para cada una,
+            # así que la que sobra se rellena con la otra elegida (su efecto
+            # es 0, no cambia el resultado) en vez de forzar a fijarla.
+            atk_zone_final = atk_zone_val or def_zone_val
+            def_zone_final = def_zone_val or atk_zone_val
+            try:
+                play_card(match, player_key, sel_card_id, Zone(atk_zone_final), defense_zone=Zone(def_zone_final))
+            except EngineError as e:
+                st.error(str(e))
+            else:
+                if auto_resolve:
+                    bot_choose_plays(match, "b")
+                    if needs_atk:
+                        attacker = match.player_a if player_key == "a" else match.player_b
+                        defender = match.player_b if player_key == "a" else match.player_a
+                        match.log.append(_describe_tactical_result(attacker, defender, Zone(atk_zone_final)))
+                    end_turn(match)
+                    st.session_state.turn_start_time = time.time()
+                _reset_tactical_selection(player_key)
+            st.rerun()
 
-    if p["staged_plays"]:
-        staged_txt = ", ".join(
-            f"{sp['card']['name']} → ataca {sp['zone']} / defiende {sp['defense_zone']}"
-            for sp in p["staged_plays"]
-        )
-        st.caption(f"Jugadas preparadas este turno: {staged_txt}")
+        if p["staged_plays"]:
+            staged_txt = ", ".join(
+                f"{sp['card']['name']} → ataca {sp['zone']} / defiende {sp['defense_zone']}"
+                for sp in p["staged_plays"]
+            )
+            st.caption(f"Jugadas preparadas este turno: {staged_txt}")
 
 
 if state["status"] == MatchStatus.ONGOING.value:
