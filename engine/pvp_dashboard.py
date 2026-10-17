@@ -83,8 +83,7 @@ ENGINE_DIR = _ENGINE_DIR
 PVP_ROOT = _PVP_ROOT
 DATABASE_PATH = ENGINE_DIR / "cards_database.json"
 ESCENARIO_PATH = PVP_ROOT / "escenario.png"
-AVATAR_A_PATH = PVP_ROOT / "playerA.png"
-AVATAR_B_PATH = PVP_ROOT / "playerB.png"
+DEFAULT_GAMENFT_ID = 0  # Fox fijo de GAMENFT/ para Bot/rival y Free sin NFT — ver gamenft_avatar_path
 
 # Única fuente de verdad para las 4 secciones del panel — la navegación vive
 # exclusivamente en el menú superior (st.popover "☰ MENÚ DE NAVEGACIÓN", ver
@@ -108,6 +107,44 @@ def _image_b64(path_str: str) -> str:
     combate) donde no vale un st.image (necesitamos <img>/background-image
     dentro de un único bloque de markdown, no un widget aparte)."""
     return base64.b64encode(Path(path_str).read_bytes()).decode("ascii")
+
+
+@st.cache_data
+def list_gamenft_ids() -> list[int]:
+    """Todos los token_id con imagen en GAMENFT/fox_<id>.png — el selector de
+    Maestro (render_wallet_and_nft_bar) ofrece variedad real en vez de
+    limitarse a los 3 NFTs "owned" de la wallet simulada (sandbox local, no
+    hay ownership on-chain real que respetar aquí)."""
+    ids = []
+    for p in (PVP_ROOT / "GAMENFT").glob("fox_*.png"):
+        try:
+            ids.append(int(p.stem.removeprefix("fox_")))
+        except ValueError:
+            continue
+    return sorted(ids)
+
+
+def gamenft_avatar_path(token_id: int | None) -> Path:
+    """Imagen de un Fox de GAMENFT/ para montar en los marcos laterales del
+    escenario (render_arena). Si no hay id o el archivo no existe, cae al
+    Fox fijo DEFAULT_GAMENFT_ID (sigue siendo de GAMENFT/, nunca un sprite
+    genérico de jugador) — esta es la imagen que ven el Bot/rival y un
+    jugador Free sin NFT equipado."""
+    for candidate in (token_id, DEFAULT_GAMENFT_ID):
+        if candidate is None:
+            continue
+        p = PVP_ROOT / "GAMENFT" / f"fox_{candidate}.png"
+        if p.exists():
+            return p
+    raise FileNotFoundError(f"GAMENFT/fox_{DEFAULT_GAMENFT_ID}.png no existe — revisa la carpeta GAMENFT/.")
+
+
+@st.cache_data
+def list_escenario_paths() -> list[Path]:
+    """Todos los fondos de arena disponibles en la raíz del proyecto
+    (escenario*.png) — para variedad; si solo existe escenario.png (el
+    único hoy), ese es el único resultado y se comporta igual que antes."""
+    return sorted(PVP_ROOT.glob("escenario*.png")) or [ESCENARIO_PATH]
 
 
 def card_image_path(card_dict: dict) -> Path | None:
@@ -149,7 +186,7 @@ def init_state() -> None:
     st.session_state.setdefault("match_economy_mode", None)
     st.session_state.setdefault("match_reward_settled", False)
     # Selección táctica de la ronda actual (puntos rojo/verde + carta elegida
-    # antes de "Confirmar Turno" — ver render_tactical_points/render_hand).
+    # antes de "Pasar Turno" — ver render_tactical_points/render_hand).
     for _pk in ("a", "b"):
         st.session_state.setdefault(f"sel_card_{_pk}", None)
         st.session_state.setdefault(f"atk_zone_{_pk}", None)
@@ -168,12 +205,12 @@ def rarity_label(rarity: NFTRarity) -> str:
 
 def resolve_equipped_rarity(connector: BlockchainConnector, wallet_address: str) -> NFTRarity:
     """Rareza que decide HP base y buff de mazo para la próxima partida: la
-    del NFT elegido en render_nft_equip_section si sigue en la wallet; si no
-    hay ninguno equipado (o cambió de wallet mientras tanto), cae a la mejor
-    rareza disponible — mismo comportamiento que antes de tener selector."""
-    owned = connector.owned_token_ids(wallet_address)
+    del Maestro elegido en render_wallet_and_nft_bar (ahora cualquier fox de
+    GAMENFT/, no solo los "owned" de la wallet simulada — ver
+    list_gamenft_ids); si no hay ninguno elegido todavía, cae a la mejor
+    rareza disponible en la wallet — mismo comportamiento que antes."""
     equipped_id = st.session_state.get("equipped_token_id")
-    if equipped_id in owned:
+    if equipped_id is not None:
         return derive_placeholder_rarity(equipped_id)
     return connector.best_rarity_for_wallet(wallet_address)
 
@@ -747,6 +784,11 @@ def _launch_match(
     st.session_state["turn_start_time"] = time.time()
     st.session_state["match_economy_mode"] = st.session_state.match_mode
     st.session_state["match_reward_settled"] = False
+    # El rival/BOT no tiene "wallet" propia que consultar: su marco usa
+    # siempre el Fox fijo DEFAULT_GAMENFT_ID (gamenft_avatar_path cae a él
+    # cuando no hay id) — igual que un jugador Free sin NFT equipado en el
+    # suyo. rival_avatar_id se deja sin fijar (None).
+    st.session_state["arena_background_path"] = str(rng.choice(list_escenario_paths()))
     _reset_tactical_selection()
 
 
@@ -913,29 +955,34 @@ def render_wallet_and_nft_bar(connector: BlockchainConnector, wallet_address: st
     ancho completo. La rareza del NFT elegido aquí decide el HP base y el
     buff de mazo (ver resolve_equipped_rarity, usado por 🔥 NUEVA PARTIDA)."""
     owned = connector.owned_token_ids(wallet_address)
+    gamenft_ids = list_gamenft_ids()
     kur_balance = connector.kur_balance(wallet_address)
     short_addr = f"{wallet_address[:6]}…{wallet_address[-4:]}" if len(wallet_address) > 12 else wallet_address
 
     with st.container(key="wallet_nft_bar"):
-        if not owned:
+        if not gamenft_ids:
             st.session_state.equipped_token_id = None
             st.metric("🦊 Dirección", short_addr)
             w2, w3 = st.columns(2)
-            w2.metric("NFTs", 0)
+            w2.metric("NFTs", len(owned))
             w3.metric("Balance $KUR", f"{kur_balance:,.2f}")
-            st.caption("Sin NFTs en esta wallet — jugarás con el HP base por defecto (sin NFT).")
+            st.caption("No se encontraron imágenes en GAMENFT/ — jugarás con el HP base por defecto (sin NFT).")
             return
 
-        if st.session_state.get("equipped_token_id") not in owned:
+        if st.session_state.get("equipped_token_id") not in gamenft_ids:
             best = connector.best_rarity_for_wallet(wallet_address)
             st.session_state.equipped_token_id = next(
-                (tid for tid in owned if derive_placeholder_rarity(tid) == best), owned[0]
+                (tid for tid in owned if derive_placeholder_rarity(tid) == best),
+                owned[0] if owned else gamenft_ids[0],
             )
 
         equipped_id = st.selectbox(
-            "🎴 NFT equipado",
-            owned,
-            format_func=lambda tid: f"Fox #{tid} · {rarity_label(derive_placeholder_rarity(tid))}",
+            "🎴 Maestro equipado",
+            gamenft_ids,
+            format_func=lambda tid: (
+                f"Fox #{tid} · {rarity_label(derive_placeholder_rarity(tid))}"
+                + ("" if tid in owned else " (no en wallet)")
+            ),
             key="equipped_token_id",
         )
         rarity = derive_placeholder_rarity(equipped_id)
@@ -1116,20 +1163,24 @@ with nav_menu_col:
                 st.rerun()
 
 with nav_music_col:
+    pass
     # Chiptune de fondo discreto: "Spooky Dungeon" de Memoraphile (OpenGameArt,
     # CC0/CC-BY), en loop y autoplay — el reproductor nativo de Streamlit ya
     # trae su propio botón de play/pausa (sirve de silenciar). Solo se
     # renderiza en combate activo: antes de pulsar NUEVA PARTIDA o tras
     # Victoria/Derrota/Empate, match es None o su status ya no es ONGOING, y
     # el reproductor se desmonta deteniendo el audio al instante.
-    _active_match = st.session_state.get("match")
-    if _active_match is not None and _active_match.status == MatchStatus.ONGOING:
-        with st.container(key="nav_music_player"):
-            st.audio(
-                "https://opengameart.org/sites/default/files/Memoraphile%20-%20Spooky%20Dungeon.mp3",
-                loop=True,
-                autoplay=True,
-            )
+    # Desactivada temporalmente a petición del equipo (se reintegrará más
+    # adelante) — dejo el bloque comentado en vez de borrarlo para no perder
+    # la URL/ajustes cuando se reactive.
+    # _active_match = st.session_state.get("match")
+    # if _active_match is not None and _active_match.status == MatchStatus.ONGOING:
+    #     with st.container(key="nav_music_player"):
+    #         st.audio(
+    #             "https://opengameart.org/sites/default/files/Memoraphile%20-%20Spooky%20Dungeon.mp3",
+    #             loop=True,
+    #             autoplay=True,
+    #         )
 
 with nav_wallet_col:
     render_wallet_badge(connector, current_wallet_address)
@@ -1182,8 +1233,8 @@ st.markdown(
        cartas que no encajen justo en 2:3), centradas como grupo en vez de
        repartidas a los lados con huecos en blanco. */
     [class*="st-key-battle_hand"] img {
-        width: 160px !important;
-        height: 240px !important;
+        width: 320px !important;
+        height: 480px !important;
         max-width: 100% !important;
         object-fit: contain;
         background: rgba(255, 255, 255, 0.04);
@@ -1198,10 +1249,10 @@ st.markdown(
         gap: 1.5rem !important;
     }
     [class*="st-key-battle_hand"] [data-testid="stColumn"] {
-        flex: 0 0 240px !important;
-        width: 240px !important;
-        max-width: 240px !important;
-        min-width: 180px;
+        flex: 0 0 480px !important;
+        width: 480px !important;
+        max-width: 480px !important;
+        min-width: 360px;
     }
     /* Cada carta completa (imagen + nombre + info + zona + jugar) a la
        misma altura que sus vecinas de la fila (align-items:stretch arriba
@@ -1217,6 +1268,87 @@ st.markdown(
         flex-direction: column;
         justify-content: space-between;
         height: 100%;
+    }
+    /* Mano flotante (battle_hand_overlay_*, ver render_hand/render_arena):
+       sin botón "Seleccionar" visible — clicar la carta entera (imagen +
+       nombre + stats) la selecciona. El <button> real sigue existiendo
+       (misma key/lógica de siempre) pero se estira invisible sobre toda la
+       carta (position:absolute;inset:0) y se vuelve transparente más abajo;
+       el trigger "ℹ️ Info" tiene z-index más alto (150/200, más arriba en
+       este archivo) así que sigue recibiendo el click/hover por encima. */
+    [class*="st-key-battle_hand_overlay"] [class*="st-key-card_glow_playable"],
+    [class*="st-key-battle_hand_overlay"] [class*="st-key-card_glow_locked"],
+    [class*="st-key-battle_hand_overlay"] [class*="st-key-card_glow_sel"] {
+        position: relative;
+    }
+    [class*="st-key-battle_hand_overlay"] [class*="st-key-select_"] {
+        position: absolute !important;
+        inset: 0 !important;
+        z-index: 1;
+    }
+    [class*="st-key-battle_hand_overlay"] [class*="st-key-select_"] .stButton,
+    [class*="st-key-battle_hand_overlay"] [class*="st-key-select_"] .stButton > button {
+        width: 100% !important;
+        height: 100% !important;
+    }
+    [class*="st-key-battle_hand_overlay"] [class*="st-key-select_"] .stButton > button {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        color: transparent !important;
+        font-size: 0 !important;
+        padding: 0 !important;
+        cursor: pointer;
+    }
+    /* Panel flotante: margen superior negativo para que se superponga al
+       borde inferior de escenario.png (arena_outer) en vez de quedar debajo
+       del registro de combate — el hueco que la separa de la arena (badges
+       de zona + feed de combate, ambos de alto ~fijo) es predecible, así que
+       un valor fijo en px basta sin acoplar el CSS al alto exacto de la
+       arena (que ya es 100% responsive, ver st-key-arena_outer). */
+    [class*="st-key-battle_hand_overlay"] {
+        position: relative;
+        z-index: 20;
+        width: fit-content;
+        max-width: 94%;
+        margin: -210px auto 0;
+        background: rgba(10, 10, 14, 0.6);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 16px;
+        padding: 0.5rem 0.7rem 0.35rem;
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+    }
+    [class*="st-key-battle_hand_overlay"] [data-testid="stHorizontalBlock"] {
+        gap: 0.5rem !important;
+    }
+    [class*="st-key-battle_hand_overlay"] [data-testid="stColumn"] {
+        flex: 0 0 156px !important;
+        width: 156px !important;
+        max-width: 156px !important;
+        min-width: 156px !important;
+    }
+    [class*="st-key-battle_hand_overlay"] img {
+        width: 140px !important;
+        height: 210px !important;
+    }
+    [class*="st-key-battle_hand_overlay"] .card-name {
+        font-size: 0.62rem !important;
+        min-height: 1.5em !important;
+        line-height: 1.05em !important;
+        margin-top: 0.1rem !important;
+    }
+    [class*="st-key-battle_hand_overlay"] .card-ability {
+        font-size: 0.56rem !important;
+        min-height: 1em !important;
+        margin: 0.05rem 0 !important;
+    }
+    [class*="st-key-battle_hand_overlay"] [data-testid="stCaptionContainer"] {
+        font-size: 0.58rem !important;
+        line-height: 1.1em !important;
+    }
+    [class*="st-key-battle_hand_overlay"] .card-info-trigger {
+        font-size: 0.56rem !important;
+        padding: 0.03rem 0.3rem !important;
     }
     .card-name {
         font-weight: 600;
@@ -1347,6 +1479,17 @@ st.markdown(
         box-shadow: 0px 10px 25px rgba(0, 0, 0, 0.6);
         border-radius: 8px;
     }
+    /* Hover pedido específicamente para las cartas de la mano: agrandar +
+       elevar (no solo zoom) para ver arte y texto completos por encima de
+       las cartas vecinas — pisa el transform/transition genéricos de arriba
+       solo para battle_hand (misma especificidad, declarado después). */
+    [class*="st-key-battle_hand"] [data-testid="stImage"] img {
+        transition: all 0.2s ease;
+    }
+    [class*="st-key-battle_hand"] [data-testid="stImage"] img:hover {
+        transform: scale(1.25) translateY(-10px);
+        z-index: 100;
+    }
     .combat-feed {
         background: rgba(135, 135, 135, 0.08);
         border: 1px solid rgba(135, 135, 135, 0.25);
@@ -1431,6 +1574,9 @@ st.markdown(
         margin: 0.2rem 0 0.1rem;
         flex-wrap: wrap;
         cursor: help;
+    }
+    .zone-badges-right {
+        justify-content: flex-end;
     }
     .zone-badge {
         display: inline-flex;
@@ -1731,15 +1877,20 @@ st.markdown(
        aparte, justo debajo, como botones reales de Streamlit (ver
        render_tactical_points). */
     .arena-bg {
-        position: relative;
-        width: 100%;
-        aspect-ratio: 2042 / 770;
+        position: absolute;
+        inset: 0;
         background-size: cover;
         background-position: center;
-        border-radius: 18px;
-        overflow: hidden;
-        box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 12px 30px rgba(0,0,0,0.5);
-        margin-bottom: 0.6rem;
+    }
+    /* Streamlit envuelve el markdown de .arena-bg en su propio
+       stElementContainer con position:relative (para su z-index interno) —
+       sin neutralizarlo, ESE div (no arena_outer) se convierte en el
+       contenedor de referencia de .arena-bg (position:absolute; inset:0) y,
+       como ese div no tiene alto propio (su único contenido ya está fuera
+       del flujo), el alto colapsa a 0: la imagen desaparece. Lo volvemos
+       position:static para que inset:0 se resuelva contra arena_outer. */
+    [class*="st-key-arena_outer"] > [data-testid="stElementContainer"]:first-child {
+        position: static !important;
     }
     .arena-topbar {
         position: absolute;
@@ -1810,6 +1961,75 @@ st.markdown(
     .tactical-label-def { color: #6bdc7f; }
     .confirm-turn-hint { text-align: center; opacity: 0.75; font-size: 0.82rem; margin: 0.2rem 0 0.4rem; }
 
+    /* Contenedor de la arena: ancho 100% adaptativo + alto fijado por
+       padding-top en % (la técnica clásica "responsive aspect ratio box",
+       soportada en cualquier navegador — más robusta aquí que la propiedad
+       moderna aspect-ratio, que en pruebas se descuadraba con el
+       display:flex propio de Streamlit). 770/2042*100 = 37.71%, la misma
+       proporción que escenario.png (2042x770). .arena-bg se limita a
+       RELLENAR este contenedor (inset:0) en vez de tener su propio tamaño
+       por separado, así este wrapper y la imagen son SIEMPRE la misma caja
+       a cualquier ancho de ventana o nivel de zoom: los puntos tácticos,
+       avatares y barras de HP (posicionados en % dentro de esta misma caja)
+       nunca se desalinean de la imagen. gap:0 porque los 6 contenedores de
+       los puntos (ver más abajo), aunque su contenido queda fuera del flujo
+       normal (position:absolute), seguirían reservando el gap por defecto
+       entre elementos de Streamlit si no se anula aquí. */
+    [class*="st-key-arena_outer"] {
+        position: relative;
+        width: 100%;
+        max-width: 100%;
+        padding-top: 37.71%; /* 770/2042*100 — alto fijado por padding, no por aspect-ratio */
+        height: 0;
+        border-radius: 18px;
+        overflow: hidden;
+        box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 12px 30px rgba(0,0,0,0.5);
+        margin-bottom: 0.6rem;
+        gap: 0 !important;
+    }
+    /* Puntos tácticos SUPERPUESTOS sobre la arena (overlay=True, modo Vs.
+       Bot) — ver render_tactical_points. Cada punto es su propio contenedor
+       con key única (arena_point_pt_<def|atk>_<jugador>_<zona>) para darle
+       su propia coordenada (en %, relativa a st-key-arena_outer — se
+       mantienen pegados a la imagen en cualquier zoom). Verdes junto a tu
+       luchador (izquierda), rojos junto al rival (derecha), desplazados
+       lateralmente hacia el hueco entre el luchador y el marco del Maestro
+       (no encima del cuerpo). */
+    [class*="st-key-arena_point_pt_"] {
+        position: absolute !important;
+        transform: translate(-50%, -50%);
+        z-index: 30;
+        width: auto !important;
+    }
+    /* Descendiente (no ">"): st.button(help=...) envuelve el <button> en
+       spans de tooltip (stTooltipIcon/stTooltipHoverTarget) que rompen el
+       combinador de hijo directo que sí vale para el resto de botones del
+       archivo (sin `help`, sin ese envoltorio extra). */
+    [class*="st-key-arena_point_pt_"] .stButton button {
+        width: 42px; height: 42px; min-height: 42px; border-radius: 50% !important;
+        padding: 0 !important; font-size: 1.15rem; line-height: 1;
+        display: flex; align-items: center; justify-content: center;
+        border: 2px solid rgba(255,255,255,0.4) !important;
+        background: rgba(0,0,0,0.5) !important;
+    }
+    [class*="st-key-arena_point_pt_def"] .stButton button[kind="primary"] {
+        background: #2fb344 !important; border-color: #8cffa0 !important;
+        box-shadow: 0 0 14px rgba(47,179,68,0.9) !important;
+    }
+    [class*="st-key-arena_point_pt_atk"] .stButton button[kind="primary"] {
+        background: #e5484d !important; border-color: #ff8a8a !important;
+        box-shadow: 0 0 14px rgba(229,72,77,0.9) !important;
+    }
+    /* top en 20/40/60% para caer dentro del rango vertical real del avatar
+       (.arena-portal: top 10% + height 60% => ocupa del 10% al 70%), antes
+       24/50/78% dejaba el punto de "legs" por debajo del personaje. */
+    [class*="st-key-arena_point_pt_def_a_head"]  { left: 26%; top: 20%; }
+    [class*="st-key-arena_point_pt_def_a_torso"] { left: 26%; top: 40%; }
+    [class*="st-key-arena_point_pt_def_a_legs"]  { left: 26%; top: 60%; }
+    [class*="st-key-arena_point_pt_atk_a_head"]  { left: 74%; top: 20%; }
+    [class*="st-key-arena_point_pt_atk_a_torso"] { left: 74%; top: 40%; }
+    [class*="st-key-arena_point_pt_atk_a_legs"]  { left: 74%; top: 60%; }
+
     /* Elementos flotantes nativos de Streamlit (menú hamburguesa, footer
        "Made with Streamlit", botón "Manage app"/deploy y el avatar de
        usuario que lo acompaña) tapan los botones "⚔️ JUGAR" de la derecha
@@ -1879,10 +2099,13 @@ _ZONE_ICONS = {"head": "🗣️", "torso": "👕", "legs": "🦵"}
 _ZONE_LABELS = {"head": "Cabeza", "torso": "Torso", "legs": "Piernas"}
 
 
-def _render_zone_badges(p: dict) -> None:
+def _render_zone_badges(p: dict, align: str = "left") -> None:
     """Badge por zona corporal (combo tripartito) en vez del texto plano
     anterior: intacta en gris sutil, dañada resaltada en rojo con brillo y
-    check — más fácil de leer de un vistazo que una lista separada por comas."""
+    check — más fácil de leer de un vistazo que una lista separada por comas.
+    align="right" (rival/Bot) lo empuja al borde derecho de su columna para
+    dejar libre el centro, donde flota el panel de cartas (render_hand con
+    overlay_cards=True) — ver render_arena."""
     damaged = set(p["zones_damaged"])
     badges = []
     for zone in ("head", "torso", "legs"):
@@ -1899,8 +2122,9 @@ def _render_zone_badges(p: dict) -> None:
     tooltip = (
         "Completa las 3 zonas (🗣️ Cabeza, 👕 Torso, 🦵 Piernas) para activar el Combo Tripartito"
     )
+    align_cls = " zone-badges-right" if align == "right" else ""
     st.markdown(
-        f"<div class='zone-badges' title='{tooltip}'>{''.join(badges)}{combo_tag}</div>",
+        f"<div class='zone-badges{align_cls}' title='{tooltip}'>{''.join(badges)}{combo_tag}</div>",
         unsafe_allow_html=True,
     )
 
@@ -1923,6 +2147,7 @@ if match.status == MatchStatus.ONGOING:
             bot_choose_plays(match, "b")
         end_turn(match)
         st.session_state.turn_start_time = time.time()
+        _reset_tactical_selection()
         st.rerun()
 
 state = get_match_state(match)
@@ -1949,16 +2174,97 @@ if st.session_state.pop("scroll_to_battle", False):
         </script>""",
         height=0,
     )
+
+ZONE_ORDER = (Zone.HEAD, Zone.TORSO, Zone.LEGS)
+ZONE_ICON = {"head": "🗣️", "torso": "👕", "legs": "🦵"}
+ZONE_NAME = {"head": "Cabeza", "torso": "Tronco", "legs": "Piernas"}
+
+
+def _card_zone_requirements(card_dict: dict) -> tuple[bool, bool]:
+    """(necesita_zona_ataque, necesita_zona_defensa) según las stats/habilidad
+    de la carta: 0 ATK no tiene nada que atacar; 0 DEF sin poción/contraataque
+    no tiene nada que defender (esas 2 habilidades sí usan la zona de defensa
+    aunque la carta no tenga DEF propio — ver pvp_engine._build_zone_maps)."""
+    ability = card_dict.get("ability", "none")
+    needs_atk = card_dict["atk"] > 0
+    needs_def = card_dict["defense"] > 0 or ability in ("heal_potion", "counter")
+    return needs_atk, needs_def
+
+
+def _selected_card(player_key: str) -> dict | None:
+    sel_id = st.session_state.get(f"sel_card_{player_key}")
+    if sel_id is None:
+        return None
+    hand = state[f"player_{player_key}"]["hand"]
+    return next((c for c in hand if c["id"] == sel_id), None)
+
+
+def render_tactical_points(player_key: str, overlay: bool = False) -> None:
+    """Puntos tácticos estilo Waves Ducks: verde = zona PROPIA a defender,
+    rojo = zona del RIVAL a atacar.
+    overlay=True (modo Vs. Bot): 6 puntos circulares superpuestos sobre
+    escenario.png dentro de render_arena — verdes junto a tu luchador
+    (izquierda), rojos junto al rival (derecha); el CSS .arena-point-* del
+    bloque de estilos los posiciona con position:absolute.
+    overlay=False (Hotseat): la fila ancha de botones de siempre, debajo de
+    la mano — no hay una única imagen de fondo sobre la que superponerlos
+    cuando los DOS jugadores necesitan su propio juego de puntos a la vez.
+    En ambos casos, el grupo (verde/rojo) que la carta elegida no necesita
+    (ver _card_zone_requirements) se deshabilita — y sin carta elegida
+    todavía, los 2 grupos quedan deshabilitados: hay que elegir carta primero."""
+    sel_card = _selected_card(player_key)
+    needs_atk, needs_def = _card_zone_requirements(sel_card) if sel_card else (False, False)
+    specs = (
+        ("def", f"def_zone_{player_key}", "🟢 Defender", "tactical-label-def", needs_def),
+        ("atk", f"atk_zone_{player_key}", "🔴 Atacar", "tactical-label-atk", needs_atk),
+    )
+    if overlay:
+        for prefix, state_key, _label, _cls, needed in specs:
+            for z in ZONE_ORDER:
+                selected = st.session_state[state_key] == z.value
+                point_key = f"pt_{prefix}_{player_key}_{z.value}"
+                with st.container(key=f"arena_point_{point_key}"):
+                    if st.button(
+                        ZONE_ICON[z.value], key=point_key,
+                        type="primary" if selected else "secondary",
+                        disabled=not needed,
+                        help=f"{'Defender' if prefix == 'def' else 'Atacar'} {ZONE_NAME[z.value]}",
+                    ):
+                        st.session_state[state_key] = z.value
+                        st.rerun()
+        return
+
+    col_def, col_atk = st.columns(2)
+    for col, (prefix, state_key, label_txt, label_cls, needed) in zip((col_def, col_atk), specs):
+        with col:
+            st.markdown(f"<div class='tactical-label {label_cls}'>{label_txt}</div>", unsafe_allow_html=True)
+            with st.container(key=f"tactical_{prefix}_{player_key}"):
+                for z in ZONE_ORDER:
+                    selected = st.session_state[state_key] == z.value
+                    if st.button(
+                        f"{ZONE_ICON[z.value]} {ZONE_NAME[z.value]}",
+                        key=f"{prefix}_pt_{player_key}_{z.value}",
+                        type="primary" if selected else "secondary",
+                        width="stretch",
+                        disabled=not needed,
+                    ):
+                        st.session_state[state_key] = z.value
+                        st.rerun()
+
+
 def render_arena(state: dict) -> None:
     """Arena de combate: escenario.png de fondo con las barras de HP/Energía
-    y el contador de ronda superpuestos arriba, y el avatar (Maestro) de
-    cada luchador en los marcos laterales del escenario — un único bloque
-    HTML no interactivo (los puntos tácticos clicables van aparte, justo
-    debajo, como botones reales de Streamlit — ver render_tactical_points)."""
-    bg = _image_b64(str(ESCENARIO_PATH))
-    av_a = _image_b64(str(AVATAR_A_PATH))
-    av_b = _image_b64(str(AVATAR_B_PATH))
+    y el contador de ronda superpuestos arriba, el Maestro de cada luchador
+    montado en los marcos laterales (GAMENFT/, ver gamenft_avatar_path), y —
+    en modo Vs. Bot— los 6 puntos tácticos (verde/rojo) superpuestos
+    directamente sobre la imagen, junto a cada luchador. En Hotseat los
+    puntos no se superponen aquí (cada jugador tiene los suyos debajo de su
+    propia mano — ver render_tactical_points(overlay=False))."""
+    bg = _image_b64(st.session_state.get("arena_background_path") or str(ESCENARIO_PATH))
+    av_a = _image_b64(str(gamenft_avatar_path(st.session_state.get("equipped_token_id"))))
+    av_b = _image_b64(str(gamenft_avatar_path(st.session_state.get("rival_avatar_id"))))
     pa, pb = state["player_a"], state["player_b"]
+    ongoing = state["status"] == MatchStatus.ONGOING.value
 
     def hp_bar(p: dict, align: str) -> str:
         pct = max(0.0, min(1.0, p["hp"] / p["max_hp"])) * 100
@@ -1972,7 +2278,7 @@ def render_arena(state: dict) -> None:
             f"</div>"
         )
 
-    if state["status"] == MatchStatus.ONGOING.value:
+    if ongoing:
         remaining = max(0.0, TURN_TIMER_SECONDS - (time.time() - st.session_state.turn_start_time))
         timer_html = (
             f"<div class='arena-timer'>⏱️ <span id='arena-timer-seconds'>{int(remaining)}</span>s</div>"
@@ -1981,52 +2287,56 @@ def render_arena(state: dict) -> None:
         remaining = None
         timer_html = ""
 
-    st.markdown(
-        f"""
-        <div class="arena-bg" style="background-image:url(data:image/png;base64,{bg});">
-            <div class="arena-topbar">
-                {hp_bar(pa, 'left')}
-                <div class="arena-turn">Ronda {state['turn_number']}{timer_html}</div>
-                {hp_bar(pb, 'right')}
+    with st.container(key="arena_outer"):
+        st.markdown(
+            f"""
+            <div class="arena-bg" style="background-image:url(data:image/png;base64,{bg});">
+                <div class="arena-topbar">
+                    {hp_bar(pa, 'left')}
+                    <div class="arena-turn">Ronda {state['turn_number']}{timer_html}</div>
+                    {hp_bar(pb, 'right')}
+                </div>
+                <img class="arena-portal arena-portal-left" src="data:image/png;base64,{av_a}">
+                <img class="arena-portal arena-portal-right" src="data:image/png;base64,{av_b}">
             </div>
-            <img class="arena-portal arena-portal-left" src="data:image/png;base64,{av_a}">
-            <img class="arena-portal arena-portal-right" src="data:image/png;base64,{av_b}">
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    if remaining is not None:
-        with st.container(key="turn_timeout_trigger"):
-            st.button("⏱", key="turn_timeout_btn")
-        components.html(
-            f"""<script>
-            (function () {{
-                const totalMs = {TURN_TIMER_SECONDS * 1000};
-                const remainingMs = {remaining * 1000:.0f};
-                const startedAt = Date.now();
-                const label = window.parent.document.getElementById('arena-timer-seconds');
-                const btn = window.parent.document.querySelector(
-                    '[class*="st-key-turn_timeout_trigger"] button'
-                );
-                const iv = setInterval(function () {{
-                    const left = Math.max(0, remainingMs - (Date.now() - startedAt));
-                    if (label) label.textContent = Math.ceil(left / 1000);
-                    if (left <= 0) {{
-                        clearInterval(iv);
-                        if (btn) btn.click();
-                    }}
-                }}, 250);
-            }})();
-            </script>""",
-            height=0,
+            """,
+            unsafe_allow_html=True,
         )
+
+        if remaining is not None:
+            with st.container(key="turn_timeout_trigger"):
+                st.button("⏱", key="turn_timeout_btn")
+            components.html(
+                f"""<script>
+                (function () {{
+                    const totalMs = {TURN_TIMER_SECONDS * 1000};
+                    const remainingMs = {remaining * 1000:.0f};
+                    const startedAt = Date.now();
+                    const label = window.parent.document.getElementById('arena-timer-seconds');
+                    const btn = window.parent.document.querySelector(
+                        '[class*="st-key-turn_timeout_trigger"] button'
+                    );
+                    const iv = setInterval(function () {{
+                        const left = Math.max(0, remainingMs - (Date.now() - startedAt));
+                        if (label) label.textContent = Math.ceil(left / 1000);
+                        if (left <= 0) {{
+                            clearInterval(iv);
+                            if (btn) btn.click();
+                        }}
+                    }}, 250);
+                }})();
+                </script>""",
+                height=0,
+            )
+
+        if ongoing and st.session_state.vs_bot:
+            render_tactical_points("a", overlay=True)
 
     badge_a, badge_b = st.columns(2)
     with badge_a:
         _render_zone_badges(pa)
     with badge_b:
-        _render_zone_badges(pb)
+        _render_zone_badges(pb, align="right")
 
 
 render_arena(state)
@@ -2114,35 +2424,6 @@ if state["log"]:
     if recent_lines:
         st.markdown(f'<div class="combat-feed">{recent_lines}</div>', unsafe_allow_html=True)
 
-ZONE_ORDER = (Zone.HEAD, Zone.TORSO, Zone.LEGS)
-ZONE_ICON = {"head": "🗣️", "torso": "👕", "legs": "🦵"}
-ZONE_NAME = {"head": "Cabeza", "torso": "Tronco", "legs": "Piernas"}
-
-
-def render_tactical_points(player_key: str) -> None:
-    """Puntos tácticos estilo Waves Ducks: 3 puntos verdes (zona PROPIA a
-    defender) y 3 rojos (zona del RIVAL a atacar), un clic cada uno —
-    sustituyen al desplegable de Zona que iba debajo de cada carta."""
-    col_def, col_atk = st.columns(2)
-    for col, label_cls, label_txt, state_key, prefix in (
-        (col_def, "tactical-label-def", "🟢 Defender", f"def_zone_{player_key}", "def"),
-        (col_atk, "tactical-label-atk", "🔴 Atacar", f"atk_zone_{player_key}", "atk"),
-    ):
-        with col:
-            st.markdown(f"<div class='tactical-label {label_cls}'>{label_txt}</div>", unsafe_allow_html=True)
-            with st.container(key=f"tactical_{prefix}_{player_key}"):
-                for z in ZONE_ORDER:
-                    selected = st.session_state[state_key] == z.value
-                    if st.button(
-                        f"{ZONE_ICON[z.value]} {ZONE_NAME[z.value]}",
-                        key=f"{prefix}_pt_{player_key}_{z.value}",
-                        type="primary" if selected else "secondary",
-                        width="stretch",
-                    ):
-                        st.session_state[state_key] = z.value
-                        st.rerun()
-
-
 def _describe_tactical_result(attacker, defender, atk_zone: Zone) -> str:
     """Mensaje legible para el panel de Información, comparando la zona de
     ataque elegida contra las zonas que el rival ya tiene defendidas este
@@ -2164,11 +2445,19 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
     """Mano de 3 cartas: solo imagen, coste y tooltip de efecto al pasar el
     cursor (ℹ️ Info) — clicar una carta la SELECCIONA (no la juega al
     instante); hace falta elegir también zona de ataque/defensa en
-    render_tactical_points() y pulsar "✅ Confirmar Turno" para resolver.
+    render_tactical_points() (solo las que la carta necesite — ver
+    _card_zone_requirements) y pulsar "✅ Pasar Turno" para resolver.
     auto_resolve=True (modo Vs. Bot): confirmar hace responder al Bot y
     resuelve el turno entero en un solo paso; en Hotseat la jugada solo queda
     preparada hasta pulsar "⏭️ Resolver turno" (ambos jugadores deciden antes
-    de aplicar el turno a la vez, sección 2.4 de PVP_Rules)."""
+    de aplicar el turno a la vez, sección 2.4 de PVP_Rules).
+    auto_resolve=True también cambia la key del contenedor de la mano a
+    "battle_hand_overlay_*" en vez de "battle_hand_*": el bloque CSS de
+    render_arena (.arena de combate) la engancha para flotarla superpuesta
+    sobre el borde inferior del escenario (ver comentario ahí) en vez de
+    dejarla en su sitio normal, debajo del registro de combate — solo tiene
+    sentido con una única mano (Vs. Bot); en Hotseat, con 2 manos a la vez,
+    se queda con el grid de siempre."""
     p = state[f"player_{player_key}"]
     remaining_energy = min(MAX_ENERGY_SPEND_PER_TURN, p["energy"]) - p["energy_spent_this_turn"]
     energy_css_class = "energy-low" if remaining_energy <= 0 else ""
@@ -2186,7 +2475,8 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
     if st.session_state[sel_card_key] not in {c["id"] for c in p["hand"]}:
         st.session_state[sel_card_key] = None
 
-    with st.container(key=f"battle_hand_{player_key}"):
+    hand_container_key = f"battle_hand_overlay_{player_key}" if auto_resolve else f"battle_hand_{player_key}"
+    with st.container(key=hand_container_key):
         cols = st.columns(len(p["hand"]))
         for col, card_dict in zip(cols, p["hand"]):
             affordable = card_dict["cost_energy"] <= remaining_energy
@@ -2232,31 +2522,49 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                 if not affordable:
                     st.caption("⚠️ Energía insuficiente")
 
-    render_tactical_points(player_key)
+    if not auto_resolve:
+        # En Vs. Bot los puntos ya están superpuestos sobre la arena (ver
+        # render_arena -> render_tactical_points(overlay=True)); en Hotseat
+        # no hay una única imagen que superponer para los 2 jugadores a la
+        # vez, así que cada uno tiene su fila de botones aquí debajo.
+        render_tactical_points(player_key)
 
     sel_card_id = st.session_state[sel_card_key]
+    sel_card = _selected_card(player_key)
+    needs_atk, needs_def = _card_zone_requirements(sel_card) if sel_card else (False, False)
     atk_zone_val = st.session_state[f"atk_zone_{player_key}"]
     def_zone_val = st.session_state[f"def_zone_{player_key}"]
-    ready = sel_card_id is not None and atk_zone_val is not None and def_zone_val is not None
+    ready = (
+        sel_card_id is not None
+        and (not needs_atk or atk_zone_val is not None)
+        and (not needs_def or def_zone_val is not None)
+    )
     if not ready:
         st.markdown(
-            "<div class='confirm-turn-hint'>Elige una carta y las zonas de ataque/defensa para confirmar.</div>",
+            "<div class='confirm-turn-hint'>Elige una carta y las zonas de ataque/defensa que necesite.</div>",
             unsafe_allow_html=True,
         )
     if st.button(
-        "✅ Confirmar Turno", key=f"confirm_turn_{player_key}",
+        "✅ Pasar Turno", key=f"confirm_turn_{player_key}",
         type="primary", width="stretch", disabled=not ready,
     ):
+        # La carta puede no necesitar una de las 2 zonas (p.ej. 0 ATK no
+        # ataca nada): play_card exige igualmente un Zone para cada una, así
+        # que la que sobra se rellena con la otra elegida (su efecto es 0,
+        # no cambia el resultado) en vez de forzar al jugador a fijarla.
+        atk_zone_final = atk_zone_val or def_zone_val
+        def_zone_final = def_zone_val or atk_zone_val
         try:
-            play_card(match, player_key, sel_card_id, Zone(atk_zone_val), defense_zone=Zone(def_zone_val))
+            play_card(match, player_key, sel_card_id, Zone(atk_zone_final), defense_zone=Zone(def_zone_final))
         except EngineError as e:
             st.error(str(e))
         else:
             if auto_resolve:
                 bot_choose_plays(match, "b")
-                attacker = match.player_a if player_key == "a" else match.player_b
-                defender = match.player_b if player_key == "a" else match.player_a
-                match.log.append(_describe_tactical_result(attacker, defender, Zone(atk_zone_val)))
+                if needs_atk:
+                    attacker = match.player_a if player_key == "a" else match.player_b
+                    defender = match.player_b if player_key == "a" else match.player_a
+                    match.log.append(_describe_tactical_result(attacker, defender, Zone(atk_zone_final)))
                 end_turn(match)
                 st.session_state.turn_start_time = time.time()
             _reset_tactical_selection(player_key)
@@ -2279,6 +2587,7 @@ if state["status"] == MatchStatus.ONGOING.value:
         if st.button("⏭️ Resolver turno", type="primary", width="stretch"):
             end_turn(match)
             st.session_state.turn_start_time = time.time()
+            _reset_tactical_selection()
             st.rerun()
 
 with st.expander("📜 Registro completo de la partida", expanded=False):
