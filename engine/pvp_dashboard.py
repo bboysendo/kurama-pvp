@@ -1831,14 +1831,32 @@ st.markdown(
         text-shadow: 0 1px 3px rgba(0,0,0,0.9); white-space: nowrap;
     }
     .arena-timer { font-size: 0.78rem; color: #9be7ff; }
+    /* Levitación suave de los Maestros NFT (avatares en los marcos
+       laterales): sube y baja en bucle, -8px en el punto medio del ciclo.
+       El avatar derecho ya viene espejado (scaleX(-1), ver abajo) — ese
+       transform estático se PERDERÍA si solo la izquierda tuviera
+       animation (una animación con `transform` en sus keyframes sustituye
+       cualquier transform estático del mismo elemento), así que el
+       espejado va horneado en sus propios keyframes (levitate-mirror) en
+       vez de reutilizar @keyframes levitate tal cual. animation-delay
+       negativo en el derecho para que no floten exactamente sincronizados. */
+    @keyframes levitate {
+        0%, 100% { transform: translateY(0px); }
+        50% { transform: translateY(-8px); }
+    }
+    @keyframes levitate-mirror {
+        0%, 100% { transform: scaleX(-1) translateY(0px); }
+        50% { transform: scaleX(-1) translateY(-8px); }
+    }
     .arena-portal {
         position: absolute; top: 10%; height: 60%; object-fit: contain;
         filter: drop-shadow(0 6px 10px rgba(0,0,0,0.6));
         border-radius: 10px;
         border: 2px solid rgba(255,255,255,0.15);
+        animation: levitate 3.5s ease-in-out infinite;
     }
     .arena-portal-left { left: 1%; }
-    .arena-portal-right { right: 1%; transform: scaleX(-1); }
+    .arena-portal-right { right: 1%; animation-name: levitate-mirror; animation-delay: -1.75s; }
 
     /* Puntos tácticos (botones reales, estilo Waves Ducks): rojo = zona de
        ataque al rival, verde = zona propia a defender. El punto activo se
