@@ -1233,8 +1233,8 @@ st.markdown(
        cartas que no encajen justo en 2:3), centradas como grupo en vez de
        repartidas a los lados con huecos en blanco. */
     [class*="st-key-battle_hand"] img {
-        width: 320px !important;
-        height: 480px !important;
+        width: 416px !important;
+        height: 624px !important;
         max-width: 100% !important;
         object-fit: contain;
         background: rgba(255, 255, 255, 0.04);
@@ -1249,10 +1249,10 @@ st.markdown(
         gap: 1.5rem !important;
     }
     [class*="st-key-battle_hand"] [data-testid="stColumn"] {
-        flex: 0 0 480px !important;
-        width: 480px !important;
-        max-width: 480px !important;
-        min-width: 360px;
+        flex: 0 0 624px !important;
+        width: 624px !important;
+        max-width: 624px !important;
+        min-width: 468px;
     }
     /* Cada carta completa (imagen + nombre + info + zona + jugar) a la
        misma altura que sus vecinas de la fila (align-items:stretch arriba
@@ -1274,17 +1274,18 @@ st.markdown(
        — ver el comentario ahí para el motivo (bug de parseo detectado en
        pruebas con bloques <style> muy largos). */
     /* Panel flotante: margen superior negativo para que se superponga al
-       borde inferior de escenario.png (arena_outer) en vez de quedar debajo
-       del registro de combate — el hueco que la separa de la arena (badges
-       de zona + feed de combate, ambos de alto ~fijo) es predecible, así que
-       un valor fijo en px basta sin acoplar el CSS al alto exacto de la
+       borde inferior de escenario.png (arena_outer), rozando casi los pies
+       de los 2 personajes centrales, en vez de quedar debajo del registro
+       de combate — el hueco que la separa de la arena (badges de zona +
+       feed de combate, ambos de alto ~fijo) es predecible, así que un
+       valor fijo en px basta sin acoplar el CSS al alto exacto de la
        arena (que ya es 100% responsive, ver st-key-arena_outer). */
     [class*="st-key-battle_hand_overlay"] {
         position: relative;
         z-index: 20;
         width: fit-content;
         max-width: 94%;
-        margin: -210px auto 0;
+        margin: -340px auto 0;
         background: rgba(10, 10, 14, 0.6);
         border: 1px solid rgba(255, 255, 255, 0.14);
         border-radius: 16px;
@@ -1295,83 +1296,32 @@ st.markdown(
         gap: 0.5rem !important;
     }
     [class*="st-key-battle_hand_overlay"] [data-testid="stColumn"] {
-        flex: 0 0 156px !important;
-        width: 156px !important;
-        max-width: 156px !important;
-        min-width: 156px !important;
+        flex: 0 0 204px !important;
+        width: 204px !important;
+        max-width: 204px !important;
+        min-width: 204px !important;
     }
     [class*="st-key-battle_hand_overlay"] img {
-        width: 140px !important;
-        height: 210px !important;
-    }
-    [class*="st-key-battle_hand_overlay"] .card-name {
-        font-size: 0.62rem !important;
-        min-height: 1.5em !important;
-        line-height: 1.05em !important;
-        margin-top: 0.1rem !important;
-    }
-    [class*="st-key-battle_hand_overlay"] .card-ability {
-        font-size: 0.56rem !important;
-        min-height: 1em !important;
-        margin: 0.05rem 0 !important;
+        width: 182px !important;
+        height: 273px !important;
     }
     [class*="st-key-battle_hand_overlay"] [data-testid="stCaptionContainer"] {
-        font-size: 0.58rem !important;
+        font-size: 0.6rem !important;
         line-height: 1.1em !important;
     }
-    [class*="st-key-battle_hand_overlay"] .card-info-trigger {
-        font-size: 0.56rem !important;
-        padding: 0.03rem 0.3rem !important;
-    }
-    .card-name {
-        font-weight: 600;
-        font-size: 0.85rem;
-        min-height: 2.3em;
-        line-height: 1.15em;
-        overflow: hidden;
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        margin-top: 0.25rem;
-    }
-    /* Altura fija para la línea de habilidad ('piercing', 'counter', ...)
-       aunque esté vacía, para que el selector de Zona y el botón Jugar
-       queden siempre alineados entre cartas con y sin habilidad. */
-    .card-ability {
-        font-size: 0.75rem;
-        color: rgba(135, 135, 135, 0.9);
-        min-height: 1.3em;
-        line-height: 1.3em;
-        margin: 0.1rem 0 0.2rem;
-    }
-    /* "ℹ️ Info" por carta: tooltip 100% CSS (sin widget de Streamlit, sin
-       rerun del servidor) para que se vea al INSTANTE con el ratón encima —
-       antes era un st.popover que había que pulsar, y con los 20s de
-       cuenta atrás del turno cada click de más cuenta. :hover lo abre en
-       PC; :focus hace lo mismo al tocar con el dedo en móvil (un <button>
-       real recibe foco al tap). z-index por encima del zoom de la imagen
-       (z-index:100 más abajo) para que no se la coma ese hover. */
-    .card-info-wrap {
-        position: relative;
-        display: inline-block;
-    }
-    .card-info-trigger {
-        position: relative;
-        z-index: 150;
-        display: inline-block;
-        font-size: 0.72rem;
-        padding: 0.1rem 0.5rem;
-        border-radius: 999px;
-        background: rgba(255, 255, 255, 0.08);
-        border: 1px solid rgba(255, 255, 255, 0.25);
-        color: inherit;
-        cursor: pointer;
-    }
+    /* Info de la carta (nombre, ATK/DEF/coste, habilidad, efecto,
+       descripción): SIN letrero fijo, todo va en este tooltip, revelado
+       solo al pasar el ratón por la carta (ver el <style> aparte de más
+       abajo, que activa esto con :hover en el contenedor card_glow_* —
+       el botón "select_" invisible que cubre la carta es quien de verdad
+       recibe el puntero). Centrado bajo la carta; pointer-events:none para
+       que el clic de selección siga pasando a través de él. */
     .card-info-panel {
         position: absolute;
         z-index: 200;
         top: 100%;
-        left: 0;
+        left: 50%;
+        transform: translateX(-50%);
         margin-top: 0.3rem;
         width: max-content;
         max-width: min(260px, 85vw);
@@ -1386,15 +1336,15 @@ st.markdown(
         visibility: hidden;
         transition: opacity 0.08s ease;
         pointer-events: none;
-    }
-    .card-info-trigger:hover + .card-info-panel,
-    .card-info-trigger:focus + .card-info-panel {
-        opacity: 1;
-        visibility: visible;
+        text-align: left;
     }
     .card-info-panel .card-info-name {
         font-weight: 700;
         margin-bottom: 0.2rem;
+    }
+    .card-info-panel .card-info-stats {
+        color: rgba(255, 213, 74, 0.95);
+        margin-bottom: 0.15rem;
     }
     .card-info-panel .card-info-desc {
         color: rgba(210, 210, 210, 0.85);
@@ -1433,17 +1383,15 @@ st.markdown(
         -webkit-box-orient: vertical;
         margin-top: 0.2rem;
     }
-    /* Zoom al pasar el ratón por una carta, tanto en la mano de combate
-       como en el Catálogo de Cartas y el Tutorial Interactivo: la imagen
-       se amplía por encima de sus vecinas (los contenedores padres no
-       recortan con overflow). */
-    [class*="st-key-battle_hand"] [data-testid="stImage"] img,
+    /* Zoom al pasar el ratón por una carta, en el Catálogo de Cartas y el
+       Tutorial Interactivo (la mano de combate NO se agranda al hover —
+       pedido explícito: solo al hacer CLIC/seleccionar, ver el <style>
+       aparte más abajo — el ratón solo revela ahí un tooltip de info). */
     [class*="st-key-gallery_grid"] [data-testid="stImage"] img,
     [class*="st-key-tutorial_card"] [data-testid="stImage"] img {
         transition: transform 0.25s ease-in-out, box-shadow 0.25s ease-in-out;
         cursor: pointer;
     }
-    [class*="st-key-battle_hand"] [data-testid="stImage"] img:hover,
     [class*="st-key-gallery_grid"] [data-testid="stImage"] img:hover,
     [class*="st-key-tutorial_card"] [data-testid="stImage"] img:hover {
         transform: scale(1.35);
@@ -1452,9 +1400,6 @@ st.markdown(
         box-shadow: 0px 10px 25px rgba(0, 0, 0, 0.6);
         border-radius: 8px;
     }
-    /* El hover de zoom+elevación de las cartas de la mano (scale+translateY
-       sobre el contenedor card_glow_*:hover) vive también en el <style>
-       aparte de más abajo — ver ese comentario. */
     .combat-feed {
         background: rgba(135, 135, 135, 0.08);
         border: 1px solid rgba(135, 135, 135, 0.25);
@@ -1825,13 +1770,6 @@ st.markdown(
             padding: 0.3rem 0.4rem !important;
             min-height: 2rem !important;
         }
-        [class*="st-key-battle_hand"] .card-name {
-            font-size: 0.7rem !important;
-            min-height: 1.8em !important;
-        }
-        [class*="st-key-battle_hand"] .card-ability {
-            font-size: 0.6rem !important;
-        }
     }
 
     /* Arena de combate (render_arena): escenario.png de fondo con las
@@ -2036,24 +1974,28 @@ st.markdown(
     /* Cada carta (card_glow_playable/locked/sel) es su propio contexto de
        posicionamiento: así el botón "select_" invisible de abajo
        (position:absolute;inset:0) se confina SIEMPRE al rectángulo de SU
-       PROPIA carta. z-index base bajo, más alto en :hover para que la
-       carta activa se vea POR ENCIMA de sus vecinas mientras el hover la
-       agranda (scale 1.25 + translateY -12px se sale de su caja normal). */
+       PROPIA carta. La carta SELECCIONADA (clic, no hover — ver más abajo)
+       sube por encima de sus vecinas mientras el zoom la saca de su caja
+       normal; el hover también sube un poco el z-index para que el
+       tooltip de info nunca quede tapado por la carta de al lado. */
     [class*="st-key-battle_hand"] [class*="st-key-card_glow_playable"],
     [class*="st-key-battle_hand"] [class*="st-key-card_glow_locked"],
     [class*="st-key-battle_hand"] [class*="st-key-card_glow_sel"] {
         position: relative !important;
         z-index: 1;
     }
+    [class*="st-key-battle_hand"] [class*="st-key-card_glow_sel"] {
+        z-index: 50 !important;
+    }
     [class*="st-key-battle_hand"] [class*="st-key-card_glow_playable"]:hover,
     [class*="st-key-battle_hand"] [class*="st-key-card_glow_locked"]:hover,
     [class*="st-key-battle_hand"] [class*="st-key-card_glow_sel"]:hover {
-        z-index: 50 !important;
+        z-index: 60 !important;
     }
     /* Botón "Seleccionar" real (misma key/lógica de siempre) estirado
-       invisible sobre toda la carta: clicar imagen/nombre/stats selecciona.
-       El trigger "ℹ️ Info" tiene z-index más alto (150/200, arriba en el
-       bloque CSS grande) así que sigue recibiendo el click/hover encima. */
+       invisible sobre toda la carta: clicar imagen la selecciona — sin
+       letrero visible, el estado se lee por el borde dorado + el zoom
+       (ver más abajo) de la carta elegida. */
     [class*="st-key-battle_hand"] [class*="st-key-select_"] {
         position: absolute !important;
         inset: 0 !important;
@@ -2073,20 +2015,28 @@ st.markdown(
         padding: 0 !important;
         cursor: pointer;
     }
-    /* Hover de zoom+elevación: dispara con :hover en el CONTENEDOR
-       (card_glow_*), no en la propia <img> — el botón invisible de arriba
-       queda por encima de toda la carta, así que es él quien recibe el
-       :hover del ratón, pero como es descendiente del mismo contenedor,
-       :hover "sube" hasta ahí y de ahí llega a la imagen hermana. Un
-       selector `img:hover` directo nunca dispararía (el ratón nunca toca
-       la <img> en sí, toca el botón de encima). */
-    [class*="st-key-battle_hand"] [data-testid="stImage"] img {
-        transition: all 0.2s ease;
+    /* Sin hover de tamaño (pedido explícito): pasar el ratón NO agranda la
+       carta, solo revela el tooltip .card-info-panel (nombre/ATK-DEF/coste/
+       habilidad/efecto — estilo base en el bloque CSS grande; aquí solo
+       la activación). Dispara con :hover en el CONTENEDOR (card_glow_*),
+       no en el propio panel: el botón "select_" invisible de arriba queda
+       por encima de toda la carta, así que es él quien recibe el :hover
+       del ratón, pero como es descendiente del mismo contenedor, :hover
+       "sube" hasta ahí y de ahí llega al tooltip hermano. */
+    [class*="st-key-battle_hand"] [class*="st-key-card_glow_playable"]:hover .card-info-panel,
+    [class*="st-key-battle_hand"] [class*="st-key-card_glow_locked"]:hover .card-info-panel,
+    [class*="st-key-battle_hand"] [class*="st-key-card_glow_sel"]:hover .card-info-panel {
+        opacity: 1;
+        visibility: visible;
     }
-    [class*="st-key-battle_hand"] [class*="st-key-card_glow_playable"]:hover [data-testid="stImage"] img,
-    [class*="st-key-battle_hand"] [class*="st-key-card_glow_locked"]:hover [data-testid="stImage"] img,
-    [class*="st-key-battle_hand"] [class*="st-key-card_glow_sel"]:hover [data-testid="stImage"] img {
-        transform: scale(1.25) translateY(-12px);
+    /* Clic = selección = zoom grande (scale 1.25) hasta elegir otra carta:
+       esta vuelve al tamaño base y la nueva se agranda — ver card_glow_sel,
+       calculado en render_hand según sel_card_{jugador} en session_state. */
+    [class*="st-key-battle_hand"] [data-testid="stImage"] img {
+        transition: transform 0.2s ease;
+    }
+    [class*="st-key-battle_hand"] [class*="st-key-card_glow_sel"] [data-testid="stImage"] img {
+        transform: scale(1.25);
         position: relative;
         z-index: 100;
     }
@@ -2534,24 +2484,28 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                 img = card_image_path(card_dict)
                 if img:
                     st.image(str(img), width="stretch")
-                st.markdown(f"<div class='card-name'>{html.escape(card_dict['name'])}</div>", unsafe_allow_html=True)
-                st.caption(f"{card_dict['atk']} ATK / {card_dict['defense']} DEF · Coste {card_dict['cost_energy']}")
+                # Sin letreros fijos (nombre/ATK-DEF/coste/habilidad/Info):
+                # todo vive en este tooltip, revelado solo al pasar el
+                # ratón por la carta (ver el <style> aparte, más arriba,
+                # que activa .card-info-panel con :hover en el contenedor
+                # card_glow_*) — libera alto vertical para que "Resolver
+                # turno" quepa sin scroll pese a las cartas más grandes.
                 ability = card_dict.get("ability")
-                ability_text = f"✨ {html.escape(ability)}" if ability and ability != "none" else "&nbsp;"
-                st.markdown(f"<div class='card-ability'>{ability_text}</div>", unsafe_allow_html=True)
+                ability_line = f"<div>✨ {html.escape(ability)}</div>" if ability and ability != "none" else ""
                 desc_html = (
                     f"<div class='card-info-desc'>{html.escape(card_dict['description'])}</div>"
                     if card_dict.get("description")
                     else ""
                 )
                 st.markdown(
-                    "<div class='card-info-wrap'>"
-                    "<button type='button' class='card-info-trigger' tabindex='0'>ℹ️ Info</button>"
                     "<div class='card-info-panel'>"
                     f"<div class='card-info-name'>{html.escape(card_dict['name'])} · {card_type_label(card_dict)}</div>"
+                    f"<div class='card-info-stats'>{card_dict['atk']} ATK / {card_dict['defense']} DEF · "
+                    f"Coste {card_dict['cost_energy']}</div>"
+                    f"{ability_line}"
                     f"<div>{card_effect_text(card_dict)}</div>"
                     f"{desc_html}"
-                    "</div></div>",
+                    "</div>",
                     unsafe_allow_html=True,
                 )
                 btn_label = "✅ Elegida" if selected else "Seleccionar"
