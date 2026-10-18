@@ -1285,10 +1285,10 @@ st.markdown(
         z-index: 20;
         width: fit-content;
         max-width: 94%;
-        /* Subido respecto a la versión anterior (-340px) para que "Pasar
-           Turno" quede dentro de la franja visible del escenario sin
-           scroll en resoluciones de pantalla estándar. */
-        margin: -385px auto 0;
+        /* Subido respecto a la versión anterior (-340px, luego -385px) para
+           que "Pasar Turno" quede dentro de la franja visible del escenario
+           sin scroll en resoluciones de pantalla estándar. */
+        margin: -415px auto 0;
         background: rgba(10, 10, 14, 0.6);
         border: 1px solid rgba(255, 255, 255, 0.14);
         border-radius: 16px;
@@ -1314,6 +1314,15 @@ st.markdown(
            alto total del panel sin perder la sensación de carta grande. */
         width: 208px !important;
         height: 312px !important;
+    }
+    /* "Pasar Turno" siempre por encima del marco/zoom de la carta elegida
+       (que sube con z-index 100, ver card_glow_sel más abajo) y con aire
+       propio respecto a la fila de cartas, para que el clic nunca quede
+       bloqueado por la carta expandida. */
+    [class*="st-key-confirm_turn_"] {
+        position: relative !important;
+        z-index: 9999 !important;
+        margin-top: 12px !important;
     }
     [class*="st-key-battle_hand_overlay"] [data-testid="stCaptionContainer"] {
         font-size: 0.6rem !important;
@@ -2056,14 +2065,19 @@ st.markdown(
         opacity: 1;
         visibility: visible;
     }
-    /* Clic = selección = zoom grande (scale 1.25) hasta elegir otra carta:
-       esta vuelve al tamaño base y la nueva se agranda — ver card_glow_sel,
-       calculado en render_hand según sel_card_{jugador} en session_state. */
+    /* Clic = selección = zoom grande hasta elegir otra carta: esta vuelve al
+       tamaño base y la nueva se agranda — ver card_glow_sel, calculado en
+       render_hand según sel_card_{jugador} en session_state.
+       transform-origin: bottom center + scale/translateY negativo: la carta
+       crece HACIA ARRIBA (hacia el escenario) en vez de crecer también hacia
+       abajo (origen por defecto = centro), que era lo que hacía que el marco
+       dorado invadiera y tapara el botón "Pasar Turno" de debajo. */
     [class*="st-key-battle_hand"] [data-testid="stImage"] img {
         transition: transform 0.2s ease;
     }
     [class*="st-key-battle_hand"] [class*="st-key-card_glow_sel"] [data-testid="stImage"] img {
-        transform: scale(1.25);
+        transform-origin: bottom center;
+        transform: scale(1.22) translateY(-10px);
         position: relative;
         z-index: 100;
     }
