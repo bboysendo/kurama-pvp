@@ -1289,21 +1289,26 @@ st.markdown(
         background: rgba(10, 10, 14, 0.6);
         border: 1px solid rgba(255, 255, 255, 0.14);
         border-radius: 16px;
-        padding: 0.5rem 0.7rem 0.35rem;
+        padding: 0.25rem 0.3rem 0.2rem;
         box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+        /* El propio contenedor ES el stVerticalBlock (la key va en el mismo
+           div) — bajar su gap aquí es lo que pega el botón "Pasar Turno"
+           justo debajo de la fila de cartas, sin el hueco por defecto de
+           Streamlit (~1rem) entre ambos. */
+        gap: 0.2rem !important;
     }
     [class*="st-key-battle_hand_overlay"] [data-testid="stHorizontalBlock"] {
-        gap: 0.5rem !important;
+        gap: 0.4rem !important;
     }
     [class*="st-key-battle_hand_overlay"] [data-testid="stColumn"] {
-        flex: 0 0 204px !important;
-        width: 204px !important;
-        max-width: 204px !important;
-        min-width: 204px !important;
+        flex: 0 0 248px !important;
+        width: 248px !important;
+        max-width: 248px !important;
+        min-width: 248px !important;
     }
     [class*="st-key-battle_hand_overlay"] img {
-        width: 182px !important;
-        height: 273px !important;
+        width: 226px !important;
+        height: 339px !important;
     }
     [class*="st-key-battle_hand_overlay"] [data-testid="stCaptionContainer"] {
         font-size: 0.6rem !important;
