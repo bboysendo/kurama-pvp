@@ -1285,30 +1285,35 @@ st.markdown(
         z-index: 20;
         width: fit-content;
         max-width: 94%;
-        margin: -340px auto 0;
+        /* Subido respecto a la versión anterior (-340px) para que "Pasar
+           Turno" quede dentro de la franja visible del escenario sin
+           scroll en resoluciones de pantalla estándar. */
+        margin: -385px auto 0;
         background: rgba(10, 10, 14, 0.6);
         border: 1px solid rgba(255, 255, 255, 0.14);
         border-radius: 16px;
-        padding: 0.25rem 0.3rem 0.2rem;
+        padding: 0.2rem 0.3rem 0.15rem;
         box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
         /* El propio contenedor ES el stVerticalBlock (la key va en el mismo
            div) — bajar su gap aquí es lo que pega el botón "Pasar Turno"
            justo debajo de la fila de cartas, sin el hueco por defecto de
            Streamlit (~1rem) entre ambos. */
-        gap: 0.2rem !important;
+        gap: 0.15rem !important;
     }
     [class*="st-key-battle_hand_overlay"] [data-testid="stHorizontalBlock"] {
-        gap: 0.4rem !important;
+        gap: 0.35rem !important;
     }
     [class*="st-key-battle_hand_overlay"] [data-testid="stColumn"] {
-        flex: 0 0 248px !important;
-        width: 248px !important;
-        max-width: 248px !important;
-        min-width: 248px !important;
+        flex: 0 0 228px !important;
+        width: 228px !important;
+        max-width: 228px !important;
+        min-width: 228px !important;
     }
     [class*="st-key-battle_hand_overlay"] img {
-        width: 226px !important;
-        height: 339px !important;
+        /* 8% más chicas que la versión anterior (226x339) para bajar el
+           alto total del panel sin perder la sensación de carta grande. */
+        width: 208px !important;
+        height: 312px !important;
     }
     [class*="st-key-battle_hand_overlay"] [data-testid="stCaptionContainer"] {
         font-size: 0.6rem !important;
