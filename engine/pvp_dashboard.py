@@ -2077,7 +2077,7 @@ st.markdown(
     }
     [class*="st-key-battle_hand"] [class*="st-key-card_glow_sel"] [data-testid="stImage"] img {
         transform-origin: bottom center;
-        transform: scale(1.22) translateY(-10px);
+        transform: scale(1.2) translateY(-12px);
         position: relative;
         z-index: 100;
     }
