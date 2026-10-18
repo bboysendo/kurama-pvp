@@ -2543,6 +2543,8 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                     disabled=not affordable,
                 ):
                     st.session_state[sel_card_key] = None if selected else card_dict["id"]
+                    st.session_state[f"atk_zone_{player_key}"] = None
+                    st.session_state[f"def_zone_{player_key}"] = None
                     st.rerun()
                 if not affordable:
                     st.caption("⚠️ Energía insuficiente")
