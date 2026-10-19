@@ -2178,12 +2178,28 @@ st.session_state.setdefault("turn_start_time", time.time())
 if match.status == MatchStatus.ONGOING:
     elapsed = time.time() - st.session_state.turn_start_time
     if elapsed >= TURN_TIMER_SECONDS:
-        if st.session_state.vs_bot:
-            auto_skip_turn(match, "a")
-            bot_choose_plays(match, "b")
-        end_turn(match)
-        st.session_state.turn_start_time = time.time()
-        _reset_tactical_selection()
+        print(f"[TIMEOUT] Ronda {match.turn_number}: temporizador expirado, resolviendo turno.")
+        try:
+            if st.session_state.vs_bot:
+                auto_skip_turn(match, "a")
+                try:
+                    bot_choose_plays(match, "b")
+                except Exception as e:
+                    # No dejar el round a medio resolver si el Bot falla al
+                    # elegir jugada: igualmente hay que cerrar el turno, si
+                    # no la partida queda congelada en esta misma ronda.
+                    print(f"[TIMEOUT] bot_choose_plays fallo: {e!r}")
+                    match.log.append(f"El Bot no pudo jugar cartas este turno ({e}).")
+            end_turn(match)
+        except Exception as e:
+            print(f"[TIMEOUT] end_turn fallo: {e!r}")
+            match.log.append(f"Error al resolver el turno automáticamente: {e}")
+        finally:
+            # Resetear SIEMPRE, incluso si falló: si no, el timer ya expirado
+            # sigue en 0 en el próximo rerun y el error se repite sin fin.
+            st.session_state.turn_start_time = time.time()
+            _reset_tactical_selection()
+            print(f"[TIMEOUT] turno reseteado (Ronda {match.turn_number}), forzando rerun.")
         st.rerun()
 
 state = get_match_state(match)
@@ -2607,9 +2623,6 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
             def_zone_final = def_zone_val or atk_zone_val
             try:
                 play_card(match, player_key, sel_card_id, Zone(atk_zone_final), defense_zone=Zone(def_zone_final))
-            except EngineError as e:
-                st.error(str(e))
-            else:
                 if auto_resolve:
                     bot_choose_plays(match, "b")
                     if needs_atk:
@@ -2618,6 +2631,9 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                         match.log.append(_describe_tactical_result(attacker, defender, Zone(atk_zone_final)))
                     end_turn(match)
                     st.session_state.turn_start_time = time.time()
+            except EngineError as e:
+                st.error(str(e))
+            else:
                 _reset_tactical_selection(player_key)
             st.rerun()
 
@@ -2636,9 +2652,13 @@ if state["status"] == MatchStatus.ONGOING.value:
         render_hand("a", state["player_a"]["name"], auto_resolve=False)
         render_hand("b", state["player_b"]["name"], auto_resolve=False)
         if st.button("⏭️ Resolver turno", type="primary", width="stretch"):
-            end_turn(match)
+            try:
+                end_turn(match)
+            except EngineError as e:
+                st.error(str(e))
+            else:
+                _reset_tactical_selection()
             st.session_state.turn_start_time = time.time()
-            _reset_tactical_selection()
             st.rerun()
 
 with st.expander("📜 Registro completo de la partida", expanded=False):
