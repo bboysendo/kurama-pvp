@@ -735,10 +735,19 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
         )
 
         if st.session_state.match_mode == "competitive":
+            # Tope de la apuesta al saldo real de la wallet — si el saldo
+            # bajó (p.ej. tras perder una partida) por debajo del valor ya
+            # guardado en session_state, hay que recortarlo ANTES de crear
+            # el widget con ese valor por key, si no Streamlit se queja de
+            # un max_value menor que el value actual.
+            balance = connector.kur_balance(wallet_address)
+            if st.session_state.get("navbar_stake", 0.0) > balance:
+                st.session_state.navbar_stake = balance
             stake_col, economy_col = st.columns([1, 3])
             with stake_col:
                 stake = st.number_input(
-                    "Apuesta en KUR", min_value=0.0, value=10.0, step=1.0, key="navbar_stake"
+                    "Apuesta en KUR", min_value=0.0, max_value=balance,
+                    value=min(10.0, balance), step=1.0, key="navbar_stake",
                 )
             economy = compute_match_economy(st.session_state.match_mode, stake)
             # Bote real (ambos jugadores igualan la apuesta) y comisión sobre
@@ -820,18 +829,26 @@ def _launch_match(
 
 
 def render_new_match_button(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
+    is_competitive = st.session_state.match_mode == "competitive"
+    stake = st.session_state.get("navbar_stake", 10.0) if is_competitive else 0.0
+    insufficient = is_competitive and stake > connector.kur_balance(wallet_address)
     with st.container(key="new_match_cta"):
-        if st.button("⚔️ LANZAR RETO ⚔️", key="navbar_new_match", width="stretch", type="primary"):
-            if st.session_state.opponent_choice == "Bot":
-                # Free/Competitivo publican nuestro propio reto en la columna
-                # de la derecha (render_bot_challenges_feed) hasta
-                # MATCHMAKING_SECONDS, luego cae a BOT; Hotseat ya tiene un
-                # rival local conocido, no necesita buscar.
-                st.session_state["matchmaking_start"] = time.time()
-            else:
-                stake = st.session_state.get("navbar_stake", 10.0) if st.session_state.match_mode == "competitive" else 0.0
-                _launch_match(connector, wallet_address, pool_27, name_b="Jugador B", stake_kur=stake)
-            st.rerun()
+        clicked = st.button(
+            "🚫 Saldo Insuficiente" if insufficient else "⚔️ LANZAR RETO ⚔️",
+            key="navbar_new_match", width="stretch", type="primary", disabled=insufficient,
+        )
+    if insufficient:
+        st.error("No tienes suficiente $KUR para esta apuesta.")
+    elif clicked:
+        if st.session_state.opponent_choice == "Bot":
+            # Free/Competitivo publican nuestro propio reto en la columna
+            # de la derecha (render_bot_challenges_feed) hasta
+            # MATCHMAKING_SECONDS, luego cae a BOT; Hotseat ya tiene un
+            # rival local conocido, no necesita buscar.
+            st.session_state["matchmaking_start"] = time.time()
+        else:
+            _launch_match(connector, wallet_address, pool_27, name_b="Jugador B", stake_kur=stake)
+        st.rerun()
 
 
 # --------------------------------------------------------------------------- #
@@ -971,13 +988,16 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
                 {"id": "own", "remainingMs": remaining * 1000, "totalMs": MATCHMAKING_SECONDS * 1000}
             )
 
+        is_competitive = st.session_state.match_mode == "competitive"
+        balance = connector.kur_balance(wallet_address) if is_competitive else 0.0
         bot_stake_html = (
             "<div class='challenge-rival-stake'>💰 Apuesta: {stake:.2f} $KUR</div>"
-            if st.session_state.match_mode == "competitive" else ""
+            if is_competitive else ""
         )
         for ch in st.session_state.bot_challenges:
             remaining = max(0.0, ch["expires_at"] - now)
             pct = max(5, int(remaining / ch["duration_s"] * 100))
+            insufficient = is_competitive and ch["stake_kur"] > balance
             with st.container(key=f"challenge_row_{ch['id']}"):
                 btn_col = _render_challenge_row(
                     ch["gamenft_id"],
@@ -989,7 +1009,19 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
                     str(ch["id"]), pct,
                 )
                 with btn_col:
-                    accepted = st.button("Aceptar Reto", key=f"accept_challenge_{ch['id']}")
+                    accepted = st.button(
+                        "🚫 Sin saldo" if insufficient else "Aceptar Reto",
+                        key=f"accept_challenge_{ch['id']}", disabled=insufficient,
+                    )
+                if insufficient and accepted:
+                    # No debería poder dispararse con el botón ya
+                    # deshabilitado — queda igual como respaldo.
+                    accepted = False
+                if insufficient:
+                    st.warning(
+                        f"⚠️ No tienes suficiente $KUR para aceptar este reto "
+                        f"(Requiere {ch['stake_kur']:.2f} $KUR)."
+                    )
                 if accepted:
                     st.session_state.bot_challenges = [
                         c for c in st.session_state.bot_challenges if c["id"] != ch["id"]
@@ -1994,6 +2026,15 @@ st.markdown(
         box-shadow: 0 2px 8px rgba(255, 85, 0, 0.5) !important;
         transition: transform 0.05s ease, box-shadow 0.05s ease !important;
     }
+    /* "🚫 Saldo Insuficiente" (apuesta > balance, ver render_new_match_button):
+       gris apagado en vez del naranja vivo, para que se lea como bloqueado
+       sin necesidad de leer el texto. */
+    [class*="st-key-new_match_cta"] .stButton > button:disabled {
+        background: rgba(255, 255, 255, 0.08) !important;
+        color: rgba(255, 255, 255, 0.5) !important;
+        box-shadow: none !important;
+        text-shadow: none !important;
+    }
     /* Columna derecha del lobby: feed de retos de bots simulados
        (render_bot_challenges_feed) — misma estética oscura con borde sutil
        que st-key-left_info_panel, una fila por rival con su propio borde
@@ -2085,6 +2126,13 @@ st.markdown(
     [class*="st-key-challenge_row_"] .stButton > button:hover {
         box-shadow: 0 4px 16px rgba(34, 197, 94, 0.7);
         color: #fff !important;
+    }
+    /* "🚫 Sin saldo" (apuesta del reto > balance): gris apagado en vez del
+       verde de "Aceptar Reto", para que se lea como bloqueado. */
+    [class*="st-key-challenge_row_"] .stButton > button:disabled {
+        background: rgba(255, 255, 255, 0.08) !important;
+        color: rgba(255, 255, 255, 0.5) !important;
+        box-shadow: none !important;
     }
     /* "Cancelar Reto" (nuestro propio reto, challenge_row_own): mismo
        tamaño que "Aceptar Reto" pero gris/rojo apagado en vez de verde,
