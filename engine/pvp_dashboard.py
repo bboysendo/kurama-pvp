@@ -1499,6 +1499,35 @@ st.markdown(
         z-index: 9999 !important;
         margin-top: 12px !important;
     }
+    /* Mismo estilo Pro del CTA "⚔️ LANZAR RETO" (naranja neón, bordes
+       redondeados, glow y sombreado — ver st-key-new_match_cta) para que
+       "Pasar Turno", el CTA del combate, sea coherente con el del lobby. */
+    [class*="st-key-confirm_turn_"] button {
+        background: linear-gradient(135deg, #FF5500, #FF6B00) !important;
+        border: none !important;
+        color: #fff !important;
+        font-weight: 800 !important;
+        letter-spacing: 0.03em;
+        text-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+        border-radius: 24px !important;
+        box-shadow: 0 4px 16px rgba(255, 85, 0, 0.55);
+        transition: transform 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+    }
+    [class*="st-key-confirm_turn_"] button:hover:not(:disabled) {
+        transform: scale(1.02);
+        box-shadow: 0 8px 28px rgba(255, 107, 0, 0.85);
+        color: #fff !important;
+    }
+    [class*="st-key-confirm_turn_"] button:active:not(:disabled) {
+        transform: translateY(2px) scale(0.98) !important;
+        box-shadow: 0 2px 8px rgba(255, 85, 0, 0.5) !important;
+        transition: transform 0.05s ease, box-shadow 0.05s ease !important;
+    }
+    [class*="st-key-confirm_turn_"] button:disabled {
+        background: rgba(255, 85, 0, 0.3) !important;
+        box-shadow: none !important;
+        color: rgba(255, 255, 255, 0.6) !important;
+    }
     [class*="st-key-battle_hand_overlay"] [data-testid="stCaptionContainer"] {
         font-size: 0.6rem !important;
         line-height: 1.1em !important;
@@ -1893,7 +1922,8 @@ st.markdown(
         justify-content: center;
         margin: 0.4rem 0;
     }
-    [class*="st-key-new_match_cta"] [data-testid="stVerticalBlock"] {
+    [class*="st-key-new_match_cta"] [data-testid="stVerticalBlock"],
+    [class*="st-key-new_match_cta"] [data-testid="stElementContainer"] {
         width: 100%;
         display: flex;
         justify-content: center;
@@ -1901,6 +1931,7 @@ st.markdown(
     [class*="st-key-new_match_cta"] .stButton {
         width: 100%;
         max-width: 280px;
+        margin: 0 auto !important;
     }
     [class*="st-key-new_match_cta"] .stButton > button {
         width: 100%;
@@ -1974,7 +2005,22 @@ st.markdown(
     [class*="st-key-challenge_row_"] .turn-timer-wrap {
         margin: 0;
     }
+    /* La barra (1ra columna) crece para ocupar todo el espacio libre
+       (flex:1) y el botón (última columna) se achica a su propio contenido
+       (flex:0, ancho auto) — así quedan pegados uno al otro hasta el borde
+       derecho de la tarjeta, sin el hueco muerto que dejaba el reparto fijo
+       [3, 2] de st.columns cuando el botón no llenaba su columna. */
+    [class*="st-key-challenge_action_row_"] [data-testid="stHorizontalBlock"] {
+        flex-wrap: nowrap !important;
+    }
+    [class*="st-key-challenge_action_row_"] [data-testid="stColumn"]:first-child {
+        flex: 1 1 auto !important;
+        width: auto !important;
+        min-width: 0 !important;
+    }
     [class*="st-key-challenge_action_row_"] [data-testid="stColumn"]:last-child {
+        flex: 0 0 auto !important;
+        width: auto !important;
         display: flex;
         justify-content: flex-end;
         align-items: center;
