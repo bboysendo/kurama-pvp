@@ -1215,12 +1215,6 @@ st.markdown(
     .block-container {
         padding-top: 1rem !important;
         padding-bottom: 0rem !important;
-        max-width: 1400px !important;
-        margin-left: auto !important;
-        margin-right: auto !important;
-    }
-    img, iframe, canvas {
-        max-width: 100% !important;
     }
     header[data-testid="stHeader"] {
         background: transparent !important;
