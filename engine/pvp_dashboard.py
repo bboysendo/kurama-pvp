@@ -850,7 +850,7 @@ SIMULATED_BOT_NAME_POOL = [
     "KitsuneMaster_99", "ShadowKitsune", "CyberFox_X", "KitsuneRogue", "FireFox_99",
     "NightVixen", "PhantomFox", "BlazeKitsune", "FrostFox_7", "VoidKitsune",
 ]
-BOT_CHALLENGE_COUNT = 3
+BOT_CHALLENGE_COUNT = 5
 
 
 def _new_bot_challenge(rng: random.Random, taken_names: set[str], taken_ids: set[int]) -> dict:
@@ -888,23 +888,26 @@ def _refresh_bot_challenges() -> None:
     st.session_state.bot_challenges = challenges
 
 
-def _render_challenge_row(gamenft_id: int | None, name_html: str, detail_html: str, timer_id: str, pct: int, remaining_s: int) -> None:
-    """Fila compartida (avatar pequeño + nombre/rareza + barra de tiempo),
-    reusada tanto para nuestro propio reto como para los de bots."""
-    avatar_col, info_col = st.columns([1, 3])
+def _render_challenge_row(gamenft_id: int | None, name_html: str, detail_html: str, timer_id: str, pct: int):
+    """Fila compacta compartida: avatar pequeño + nombre/rareza (fila 1),
+    barra de tiempo (fila 2, columna ancha) — el botón de acción va en la
+    columna angosta que se devuelve sin abrir, para que cada caller decida
+    su label/key/color (✅ verde para aceptar, ❌ rojo para cancelar)."""
+    avatar_col, info_col = st.columns([1, 4])
     with avatar_col:
-        st.image(str(gamenft_avatar_path(gamenft_id)), width=56)
+        st.image(str(gamenft_avatar_path(gamenft_id)), width=40)
     with info_col:
         st.markdown(name_html + detail_html, unsafe_allow_html=True)
-    st.markdown(
-        f"<div class='turn-timer-wrap'>"
-        f"<div class='turn-timer-track'><div class='turn-timer-fill' "
-        f"id='challenge-fill-{timer_id}' style='width:{pct}%'></div></div>"
-        f"<div class='turn-timer-label'>Buscando rival… "
-        f"<span id='challenge-seconds-{timer_id}'>{remaining_s}</span>s</div>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
+    bar_col, btn_col = st.columns([4, 1])
+    with bar_col:
+        st.markdown(
+            f"<div class='turn-timer-wrap'>"
+            f"<div class='turn-timer-track'><div class='turn-timer-fill' "
+            f"id='challenge-fill-{timer_id}' style='width:{pct}%'></div></div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    return btn_col
 
 
 def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
@@ -926,15 +929,16 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
             own_rarity = resolve_equipped_rarity(connector, wallet_address)
             pct = max(5, int(remaining / MATCHMAKING_SECONDS * 100))
             with st.container(key="challenge_row_own"):
-                _render_challenge_row(
+                btn_col = _render_challenge_row(
                     st.session_state.get("equipped_token_id"),
                     "<div class='challenge-rival-name'>🦊 Tú (Jugador A)</div>",
                     f"<div class='challenge-rival-nft'>{rarity_label(own_rarity)} · "
-                    f"HP {compute_base_hp(own_rarity)}</div>",
-                    "own", pct, int(remaining),
+                    f"HP {compute_base_hp(own_rarity)} · "
+                    f"<span id='challenge-seconds-own'>{int(remaining)}</span>s</div>",
+                    "own", pct,
                 )
-                with st.container(key="cancel_own_challenge_wrap"):
-                    if st.button("❌ Cancelar Reto", key="cancel_own_challenge", width="stretch"):
+                with btn_col, st.container(key="cancel_own_challenge_wrap"):
+                    if st.button("❌", key="cancel_own_challenge", width="stretch", help="Cancelar Reto"):
                         st.session_state["matchmaking_start"] = None
                         st.rerun()
             timer_specs.append(
@@ -945,14 +949,19 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
             remaining = max(0.0, ch["expires_at"] - now)
             pct = max(5, int(remaining / ch["duration_s"] * 100))
             with st.container(key=f"challenge_row_{ch['id']}"):
-                _render_challenge_row(
+                btn_col = _render_challenge_row(
                     ch["gamenft_id"],
                     f"<div class='challenge-rival-name'>🦊 {ch['name']}</div>",
                     f"<div class='challenge-rival-nft'>Fox #{ch['gamenft_id']} · "
-                    f"{rarity_label(ch['rarity'])} · HP {compute_base_hp(ch['rarity'])}</div>",
-                    str(ch["id"]), pct, int(remaining),
+                    f"{rarity_label(ch['rarity'])} · HP {compute_base_hp(ch['rarity'])} · "
+                    f"<span id='challenge-seconds-{ch['id']}'>{int(remaining)}</span>s</div>",
+                    str(ch["id"]), pct,
                 )
-                if st.button("✅ Aceptar Reto", key=f"accept_challenge_{ch['id']}", width="stretch"):
+                with btn_col:
+                    accepted = st.button(
+                        "✅", key=f"accept_challenge_{ch['id']}", width="stretch", help="Aceptar Reto"
+                    )
+                if accepted:
                     st.session_state.bot_challenges = [
                         c for c in st.session_state.bot_challenges if c["id"] != ch["id"]
                     ]
@@ -1332,8 +1341,6 @@ if panel_mode.startswith("🛒"):
     render_marketplace_quickbar(connector, current_wallet_address)
 
 st.markdown('<div id="kurama-title"></div>', unsafe_allow_html=True)
-st.title("⚔️ Kurama Run — Simulador PVP")
-st.caption("Prototipo local y desacoplado — motor de combate + lectura BSC simulada. No usa fondos reales.")
 if st.session_state.match is None:
     # Solo en el lobby (sin partida activa): durante el combate el ancla de
     # "arena-top-anchor" manda, y si este script también corriera competiría
@@ -1925,26 +1932,40 @@ st.markdown(
     [class*="st-key-bot_challenges_feed"] {
         border: 1px solid rgba(135, 135, 135, 0.25);
         border-radius: 10px;
-        padding: 0.6rem 0.8rem;
+        padding: 0.5rem 0.6rem;
         height: 100%;
         box-sizing: border-box;
     }
     [class*="st-key-challenge_row_"] {
         border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 8px;
-        padding: 0.5rem 0.7rem;
-        margin-bottom: 0.5rem;
+        padding: 0.3rem 0.5rem;
+        margin-bottom: 0.3rem;
         background: rgba(255, 255, 255, 0.03);
+    }
+    [class*="st-key-challenge_row_"] [data-testid="stHorizontalBlock"] {
+        align-items: center !important;
+        gap: 0.4rem !important;
+    }
+    [class*="st-key-challenge_row_"] [data-testid="stImage"] img {
+        border-radius: 6px;
     }
     .challenge-rival-name {
         font-weight: 700;
-        font-size: 0.95rem;
+        font-size: 0.82rem;
         color: #fff;
+        line-height: 1.2;
     }
     .challenge-rival-nft {
-        font-size: 0.8rem;
+        font-size: 0.7rem;
         color: rgba(255, 255, 255, 0.6);
-        margin-bottom: 0.3rem;
+        line-height: 1.2;
+    }
+    /* Barra de tiempo + botón en la misma fila (columnas [4, 1] de
+       _render_challenge_row): la barra pierde su alto por defecto y el
+       botón se achica a su lado en vez de ser un bloque grande debajo. */
+    [class*="st-key-challenge_row_"] .turn-timer-wrap {
+        margin: 0;
     }
     [class*="st-key-challenge_row_"] .stButton > button {
         background: linear-gradient(135deg, #16a34a, #22c55e) !important;
@@ -1952,15 +1973,19 @@ st.markdown(
         color: #fff !important;
         font-weight: 700 !important;
         box-shadow: 0 2px 10px rgba(34, 197, 94, 0.45);
+        min-height: 1.6rem !important;
+        height: 1.6rem !important;
+        padding: 0 !important;
+        font-size: 0.85rem !important;
     }
     [class*="st-key-challenge_row_"] .stButton > button:hover {
         box-shadow: 0 4px 16px rgba(34, 197, 94, 0.7);
         color: #fff !important;
     }
-    /* "❌ Cancelar Reto" (nuestro propio reto, challenge_row_own): mismo
-       tamaño que "✅ Aceptar Reto" pero gris/rojo apagado en vez de verde,
-       para no confundirlo con aceptar el reto de un rival. Va después de la
-       regla verde de arriba — misma especificidad, gana por orden. */
+    /* "❌" (cancelar nuestro propio reto, challenge_row_own): mismo tamaño
+       que "✅" pero gris/rojo apagado en vez de verde, para no confundirlo
+       con aceptar el reto de un rival. Va después de la regla verde de
+       arriba — misma especificidad, gana por orden. */
     [class*="st-key-cancel_own_challenge_wrap"] .stButton > button {
         background: rgba(255, 255, 255, 0.08) !important;
         border: 1px solid rgba(239, 68, 68, 0.5) !important;
