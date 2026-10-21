@@ -1191,17 +1191,22 @@ if panel_mode.startswith("🛒"):
 st.markdown('<div id="kurama-title"></div>', unsafe_allow_html=True)
 st.title("⚔️ Kurama Run — Simulador PVP")
 st.caption("Prototipo local y desacoplado — motor de combate + lectura BSC simulada. No usa fondos reales.")
-st.markdown("""
-    <script>
-        setTimeout(function() {
-            var el = window.parent.document.getElementById('kurama-title');
-            if (el) {
-                var rect = el.getBoundingClientRect();
-                window.parent.scrollTo({ top: window.parent.scrollY + rect.top - 20, behavior: 'smooth' });
-            }
-        }, 300);
-    </script>
-""", unsafe_allow_html=True)
+if st.session_state.match is None:
+    # Solo en el lobby (sin partida activa): durante el combate el ancla de
+    # "arena-top-anchor" manda, y si este script también corriera competiría
+    # con el de ahí por el scroll en cada rerun (300ms contra 150ms) y ganaba
+    # el equivocado, dejando la cabecera del título tapando el tablero.
+    st.markdown("""
+        <script>
+            setTimeout(function() {
+                var el = window.parent.document.getElementById('kurama-title');
+                if (el) {
+                    var rect = el.getBoundingClientRect();
+                    window.parent.scrollTo({ top: window.parent.scrollY + rect.top - 20, behavior: 'smooth' });
+                }
+            }, 300);
+        </script>
+    """, unsafe_allow_html=True)
 
 # --------------------------------------------------------------------------- #
 # Playmat compacto: imágenes de mano más pequeñas, nombre/habilidad a altura
@@ -2131,15 +2136,20 @@ if panel_mode.startswith("🛒"):
 # o en el navbar superior).
 # --------------------------------------------------------------------------- #
 game_started = st.session_state.match is not None
-with st.expander("⚙️ Configuración de Partida y NFT", expanded=not game_started):
-    left_info_col, cta_col = st.columns([1, 1])
-    with left_info_col:
-        with st.container(key="left_info_panel"):
-            render_wallet_and_nft_bar(connector, current_wallet_address)
-    with cta_col:
-        render_new_match_button(connector, current_wallet_address, pool_27)
-        render_battle_mode_bar(connector, current_wallet_address, pool_27)
-render_wallet_config_expander(connector, current_wallet_address)
+if not game_started:
+    # Plegados por completo (ni la cabecera del expander) mientras hay una
+    # partida en curso, para que el tablero suba y ocupe toda la pantalla
+    # sin ese espacio reservado arriba — con expanded=False ya quedaban
+    # colapsados, pero la fila de la cabecera seguía ahí restando alto.
+    with st.expander("⚙️ Configuración de Partida y NFT", expanded=True):
+        left_info_col, cta_col = st.columns([1, 1])
+        with left_info_col:
+            with st.container(key="left_info_panel"):
+                render_wallet_and_nft_bar(connector, current_wallet_address)
+        with cta_col:
+            render_new_match_button(connector, current_wallet_address, pool_27)
+            render_battle_mode_bar(connector, current_wallet_address, pool_27)
+    render_wallet_config_expander(connector, current_wallet_address)
 
 match = st.session_state.match
 if match is None:
@@ -2231,32 +2241,28 @@ state = get_match_state(match)
 # --------------------------------------------------------------------------- #
 # Cabecera: HP / energía / estado (contenedor con key propia para poder
 # compactarla por CSS sin afectar a cabeceras de otras secciones). El ancla
-# "battle-header" vive justo aquí (no antes, donde todavía podía quedar por
-# encima el panel de Configuración animándose al colapsar) para que el
+# "arena-top-anchor" vive justo aquí (no antes, donde todavía podía quedar
+# por encima el panel de Configuración animándose al colapsar) para que el
 # auto-scroll alinee el borde superior de la ventana justo encima de las
-# barras de HP / TURNO — el setTimeout espera a que termine la transición
-# CSS de colapso del expander antes de medir la posición, si no el scroll
-# se calcula con el layout aún alto y queda corto.
+# barras de HP / TURNO.
 #
 # Se re-ejecuta en CADA rerun mientras la partida esté en curso (no solo al
-# pulsar NUEVA PARTIDA): Streamlit vuelve a montar este components.html con
-# cada rerun del script completo, así que basta con dejar de condicionarlo a
-# un flag de un solo uso — cada "Pasar Turno" / timeout de ronda ya dispara
-# un rerun propio y por lo tanto un nuevo scroll. El cálculo usa el mismo
-# offset -20px (coordenadas sobre window.parent) que el ancla del título,
-# no scrollIntoView puro, para dejar aire y no tapar la barra naranja.
+# pulsar NUEVA PARTIDA): cada "Pasar Turno" / timeout de ronda dispara su
+# propio rerun y por lo tanto un nuevo scroll — ya no depende de ningún flag
+# de sesión. scrollIntoView (no el cálculo de coordenadas -20px que se usaba
+# antes) porque con los expanders de Configuración/Wallet colapsados por
+# completo durante el combate (ver game_started más arriba) el tablero
+# entero vuelve a caber en pantalla, así que alinear el borde superior ya no
+# deja la barra naranja tapada.
 # --------------------------------------------------------------------------- #
-st.markdown('<div id="battle-header"></div>', unsafe_allow_html=True)
+st.markdown('<div id="arena-top-anchor"></div>', unsafe_allow_html=True)
 if match.status == MatchStatus.ONGOING:
     components.html(
         f"""<script>
         setTimeout(function () {{
-            var el = window.parent.document.getElementById('battle-header');
-            if (el) {{
-                var rect = el.getBoundingClientRect();
-                window.parent.scrollTo({{ top: window.parent.scrollY + rect.top - 20, behavior: 'smooth' }});
-            }}
-        }}, 350);
+            var el = window.parent.document.getElementById('arena-top-anchor') || document.getElementById('arena-top-anchor');
+            if (el) {{ el.scrollIntoView({{ behavior: 'smooth', block: 'start' }}); }}
+        }}, 150);
         </script><!-- turno {match.turn_number} -->""",
         height=0,
     )
