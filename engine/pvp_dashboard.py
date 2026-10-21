@@ -1368,7 +1368,7 @@ st.markdown(
     """
     <style>
     .block-container {
-        padding-top: 1rem !important;
+        padding-top: 0.5rem !important;
         padding-bottom: 0rem !important;
     }
     header[data-testid="stHeader"] {
@@ -2230,7 +2230,16 @@ st.markdown(
     [class*="st-key-arena_outer"] {
         position: relative;
         width: 100%;
-        max-width: 100%;
+        /* Tope de ancho propio de la arena (no del lobby/block-container,
+           que se quedó ancho completo a propósito): como el alto es
+           padding-top en % DEL ANCHO (ver abajo), sin este tope la arena en
+           monitores anchos crecía proporcionalmente tanto que, sumada a la
+           mano + "Pasar Turno" debajo, ya no entraba de un vistazo en
+           pantallas de alto normal (768-900px) — el margin negativo de
+           battle_hand_overlay que la sube está calibrado para esta altura. */
+        max-width: 1000px;
+        margin-left: auto;
+        margin-right: auto;
         padding-top: 37.71%; /* 770/2042*100 — alto fijado por padding, no por aspect-ratio */
         height: 0;
         border-radius: 18px;
