@@ -1215,6 +1215,12 @@ st.markdown(
     .block-container {
         padding-top: 1rem !important;
         padding-bottom: 0rem !important;
+        max-width: 1400px !important;
+        margin-left: auto !important;
+        margin-right: auto !important;
+    }
+    img, iframe, canvas {
+        max-width: 100% !important;
     }
     header[data-testid="stHeader"] {
         background: transparent !important;
@@ -1269,10 +1275,10 @@ st.markdown(
         gap: 1.5rem !important;
     }
     [class*="st-key-battle_hand"] [data-testid="stColumn"] {
-        flex: 0 0 624px !important;
-        width: 624px !important;
+        flex: 1 1 260px !important;
+        width: auto !important;
         max-width: 624px !important;
-        min-width: 468px;
+        min-width: 260px;
     }
     /* Cada carta completa (imagen + nombre + info + zona + jugar) a la
        misma altura que sus vecinas de la fila (align-items:stretch arriba
