@@ -890,23 +890,26 @@ def _refresh_bot_challenges() -> None:
 
 def _render_challenge_row(gamenft_id: int | None, name_html: str, detail_html: str, timer_id: str, pct: int):
     """Fila compacta compartida: avatar pequeño + nombre/rareza (fila 1),
-    barra de tiempo (fila 2, columna ancha) — el botón de acción va en la
-    columna angosta que se devuelve sin abrir, para que cada caller decida
-    su label/key/color (✅ verde para aceptar, ❌ rojo para cancelar)."""
+    barra de tiempo + botón de acción (fila 2, en su propio contenedor con
+    key para poder alinear ese botón a la derecha por CSS sin afectar a la
+    fila de arriba) — el botón en sí se devuelve sin abrir, para que cada
+    caller decida su texto/key/color ("Aceptar Reto" verde o "Cancelar
+    Reto" rojo)."""
     avatar_col, info_col = st.columns([1, 4])
     with avatar_col:
         st.image(str(gamenft_avatar_path(gamenft_id)), width=40)
     with info_col:
         st.markdown(name_html + detail_html, unsafe_allow_html=True)
-    bar_col, btn_col = st.columns([4, 1])
-    with bar_col:
-        st.markdown(
-            f"<div class='turn-timer-wrap'>"
-            f"<div class='turn-timer-track'><div class='turn-timer-fill' "
-            f"id='challenge-fill-{timer_id}' style='width:{pct}%'></div></div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
+    with st.container(key=f"challenge_action_row_{timer_id}"):
+        bar_col, btn_col = st.columns([3, 2])
+        with bar_col:
+            st.markdown(
+                f"<div class='turn-timer-wrap'>"
+                f"<div class='turn-timer-track'><div class='turn-timer-fill' "
+                f"id='challenge-fill-{timer_id}' style='width:{pct}%'></div></div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
     return btn_col
 
 
@@ -938,7 +941,7 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
                     "own", pct,
                 )
                 with btn_col, st.container(key="cancel_own_challenge_wrap"):
-                    if st.button("❌", key="cancel_own_challenge", width="stretch", help="Cancelar Reto"):
+                    if st.button("Cancelar Reto", key="cancel_own_challenge"):
                         st.session_state["matchmaking_start"] = None
                         st.rerun()
             timer_specs.append(
@@ -958,9 +961,7 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
                     str(ch["id"]), pct,
                 )
                 with btn_col:
-                    accepted = st.button(
-                        "✅", key=f"accept_challenge_{ch['id']}", width="stretch", help="Aceptar Reto"
-                    )
+                    accepted = st.button("Aceptar Reto", key=f"accept_challenge_{ch['id']}")
                 if accepted:
                     st.session_state.bot_challenges = [
                         c for c in st.session_state.bot_challenges if c["id"] != ch["id"]
@@ -1882,23 +1883,27 @@ st.markdown(
         height: 100%;
         box-sizing: border-box;
     }
-    /* CTA principal "⚔️ LANZAR RETO" (render_new_match_button): ancha y en
-       rojo/naranja vivo para que sea la acción principal de la pantalla
-       antes de empezar a jugar — fina (~44px) para que el panel entero de
-       debajo del NFT quede compacto en vez de dominar la columna. */
+    /* CTA principal "⚔️ LANZAR RETO" (render_new_match_button): rojo/naranja
+       vivo para que sea la acción principal de la pantalla antes de empezar
+       a jugar — ancho de contenido (tope 280px) y centrado en vez de ocupar
+       todo el ancho de la columna, que se veía tosco; alto ligeramente
+       mayor que antes (48px) para compensar y que no quede chato. */
     [class*="st-key-new_match_cta"] {
         display: flex;
-        align-items: stretch;
+        justify-content: center;
         margin: 0.4rem 0;
     }
     [class*="st-key-new_match_cta"] [data-testid="stVerticalBlock"] {
+        width: 100%;
         display: flex;
-        align-items: stretch;
+        justify-content: center;
     }
     [class*="st-key-new_match_cta"] .stButton {
         width: 100%;
+        max-width: 280px;
     }
     [class*="st-key-new_match_cta"] .stButton > button {
+        width: 100%;
         background: linear-gradient(135deg, #FF5500, #FF6B00) !important;
         border: none !important;
         color: #fff !important;
@@ -1907,10 +1912,10 @@ st.markdown(
         letter-spacing: 0.03em;
         text-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
         white-space: normal !important;
-        min-height: 44px !important;
-        height: 44px !important;
+        min-height: 48px !important;
+        height: 48px !important;
         padding: 0.3rem 0.6rem !important;
-        border-radius: 10px !important;
+        border-radius: 24px !important;
         box-shadow: 0 4px 16px rgba(255, 85, 0, 0.55);
         transition: transform 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
     }
@@ -1961,11 +1966,21 @@ st.markdown(
         color: rgba(255, 255, 255, 0.6);
         line-height: 1.2;
     }
-    /* Barra de tiempo + botón en la misma fila (columnas [4, 1] de
+    /* Barra de tiempo + botón en la misma fila (challenge_action_row_, ver
        _render_challenge_row): la barra pierde su alto por defecto y el
-       botón se achica a su lado en vez de ser un bloque grande debajo. */
+       botón se alinea a la derecha, ajustado solo a lo que mide su propio
+       texto ("Aceptar Reto"/"Cancelar Reto") en vez de estirarse a lo ancho
+       de su columna. */
     [class*="st-key-challenge_row_"] .turn-timer-wrap {
         margin: 0;
+    }
+    [class*="st-key-challenge_action_row_"] [data-testid="stColumn"]:last-child {
+        display: flex;
+        justify-content: flex-end;
+        align-items: center;
+    }
+    [class*="st-key-challenge_action_row_"] .stButton {
+        width: fit-content !important;
     }
     [class*="st-key-challenge_row_"] .stButton > button {
         background: linear-gradient(135deg, #16a34a, #22c55e) !important;
@@ -1973,19 +1988,22 @@ st.markdown(
         color: #fff !important;
         font-weight: 700 !important;
         box-shadow: 0 2px 10px rgba(34, 197, 94, 0.45);
-        min-height: 1.6rem !important;
-        height: 1.6rem !important;
-        padding: 0 !important;
-        font-size: 0.85rem !important;
+        width: fit-content !important;
+        height: auto !important;
+        min-height: 0 !important;
+        padding: 6px 14px !important;
+        font-size: 0.78rem !important;
+        border-radius: 999px !important;
+        white-space: nowrap !important;
     }
     [class*="st-key-challenge_row_"] .stButton > button:hover {
         box-shadow: 0 4px 16px rgba(34, 197, 94, 0.7);
         color: #fff !important;
     }
-    /* "❌" (cancelar nuestro propio reto, challenge_row_own): mismo tamaño
-       que "✅" pero gris/rojo apagado en vez de verde, para no confundirlo
-       con aceptar el reto de un rival. Va después de la regla verde de
-       arriba — misma especificidad, gana por orden. */
+    /* "Cancelar Reto" (nuestro propio reto, challenge_row_own): mismo
+       tamaño que "Aceptar Reto" pero gris/rojo apagado en vez de verde,
+       para no confundirlo con aceptar el reto de un rival. Va después de
+       la regla verde de arriba — misma especificidad, gana por orden. */
     [class*="st-key-cancel_own_challenge_wrap"] .stButton > button {
         background: rgba(255, 255, 255, 0.08) !important;
         border: 1px solid rgba(239, 68, 68, 0.5) !important;
