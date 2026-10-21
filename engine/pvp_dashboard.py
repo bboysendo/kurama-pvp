@@ -735,19 +735,18 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
         )
 
         if st.session_state.match_mode == "competitive":
-            # Tope de la apuesta al saldo real de la wallet — si el saldo
-            # bajó (p.ej. tras perder una partida) por debajo del valor ya
-            # guardado en session_state, hay que recortarlo ANTES de crear
-            # el widget con ese valor por key, si no Streamlit se queja de
-            # un max_value menor que el value actual.
-            balance = connector.kur_balance(wallet_address)
-            if st.session_state.get("navbar_stake", 0.0) > balance:
-                st.session_state.navbar_stake = balance
+            # Sin max_value ni recorte forzado de session_state aquí: un
+            # max_value recalculado cada rerun a partir del saldo (que a su
+            # vez puede depender de cosas que cambian con el propio stake)
+            # dejaba el widget inconsistente entre reruns — a veces sin
+            # responder a +/- ni a escribir un valor nuevo. El usuario puede
+            # teclear o subir/bajar lo que quiera; la comprobación contra el
+            # saldo pasa a hacerse solo al pulsar LANZAR RETO (ver
+            # render_new_match_button), nunca mientras se edita el número.
             stake_col, economy_col = st.columns([1, 3])
             with stake_col:
                 stake = st.number_input(
-                    "Apuesta en KUR", min_value=0.0, max_value=balance,
-                    value=min(10.0, balance), step=1.0, key="navbar_stake",
+                    "Apuesta en KUR", min_value=0.0, value=10.0, step=1.0, key="navbar_stake"
                 )
             economy = compute_match_economy(st.session_state.match_mode, stake)
             # Bote real (ambos jugadores igualan la apuesta) y comisión sobre
@@ -830,25 +829,29 @@ def _launch_match(
 
 def render_new_match_button(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
     is_competitive = st.session_state.match_mode == "competitive"
-    stake = st.session_state.get("navbar_stake", 10.0) if is_competitive else 0.0
-    insufficient = is_competitive and stake > connector.kur_balance(wallet_address)
     with st.container(key="new_match_cta"):
-        clicked = st.button(
-            "🚫 Saldo Insuficiente" if insufficient else "⚔️ LANZAR RETO ⚔️",
-            key="navbar_new_match", width="stretch", type="primary", disabled=insufficient,
-        )
-    if insufficient:
-        st.error("No tienes suficiente $KUR para esta apuesta.")
-    elif clicked:
-        if st.session_state.opponent_choice == "Bot":
+        clicked = st.button("⚔️ LANZAR RETO ⚔️", key="navbar_new_match", width="stretch", type="primary")
+    if clicked:
+        # El saldo solo se comprueba AQUÍ, al pulsar — nunca mientras se
+        # edita el número de arriba (eso fue lo que dejaba el widget de
+        # apuesta atascado, ver el comentario en render_battle_mode_bar).
+        stake = st.session_state.get("navbar_stake", 10.0) if is_competitive else 0.0
+        balance = connector.kur_balance(wallet_address)
+        if is_competitive and stake > balance:
+            st.error(
+                f"⚠️ No puedes lanzar este reto: tu apuesta ({stake:.2f} $KUR) "
+                f"supera tu saldo disponible ({balance:.2f} $KUR)."
+            )
+        elif st.session_state.opponent_choice == "Bot":
             # Free/Competitivo publican nuestro propio reto en la columna
             # de la derecha (render_bot_challenges_feed) hasta
             # MATCHMAKING_SECONDS, luego cae a BOT; Hotseat ya tiene un
             # rival local conocido, no necesita buscar.
             st.session_state["matchmaking_start"] = time.time()
+            st.rerun()
         else:
             _launch_match(connector, wallet_address, pool_27, name_b="Jugador B", stake_kur=stake)
-        st.rerun()
+            st.rerun()
 
 
 # --------------------------------------------------------------------------- #
@@ -2025,15 +2028,6 @@ st.markdown(
         transform: translateY(2px) scale(0.98) !important;
         box-shadow: 0 2px 8px rgba(255, 85, 0, 0.5) !important;
         transition: transform 0.05s ease, box-shadow 0.05s ease !important;
-    }
-    /* "🚫 Saldo Insuficiente" (apuesta > balance, ver render_new_match_button):
-       gris apagado en vez del naranja vivo, para que se lea como bloqueado
-       sin necesidad de leer el texto. */
-    [class*="st-key-new_match_cta"] .stButton > button:disabled {
-        background: rgba(255, 255, 255, 0.08) !important;
-        color: rgba(255, 255, 255, 0.5) !important;
-        box-shadow: none !important;
-        text-shadow: none !important;
     }
     /* Columna derecha del lobby: feed de retos de bots simulados
        (render_bot_challenges_feed) — misma estética oscura con borde sutil
