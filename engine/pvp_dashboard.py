@@ -873,47 +873,129 @@ def render_matchmaking_search(connector: BlockchainConnector, wallet_address: st
 # --------------------------------------------------------------------------- #
 # Columna derecha del lobby ("🔍 RETOS DISPONIBLES EN TIEMPO REAL"): feed
 # decorativo de salas de bots ya "buscando rival" — no hay backend de
-# matchmaking real entre wallets en este prototipo (ver _launch_match), así
-# que el temporizador de cada fila es puro flavor y no cuenta hacia abajo de
-# verdad. "✅ Aceptar Reto" fuerza vs_bot/opponent_choice a Bot (igual que
-# 🤝 Retos 1v1 más abajo) y arranca la partida al instante contra ese rival,
-# con el HP de la rareza simulada que se le asignó.
+# matchmaking real entre wallets en este prototipo (ver _launch_match).
+# Cada reto vive en st.session_state.bot_challenges con su propio
+# expires_at (time.time() real, no una cuenta en el cliente): el temporizador
+# que se ve SÍ descuenta en vivo (JS actualiza la etiqueta/barra cada 250ms a
+# partir de ese valor), y al llegar a 0 un botón oculto fuerza un rerun real
+# que _refresh_bot_challenges() usa para descartar ese reto y generar uno
+# nuevo random, igual que si el jugador lo hubiera aceptado. "✅ Aceptar
+# Reto" fuerza vs_bot/opponent_choice a Bot (igual que 🤝 Retos 1v1 más
+# abajo), saca ese reto de la lista y arranca la partida al instante contra
+# ese rival, con el HP de la rareza simulada que se le asignó.
 # --------------------------------------------------------------------------- #
-SIMULATED_BOT_RIVALS: list[dict] = [
-    {"name": "KitsuneMaster_99", "nft_label": "Fox Dorado", "rarity": NFTRarity.EPIC, "wait_s": 45},
-    {"name": "ShadowKitsune", "nft_label": "Fox Sombra", "rarity": NFTRarity.RARE, "wait_s": 32},
-    {"name": "CyberFox_X", "nft_label": "Fox Cyber", "rarity": NFTRarity.LEGENDARY, "wait_s": 58},
+SIMULATED_BOT_NAME_POOL = [
+    "KitsuneMaster_99", "ShadowKitsune", "CyberFox_X", "KitsuneRogue", "FireFox_99",
+    "NightVixen", "PhantomFox", "BlazeKitsune", "FrostFox_7", "VoidKitsune",
 ]
+SIMULATED_BOT_NFT_POOL = ["Fox Dorado", "Fox Sombra", "Fox Cyber", "Fox Carmesí", "Fox Glacial", "Fox Fantasma"]
+SIMULATED_BOT_RARITY_POOL = [NFTRarity.COMMON, NFTRarity.RARE, NFTRarity.EPIC, NFTRarity.LEGENDARY]
+BOT_CHALLENGE_COUNT = 3
+
+
+def _new_bot_challenge(rng: random.Random, taken_names: set[str]) -> dict:
+    st.session_state["_bot_challenge_seq"] = st.session_state.get("_bot_challenge_seq", 0) + 1
+    available = [n for n in SIMULATED_BOT_NAME_POOL if n not in taken_names] or SIMULATED_BOT_NAME_POOL
+    duration = rng.randint(30, 60)
+    return {
+        "id": st.session_state["_bot_challenge_seq"],
+        "name": rng.choice(available),
+        "nft_label": rng.choice(SIMULATED_BOT_NFT_POOL),
+        "rarity": rng.choice(SIMULATED_BOT_RARITY_POOL),
+        "duration_s": duration,
+        "expires_at": time.time() + duration,
+    }
+
+
+def _refresh_bot_challenges() -> None:
+    """Descarta los retos ya expirados (expires_at real contra time.time())
+    y rellena hasta BOT_CHALLENGE_COUNT con nuevos random — llamada al
+    principio de cada render del panel, cubre tanto la expiración real como
+    el hueco que deja un "Aceptar Reto"."""
+    rng = random.Random()
+    now = time.time()
+    challenges = [c for c in st.session_state.get("bot_challenges", []) if c["expires_at"] > now]
+    taken = {c["name"] for c in challenges}
+    while len(challenges) < BOT_CHALLENGE_COUNT:
+        new = _new_bot_challenge(rng, taken)
+        taken.add(new["name"])
+        challenges.append(new)
+    st.session_state.bot_challenges = challenges
 
 
 def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
+    _refresh_bot_challenges()
+    now = time.time()
+    timer_specs = []
     with st.container(key="bot_challenges_feed"):
         st.subheader("🔍 RETOS DISPONIBLES EN TIEMPO REAL")
-        for i, rival in enumerate(SIMULATED_BOT_RIVALS):
-            with st.container(key=f"challenge_row_{i}"):
+        for ch in st.session_state.bot_challenges:
+            remaining = max(0.0, ch["expires_at"] - now)
+            pct = max(5, int(remaining / ch["duration_s"] * 100))
+            with st.container(key=f"challenge_row_{ch['id']}"):
                 st.markdown(
-                    f"<div class='challenge-rival-name'>🦊 {rival['name']}</div>"
-                    f"<div class='challenge-rival-nft'>{rival['nft_label']} · "
-                    f"{rarity_label(rival['rarity'])} · HP {compute_base_hp(rival['rarity'])}</div>",
+                    f"<div class='challenge-rival-name'>🦊 {ch['name']}</div>"
+                    f"<div class='challenge-rival-nft'>{ch['nft_label']} · "
+                    f"{rarity_label(ch['rarity'])} · HP {compute_base_hp(ch['rarity'])}</div>",
                     unsafe_allow_html=True,
                 )
-                pct = max(5, 100 - rival["wait_s"])
                 st.markdown(
                     f"<div class='turn-timer-wrap'>"
                     f"<div class='turn-timer-track'><div class='turn-timer-fill' "
-                    f"style='width:{pct}%'></div></div>"
-                    f"<div class='turn-timer-label'>Buscando rival… {rival['wait_s']}s</div>"
+                    f"id='challenge-fill-{ch['id']}' style='width:{pct}%'></div></div>"
+                    f"<div class='turn-timer-label'>Buscando rival… "
+                    f"<span id='challenge-seconds-{ch['id']}'>{int(remaining)}</span>s</div>"
                     f"</div>",
                     unsafe_allow_html=True,
                 )
-                if st.button("✅ Aceptar Reto", key=f"accept_challenge_{i}", width="stretch"):
+                if st.button("✅ Aceptar Reto", key=f"accept_challenge_{ch['id']}", width="stretch"):
+                    st.session_state.bot_challenges = [
+                        c for c in st.session_state.bot_challenges if c["id"] != ch["id"]
+                    ]
                     st.session_state.vs_bot = True
                     st.session_state["_force_opponent_bot"] = True
                     _launch_match(
                         connector, wallet_address, pool_27,
-                        name_b=rival["name"], hp_b=compute_base_hp(rival["rarity"]),
+                        name_b=ch["name"], hp_b=compute_base_hp(ch["rarity"]),
                     )
                     st.rerun()
+            timer_specs.append(
+                {"id": ch["id"], "remainingMs": remaining * 1000, "totalMs": ch["duration_s"] * 1000}
+            )
+
+        with st.container(key="bot_challenges_refresh_trigger"):
+            st.button("↻", key="bot_challenges_refresh_btn")
+        components.html(
+            f"""<script>
+            (function () {{
+                const specs = {json.dumps(timer_specs)};
+                const startedAt = Date.now();
+                const btn = window.parent.document.querySelector(
+                    '[class*="st-key-bot_challenges_refresh_trigger"] button'
+                );
+                let fired = false;
+                const iv = setInterval(function () {{
+                    const elapsed = Date.now() - startedAt;
+                    let anyExpired = false;
+                    specs.forEach(function (s) {{
+                        const left = Math.max(0, s.remainingMs - elapsed);
+                        const pct = Math.max(0, Math.min(100, (left / s.totalMs) * 100));
+                        const fill = window.parent.document.getElementById('challenge-fill-' + s.id);
+                        const label = window.parent.document.getElementById('challenge-seconds-' + s.id);
+                        if (fill) fill.style.width = pct + '%';
+                        if (label) label.textContent = Math.ceil(left / 1000);
+                        if (left <= 0) anyExpired = true;
+                    }});
+                    if (anyExpired && !fired) {{
+                        fired = true;
+                        clearInterval(iv);
+                        if (btn) btn.click();
+                    }}
+                }}, 250);
+            }})();
+            </script>""",
+            height=0,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -1705,10 +1787,10 @@ st.markdown(
        padding, fuente reducida y altura fija — para que no domine la
        pantalla ahora que vive debajo del panel de Wallet + NFT. */
     [class*="st-key-battle_mode_bar"] [data-testid="stVerticalBlock"] {
-        gap: 0.3rem !important;
+        gap: 0.35rem !important;
     }
     [class*="st-key-battle_mode_bar"] [data-testid="stHorizontalBlock"] {
-        gap: 0.4rem !important;
+        gap: 0.3rem !important;
     }
     /* Selectores de Modo (Free/Competitivo) y Oponente (Bot/Hotseat):
        st.segmented_control, de selección única y excluyente — el grupo
@@ -1740,16 +1822,16 @@ st.markdown(
         background: transparent !important;
         border: none !important;
         color: rgba(170, 170, 170, 0.85) !important;
-        font-size: 0.92rem !important;
+        font-size: 0.78rem !important;
         font-weight: 600 !important;
-        padding: 0.75rem 0.3rem !important;
-        min-height: 3.4rem !important;
+        padding: 0.35rem 0.3rem !important;
+        min-height: 2.1rem !important;
         height: auto !important;
         border-radius: 6px !important;
         white-space: normal !important;
         overflow: visible !important;
         text-overflow: clip !important;
-        line-height: 1.2 !important;
+        line-height: 1.15 !important;
     }
     [class*="st-key-battle_mode_bar"] [data-testid="stButtonGroup"] button[aria-checked="true"] {
         background: linear-gradient(135deg, #FF5500, #FF6B00) !important;
@@ -1762,7 +1844,7 @@ st.markdown(
     [class*="st-key-battle_mode_bar"] {
         border: 1px solid rgba(135, 135, 135, 0.25);
         border-radius: 10px;
-        padding: 0.7rem 0.8rem;
+        padding: 0.5rem 0.6rem;
     }
     [class*="st-key-battle_mode_bar"] [data-testid="stNumberInput"] input {
         font-size: 0.72rem !important;
@@ -1787,35 +1869,35 @@ st.markdown(
         height: 100%;
         box-sizing: border-box;
     }
-    /* CTA principal "🔥 NUEVA PARTIDA" (render_new_match_button): grande,
-       ancha y en rojo/naranja vivo para que sea la acción principal de la
-       pantalla antes de empezar a jugar. */
+    /* CTA principal "⚔️ LANZAR RETO" (render_new_match_button): ancha y en
+       rojo/naranja vivo para que sea la acción principal de la pantalla
+       antes de empezar a jugar — fina (~44px) para que el panel entero de
+       debajo del NFT quede compacto en vez de dominar la columna. */
     [class*="st-key-new_match_cta"] {
-        height: 100%;
         display: flex;
         align-items: stretch;
+        margin: 0.4rem 0;
     }
     [class*="st-key-new_match_cta"] [data-testid="stVerticalBlock"] {
-        height: 100%;
         display: flex;
         align-items: stretch;
     }
     [class*="st-key-new_match_cta"] .stButton {
         width: 100%;
-        height: 100%;
     }
     [class*="st-key-new_match_cta"] .stButton > button {
         background: linear-gradient(135deg, #FF5500, #FF6B00) !important;
         border: none !important;
         color: #fff !important;
-        font-size: 1.5rem !important;
+        font-size: 1.05rem !important;
         font-weight: 800 !important;
-        letter-spacing: 0.04em;
+        letter-spacing: 0.03em;
         text-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
         white-space: normal !important;
-        min-height: 6rem !important;
-        height: 100% !important;
-        border-radius: 12px !important;
+        min-height: 44px !important;
+        height: 44px !important;
+        padding: 0.3rem 0.6rem !important;
+        border-radius: 10px !important;
         box-shadow: 0 4px 16px rgba(255, 85, 0, 0.55);
         transition: transform 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
     }
@@ -1868,6 +1950,9 @@ st.markdown(
     [class*="st-key-challenge_row_"] .stButton > button:hover {
         box-shadow: 0 4px 16px rgba(34, 197, 94, 0.7);
         color: #fff !important;
+    }
+    [class*="st-key-bot_challenges_refresh_trigger"] {
+        display: none !important;
     }
     /* Exclusivo para móvil: el escritorio se queda con el diseño original
        (fuera de esta media query no hay ningún override de estas reglas) —
