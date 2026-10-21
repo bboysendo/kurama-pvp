@@ -1189,8 +1189,20 @@ panel_mode = st.session_state.panel_mode
 if panel_mode.startswith("🛒"):
     render_marketplace_quickbar(connector, current_wallet_address)
 
+st.markdown('<div id="kurama-title"></div>', unsafe_allow_html=True)
 st.title("⚔️ Kurama Run — Simulador PVP")
 st.caption("Prototipo local y desacoplado — motor de combate + lectura BSC simulada. No usa fondos reales.")
+st.markdown("""
+    <script>
+        setTimeout(function() {
+            var el = window.parent.document.getElementById('kurama-title');
+            if (el) {
+                var rect = el.getBoundingClientRect();
+                window.parent.scrollTo({ top: window.parent.scrollY + rect.top - 20, behavior: 'smooth' });
+            }
+        }, 300);
+    </script>
+""", unsafe_allow_html=True)
 
 # --------------------------------------------------------------------------- #
 # Playmat compacto: imágenes de mano más pequeñas, nombre/habilidad a altura
@@ -1200,6 +1212,14 @@ st.caption("Prototipo local y desacoplado — motor de combate + lectura BSC sim
 st.markdown(
     """
     <style>
+    .block-container {
+        padding-top: 1rem !important;
+        padding-bottom: 0rem !important;
+    }
+    header[data-testid="stHeader"] {
+        background: transparent !important;
+        height: 2rem !important;
+    }
     /* Efecto "presionado" (:active) global para todos los botones del
        juego (⚔️ JUGAR, ℹ️ Detalles, Jugar otra partida, Resolver turno...):
        el botón se hunde y la sombra se aplana al pulsar — un <button> real
@@ -2191,6 +2211,10 @@ if match.status == MatchStatus.ONGOING:
                     print(f"[TIMEOUT] bot_choose_plays fallo: {e!r}")
                     match.log.append(f"El Bot no pudo jugar cartas este turno ({e}).")
             end_turn(match)
+        except EngineError as e:
+            print(f"[TIMEOUT] end_turn fallo: {e!r}")
+            match.log.append(f"Error al resolver el turno automáticamente: {e}")
+            st.error(str(e))
         except Exception as e:
             print(f"[TIMEOUT] end_turn fallo: {e!r}")
             match.log.append(f"Error al resolver el turno automáticamente: {e}")
@@ -2364,15 +2388,24 @@ def render_arena(state: dict) -> None:
                     const totalMs = {TURN_TIMER_SECONDS * 1000};
                     const remainingMs = {remaining * 1000:.0f};
                     const startedAt = Date.now();
-                    const label = window.parent.document.getElementById('arena-timer-seconds');
-                    const btn = window.parent.document.querySelector(
-                        '[class*="st-key-turn_timeout_trigger"] button'
-                    );
+                    // btn/label se buscan de nuevo en CADA tick (no una sola vez al
+                    // montar el iframe), y una vez agotado el tiempo se REINTENTA el
+                    // clic en cada tick (no uno solo): un clic aislado a veces no
+                    // llegaba a registrarse (el botón real de Streamlit tarda en
+                    // quedar listo para recibir el evento) y, al no reintentarse,
+                    // la partida se quedaba congelada en "0s" hasta que el jugador
+                    // tocaba cualquier otra cosa y forzaba un rerun manual. Reintentar
+                    // no tiene coste: en cuanto un clic SÍ funciona, Streamlit vuelve
+                    // a renderizar la ronda siguiente y este iframe entero desaparece,
+                    // lo que detiene el intervalo solo.
                     const iv = setInterval(function () {{
                         const left = Math.max(0, remainingMs - (Date.now() - startedAt));
+                        const label = window.parent.document.getElementById('arena-timer-seconds');
                         if (label) label.textContent = Math.ceil(left / 1000);
                         if (left <= 0) {{
-                            clearInterval(iv);
+                            const btn = window.parent.document.querySelector(
+                                '[class*="st-key-turn_timeout_trigger"] button'
+                            );
                             if (btn) btn.click();
                         }}
                     }}, 250);
