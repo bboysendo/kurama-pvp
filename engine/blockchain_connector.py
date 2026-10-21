@@ -175,8 +175,9 @@ def compute_match_economy(mode: str, stake_kur: float = 0.0) -> MatchEconomy:
     """Calcula comisión/apuesta antes de la partida y el rango de recompensa
     de victoria, según el modo (sección 4 de PVP_Rules). No mueve fondos — el
     backend con custodia de claves es quien ejecuta la transferencia real
-    usando estos importes (la recompensa real y aleatoria se decide al
-    terminar la partida con roll_competitive_kur_reward())."""
+    usando estos importes (la liquidación real, bote de las 2 apuestas menos
+    comisión, se calcula al terminar la partida — ver pvp_dashboard.py,
+    bloque "state['status'] != ONGOING")."""
     if mode not in ("free", "competitive"):
         raise ValueError("mode debe ser 'free' o 'competitive'")
 

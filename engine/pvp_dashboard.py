@@ -44,13 +44,13 @@ import marketplace_app  # noqa: E402  (MARKETPLACE/ — ver render_marketplace_p
 
 from blockchain_connector import (
     DECK_STAT_BUFF_PCT,
+    MATCH_FEE_PCT,
     BlockchainConnector,
     apply_nft_buffs_to_deck,
     compute_base_hp,
     compute_challenge_payout,
     compute_match_economy,
     derive_placeholder_rarity,
-    roll_competitive_kur_reward,
 )
 from card_schema import (
     CRITICAL_COMBO_DAMAGE,
@@ -741,11 +741,19 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
                     "Apuesta en KUR", min_value=0.0, value=10.0, step=1.0, key="navbar_stake"
                 )
             economy = compute_match_economy(st.session_state.match_mode, stake)
+            # Bote real (ambos jugadores igualan la apuesta) y comisión sobre
+            # ESE bote, no sobre la apuesta de uno solo — mismo cálculo que
+            # la liquidación final (ver "state['status'] != ONGOING" más
+            # abajo), para que la estimación de antes de jugar coincida con
+            # lo que de verdad se acredita al ganar.
+            pot = stake * 2
+            fee = round(pot * MATCH_FEE_PCT, 2)
+            premio = round(pot - fee, 2)
             with economy_col:
                 st.caption(
-                    f"Victoria: +{economy.win_elo} ELO · {economy.win_kur_reward_min:.0f}-"
-                    f"{economy.win_kur_reward_max:.0f} KUR · "
-                    f"Derrota: {economy.loss_elo} ELO · comisión {economy.fee_kur:.2f} KUR"
+                    f"Victoria: +{economy.win_elo} ELO · +{premio:.2f} KUR "
+                    f"(bote {pot:.2f} − comisión {fee:.2f}) · "
+                    f"Derrota: {economy.loss_elo} ELO"
                 )
         else:
             economy = compute_match_economy(st.session_state.match_mode, 0.0)
@@ -774,6 +782,7 @@ def _reset_tactical_selection(player_key: str | None = None) -> None:
 def _launch_match(
     connector: BlockchainConnector, wallet_address: str, pool_27: list[Card],
     name_b: str, hp_b: int | None = None, rival_avatar_id: int | None = None,
+    stake_kur: float = 0.0,
 ) -> None:
     """Arranca una partida ya resuelta de oponente (Bot, Hotseat o rival de
     Reto 1v1) — usado tanto por 🔥 NUEVA PARTIDA como por el desenlace de
@@ -791,6 +800,10 @@ def _launch_match(
     )
     st.session_state["turn_start_time"] = time.time()
     st.session_state["match_economy_mode"] = st.session_state.match_mode
+    # Apuesta del reto aceptado (o de "navbar_stake" si lo lanzamos nosotros)
+    # — el bote real de la partida es el doble (ambos jugadores la igualan),
+    # ver la liquidación en el bloque "state['status'] != ONGOING" más abajo.
+    st.session_state["match_stake"] = stake_kur
     st.session_state["match_reward_settled"] = False
     # El rival/BOT no tiene "wallet" propia que consultar, así que su marco
     # no puede leer un equipped_token_id real — antes caía siempre al Fox
@@ -816,7 +829,8 @@ def render_new_match_button(connector: BlockchainConnector, wallet_address: str,
                 # rival local conocido, no necesita buscar.
                 st.session_state["matchmaking_start"] = time.time()
             else:
-                _launch_match(connector, wallet_address, pool_27, name_b="Jugador B")
+                stake = st.session_state.get("navbar_stake", 10.0) if st.session_state.match_mode == "competitive" else 0.0
+                _launch_match(connector, wallet_address, pool_27, name_b="Jugador B", stake_kur=stake)
             st.rerun()
 
 
@@ -867,6 +881,7 @@ def _new_bot_challenge(rng: random.Random, taken_names: set[str], taken_ids: set
         "rarity": derive_placeholder_rarity(gamenft_id),
         "duration_s": duration,
         "expires_at": time.time() + duration,
+        "stake_kur": float(rng.randint(5, 50)),  # solo se muestra en modo Competitivo
     }
 
 
@@ -925,19 +940,27 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
             remaining = max(0.0, MATCHMAKING_SECONDS - (now - matchmaking_start))
             if remaining <= 0:
                 # Nadie "aceptó" nuestro propio reto a tiempo: igual que la
-                # vieja render_matchmaking_search, se asigna un Bot solo.
+                # vieja render_matchmaking_search, se asigna un Bot solo —
+                # con la misma apuesta que se venía mostrando en la tarjeta.
                 st.session_state["matchmaking_start"] = None
-                _launch_match(connector, wallet_address, pool_27, name_b="Bot")
+                stake = st.session_state.get("navbar_stake", 10.0) if st.session_state.match_mode == "competitive" else 0.0
+                _launch_match(connector, wallet_address, pool_27, name_b="Bot", stake_kur=stake)
                 st.rerun()
             own_rarity = resolve_equipped_rarity(connector, wallet_address)
             pct = max(5, int(remaining / MATCHMAKING_SECONDS * 100))
+            own_stake_html = (
+                f"<div class='challenge-rival-stake'>💰 Apuesta: "
+                f"{st.session_state.get('navbar_stake', 10.0):.2f} $KUR</div>"
+                if st.session_state.match_mode == "competitive" else ""
+            )
             with st.container(key="challenge_row_own"):
                 btn_col = _render_challenge_row(
                     st.session_state.get("equipped_token_id"),
                     "<div class='challenge-rival-name'>🦊 Tú (Jugador A)</div>",
                     f"<div class='challenge-rival-nft'>{rarity_label(own_rarity)} · "
                     f"HP {compute_base_hp(own_rarity)} · "
-                    f"<span id='challenge-seconds-own'>{int(remaining)}</span>s</div>",
+                    f"<span id='challenge-seconds-own'>{int(remaining)}</span>s</div>"
+                    f"{own_stake_html}",
                     "own", pct,
                 )
                 with btn_col, st.container(key="cancel_own_challenge_wrap"):
@@ -948,6 +971,10 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
                 {"id": "own", "remainingMs": remaining * 1000, "totalMs": MATCHMAKING_SECONDS * 1000}
             )
 
+        bot_stake_html = (
+            "<div class='challenge-rival-stake'>💰 Apuesta: {stake:.2f} $KUR</div>"
+            if st.session_state.match_mode == "competitive" else ""
+        )
         for ch in st.session_state.bot_challenges:
             remaining = max(0.0, ch["expires_at"] - now)
             pct = max(5, int(remaining / ch["duration_s"] * 100))
@@ -957,7 +984,8 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
                     f"<div class='challenge-rival-name'>🦊 {ch['name']}</div>",
                     f"<div class='challenge-rival-nft'>Fox #{ch['gamenft_id']} · "
                     f"{rarity_label(ch['rarity'])} · HP {compute_base_hp(ch['rarity'])} · "
-                    f"<span id='challenge-seconds-{ch['id']}'>{int(remaining)}</span>s</div>",
+                    f"<span id='challenge-seconds-{ch['id']}'>{int(remaining)}</span>s</div>"
+                    f"{bot_stake_html.format(stake=ch['stake_kur'])}",
                     str(ch["id"]), pct,
                 )
                 with btn_col:
@@ -973,6 +1001,7 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
                         connector, wallet_address, pool_27,
                         name_b=ch["name"], hp_b=compute_base_hp(ch["rarity"]),
                         rival_avatar_id=ch["gamenft_id"],
+                        stake_kur=ch["stake_kur"] if st.session_state.match_mode == "competitive" else 0.0,
                     )
                     st.rerun()
             timer_specs.append(
@@ -1800,7 +1829,8 @@ st.markdown(
         font-size: 1rem !important;
     }
     [class*="st-key-wallet_nft_bar"] [data-testid="stMetricLabel"] p {
-        font-size: 0.65rem !important;
+        font-size: 0.8rem !important;
+        color: rgba(204, 204, 204, 0.95) !important;
         white-space: normal !important;
         overflow: visible !important;
         text-overflow: clip !important;
@@ -1901,8 +1931,9 @@ st.markdown(
         font-size: 0.68rem !important;
     }
     [class*="st-key-battle_mode_bar"] [data-testid="stCaptionContainer"] p {
-        font-size: 0.68rem !important;
-        margin: 0.15rem 0 0 !important;
+        font-size: 0.85rem !important;
+        color: rgba(230, 230, 230, 0.92) !important;
+        margin: 0.35rem 0 0 !important;
     }
     /* Panel compacto de Wallet + NFT equipado, a la izquierda: tarjeta con
        borde a juego con la de Modo/Oponente (misma línea/radio) y estirada
@@ -1998,6 +2029,12 @@ st.markdown(
     .challenge-rival-nft {
         font-size: 0.7rem;
         color: rgba(255, 255, 255, 0.6);
+        line-height: 1.2;
+    }
+    .challenge-rival-stake {
+        font-size: 0.72rem;
+        font-weight: 700;
+        color: #ffd54a;
         line-height: 1.2;
     }
     /* Barra de tiempo + botón en la misma fila (challenge_action_row_, ver
@@ -2763,12 +2800,23 @@ if state["status"] != MatchStatus.ONGOING.value:
             )
             st.session_state.active_challenge = None
         elif st.session_state.get("match_economy_mode") == "competitive" and state["status"] == MatchStatus.PLAYER_A_WINS.value:
-            reward = roll_competitive_kur_reward()
+            # Bote real = la apuesta del reto aceptado (o la fijada en
+            # "Apuesta en KUR" si la partida la lanzamos nosotros) por los 2
+            # jugadores que la igualan — antes se acreditaba un bonus
+            # aleatorio de 3-5 $KUR sin relación alguna con la apuesta real
+            # mostrada en la tarjeta del reto, el bug reportado.
+            stake = st.session_state.get("match_stake", 0.0)
+            pot = stake * 2
+            fee = round(pot * MATCH_FEE_PCT, 2)
+            reward = round(pot - fee, 2)
             balance = connector.kur_balance(current_wallet_address)
             connector.simulated_backend.seed_wallet(
                 current_wallet_address, connector.owned_token_ids(current_wallet_address), balance + reward
             )
-            st.success(f"💰 Recompensa de partida Cristal: +{reward:.2f} $KUR.")
+            st.success(
+                f"🏆 ¡Victoria en Modo Competitivo! Recompensa obtenida: +{reward:.2f} $KUR "
+                f"(Bote: {pot:.2f} $KUR - Comisión: {fee:.2f} $KUR)."
+            )
         st.session_state.match_reward_settled = True
 
     banner = {
