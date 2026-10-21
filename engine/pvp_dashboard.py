@@ -1460,10 +1460,13 @@ st.markdown(
         z-index: 20;
         width: fit-content;
         max-width: 94%;
-        /* Subido respecto a la versión anterior (-340px, luego -385px) para
-           que "Pasar Turno" quede dentro de la franja visible del escenario
-           sin scroll en resoluciones de pantalla estándar. */
-        margin: -415px auto 0;
+        /* px fijos otra vez (no %: un intento anterior de escalarlo con el
+           ancho, igual que el alto de la arena, subió demasiado el panel y
+           tapó las caras de los luchadores) — historial: -340px, -385px,
+           -415px. NO reducir el ancho de la arena para "arreglar" el
+           scroll: eso descuadra a los Maestros NFT de las esquinas, que
+           quedan encima de los luchadores del centro. */
+        margin: -340px auto 0;
         background: rgba(10, 10, 14, 0.6);
         border: 1px solid rgba(255, 255, 255, 0.14);
         border-radius: 16px;
@@ -2230,16 +2233,7 @@ st.markdown(
     [class*="st-key-arena_outer"] {
         position: relative;
         width: 100%;
-        /* Tope de ancho propio de la arena (no del lobby/block-container,
-           que se quedó ancho completo a propósito): como el alto es
-           padding-top en % DEL ANCHO (ver abajo), sin este tope la arena en
-           monitores anchos crecía proporcionalmente tanto que, sumada a la
-           mano + "Pasar Turno" debajo, ya no entraba de un vistazo en
-           pantallas de alto normal (768-900px) — el margin negativo de
-           battle_hand_overlay que la sube está calibrado para esta altura. */
-        max-width: 1000px;
-        margin-left: auto;
-        margin-right: auto;
+        max-width: 100%;
         padding-top: 37.71%; /* 770/2042*100 — alto fijado por padding, no por aspect-ratio */
         height: 0;
         border-radius: 18px;
