@@ -780,7 +780,6 @@ def _launch_match(
     st.session_state.match = start_match(
         deck_a, deck_b, hp_a=base_hp, hp_b=hp_b, name_a="Tú (Jugador A)", name_b=name_b,
     )
-    st.session_state["scroll_to_battle"] = True
     st.session_state["turn_start_time"] = time.time()
     st.session_state["match_economy_mode"] = st.session_state.match_mode
     st.session_state["match_reward_settled"] = False
@@ -2234,20 +2233,31 @@ state = get_match_state(match)
 # compactarla por CSS sin afectar a cabeceras de otras secciones). El ancla
 # "battle-header" vive justo aquí (no antes, donde todavía podía quedar por
 # encima el panel de Configuración animándose al colapsar) para que el
-# auto-scroll al pulsar NUEVA PARTIDA alinee el borde superior de la ventana
-# justo encima de las barras de HP / TURNO — el setTimeout espera a que
-# termine la transición CSS de colapso del expander antes de medir la
-# posición, si no el scroll se calcula con el layout aún alto y queda corto.
+# auto-scroll alinee el borde superior de la ventana justo encima de las
+# barras de HP / TURNO — el setTimeout espera a que termine la transición
+# CSS de colapso del expander antes de medir la posición, si no el scroll
+# se calcula con el layout aún alto y queda corto.
+#
+# Se re-ejecuta en CADA rerun mientras la partida esté en curso (no solo al
+# pulsar NUEVA PARTIDA): Streamlit vuelve a montar este components.html con
+# cada rerun del script completo, así que basta con dejar de condicionarlo a
+# un flag de un solo uso — cada "Pasar Turno" / timeout de ronda ya dispara
+# un rerun propio y por lo tanto un nuevo scroll. El cálculo usa el mismo
+# offset -20px (coordenadas sobre window.parent) que el ancla del título,
+# no scrollIntoView puro, para dejar aire y no tapar la barra naranja.
 # --------------------------------------------------------------------------- #
-st.markdown('<div id="battle-header" style="scroll-margin-top: 20px;"></div>', unsafe_allow_html=True)
-if st.session_state.pop("scroll_to_battle", False):
+st.markdown('<div id="battle-header"></div>', unsafe_allow_html=True)
+if match.status == MatchStatus.ONGOING:
     components.html(
-        """<script>
-        setTimeout(function () {
-            const el = window.parent.document.getElementById('battle-header');
-            if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }
-        }, 350);
-        </script>""",
+        f"""<script>
+        setTimeout(function () {{
+            var el = window.parent.document.getElementById('battle-header');
+            if (el) {{
+                var rect = el.getBoundingClientRect();
+                window.parent.scrollTo({{ top: window.parent.scrollY + rect.top - 20, behavior: 'smooth' }});
+            }}
+        }}, 350);
+        </script><!-- turno {match.turn_number} -->""",
         height=0,
     )
 
