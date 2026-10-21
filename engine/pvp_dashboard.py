@@ -178,6 +178,15 @@ def init_state() -> None:
         st.session_state.match_mode = "free"
     if "opponent_choice" not in st.session_state:
         st.session_state.opponent_choice = "Bot" if st.session_state.vs_bot else "Hotseat (2 jugadores locales)"
+    if st.session_state.pop("_force_opponent_bot", False):
+        # "Aceptar Reto" de render_bot_challenges_feed no puede tocar
+        # opponent_choice directo: en su propio rerun el widget de Modo/
+        # Oponente (render_battle_mode_bar) ya se instanció antes en el
+        # mismo script (StreamlitWidgetAlreadyInstantiatedError) porque la
+        # columna izquierda del lobby se renderiza antes que la derecha.
+        # Deja esta bandera y el próximo rerun la aplica aquí, bien arriba,
+        # antes de que ese widget exista.
+        st.session_state.opponent_choice = "Bot"
     # Búsqueda de rival humano (matchmaking) antes de caer a BOT, Reto 1v1
     # activo y si ya se acreditó la recompensa/pozo de la partida en curso —
     # ver render_matchmaking_search / render_challenges_panel más abajo.
@@ -793,7 +802,7 @@ def _launch_match(
 
 def render_new_match_button(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
     with st.container(key="new_match_cta"):
-        if st.button("🛡️⚔️ NUEVA PARTIDA ⚔️🛡️", key="navbar_new_match", width="stretch", type="primary"):
+        if st.button("⚔️ LANZAR RETO ⚔️", key="navbar_new_match", width="stretch", type="primary"):
             if st.session_state.opponent_choice == "Bot":
                 # Free/Competitivo buscan rival humano hasta MATCHMAKING_SECONDS
                 # antes de caer a BOT (ver render_matchmaking_search); Hotseat
@@ -859,6 +868,52 @@ def render_matchmaking_search(connector: BlockchainConnector, wallet_address: st
             </script>""",
             height=0,
         )
+
+
+# --------------------------------------------------------------------------- #
+# Columna derecha del lobby ("🔍 RETOS DISPONIBLES EN TIEMPO REAL"): feed
+# decorativo de salas de bots ya "buscando rival" — no hay backend de
+# matchmaking real entre wallets en este prototipo (ver _launch_match), así
+# que el temporizador de cada fila es puro flavor y no cuenta hacia abajo de
+# verdad. "✅ Aceptar Reto" fuerza vs_bot/opponent_choice a Bot (igual que
+# 🤝 Retos 1v1 más abajo) y arranca la partida al instante contra ese rival,
+# con el HP de la rareza simulada que se le asignó.
+# --------------------------------------------------------------------------- #
+SIMULATED_BOT_RIVALS: list[dict] = [
+    {"name": "KitsuneMaster_99", "nft_label": "Fox Dorado", "rarity": NFTRarity.EPIC, "wait_s": 45},
+    {"name": "ShadowKitsune", "nft_label": "Fox Sombra", "rarity": NFTRarity.RARE, "wait_s": 32},
+    {"name": "CyberFox_X", "nft_label": "Fox Cyber", "rarity": NFTRarity.LEGENDARY, "wait_s": 58},
+]
+
+
+def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
+    with st.container(key="bot_challenges_feed"):
+        st.subheader("🔍 RETOS DISPONIBLES EN TIEMPO REAL")
+        for i, rival in enumerate(SIMULATED_BOT_RIVALS):
+            with st.container(key=f"challenge_row_{i}"):
+                st.markdown(
+                    f"<div class='challenge-rival-name'>🦊 {rival['name']}</div>"
+                    f"<div class='challenge-rival-nft'>{rival['nft_label']} · "
+                    f"{rarity_label(rival['rarity'])} · HP {compute_base_hp(rival['rarity'])}</div>",
+                    unsafe_allow_html=True,
+                )
+                pct = max(5, 100 - rival["wait_s"])
+                st.markdown(
+                    f"<div class='turn-timer-wrap'>"
+                    f"<div class='turn-timer-track'><div class='turn-timer-fill' "
+                    f"style='width:{pct}%'></div></div>"
+                    f"<div class='turn-timer-label'>Buscando rival… {rival['wait_s']}s</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+                if st.button("✅ Aceptar Reto", key=f"accept_challenge_{i}", width="stretch"):
+                    st.session_state.vs_bot = True
+                    st.session_state["_force_opponent_bot"] = True
+                    _launch_match(
+                        connector, wallet_address, pool_27,
+                        name_b=rival["name"], hp_b=compute_base_hp(rival["rarity"]),
+                    )
+                    st.rerun()
 
 
 # --------------------------------------------------------------------------- #
@@ -1774,6 +1829,46 @@ st.markdown(
         box-shadow: 0 2px 8px rgba(255, 85, 0, 0.5) !important;
         transition: transform 0.05s ease, box-shadow 0.05s ease !important;
     }
+    /* Columna derecha del lobby: feed de retos de bots simulados
+       (render_bot_challenges_feed) — misma estética oscura con borde sutil
+       que st-key-left_info_panel, una fila por rival con su propio borde
+       interno, y el botón "Aceptar Reto" en verde (único botón verde de la
+       app, para distinguirlo del naranja de "Lanzar Reto"). */
+    [class*="st-key-bot_challenges_feed"] {
+        border: 1px solid rgba(135, 135, 135, 0.25);
+        border-radius: 10px;
+        padding: 0.6rem 0.8rem;
+        height: 100%;
+        box-sizing: border-box;
+    }
+    [class*="st-key-challenge_row_"] {
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        padding: 0.5rem 0.7rem;
+        margin-bottom: 0.5rem;
+        background: rgba(255, 255, 255, 0.03);
+    }
+    .challenge-rival-name {
+        font-weight: 700;
+        font-size: 0.95rem;
+        color: #fff;
+    }
+    .challenge-rival-nft {
+        font-size: 0.8rem;
+        color: rgba(255, 255, 255, 0.6);
+        margin-bottom: 0.3rem;
+    }
+    [class*="st-key-challenge_row_"] .stButton > button {
+        background: linear-gradient(135deg, #16a34a, #22c55e) !important;
+        border: none !important;
+        color: #fff !important;
+        font-weight: 700 !important;
+        box-shadow: 0 2px 10px rgba(34, 197, 94, 0.45);
+    }
+    [class*="st-key-challenge_row_"] .stButton > button:hover {
+        box-shadow: 0 4px 16px rgba(34, 197, 94, 0.7);
+        color: #fff !important;
+    }
     /* Exclusivo para móvil: el escritorio se queda con el diseño original
        (fuera de esta media query no hay ningún override de estas reglas) —
        mano de cartas en carrusel horizontal scrollable en vez de apiladas,
@@ -2137,18 +2232,22 @@ if panel_mode.startswith("🛒"):
 # --------------------------------------------------------------------------- #
 game_started = st.session_state.match is not None
 if not game_started:
-    # Plegados por completo (ni la cabecera del expander) mientras hay una
-    # partida en curso, para que el tablero suba y ocupe toda la pantalla
-    # sin ese espacio reservado arriba — con expanded=False ya quedaban
-    # colapsados, pero la fila de la cabecera seguía ahí restando alto.
-    with st.expander("⚙️ Configuración de Partida y NFT", expanded=True):
-        left_info_col, cta_col = st.columns([1, 1])
-        with left_info_col:
-            with st.container(key="left_info_panel"):
-                render_wallet_and_nft_bar(connector, current_wallet_address)
-        with cta_col:
-            render_new_match_button(connector, current_wallet_address, pool_27)
-            render_battle_mode_bar(connector, current_wallet_address, pool_27)
+    # Lobby de Matchmaking en 2 columnas (nada de esto se renderiza una vez
+    # arrancada la partida, para que el tablero suba y ocupe toda la
+    # pantalla — ver el "if not game_started" original, ahora envuelve todo
+    # el lobby en vez de solo el expander de Configuración).
+    # Izquierda: tu NFT equipado + panel de Lanzar Reto (botón + Modo/
+    # Oponente), apilados verticalmente. Derecha: feed de retos de bots
+    # simulados (render_bot_challenges_feed) — "Aceptar Reto" ahí arranca la
+    # partida directo, sin pasar por el botón de la izquierda.
+    lobby_left, lobby_right = st.columns([1, 1])
+    with lobby_left:
+        with st.container(key="left_info_panel"):
+            render_wallet_and_nft_bar(connector, current_wallet_address)
+        render_new_match_button(connector, current_wallet_address, pool_27)
+        render_battle_mode_bar(connector, current_wallet_address, pool_27)
+    with lobby_right:
+        render_bot_challenges_feed(connector, current_wallet_address, pool_27)
     render_wallet_config_expander(connector, current_wallet_address)
 
 match = st.session_state.match
@@ -2156,7 +2255,7 @@ if match is None:
     if st.session_state.get("matchmaking_start") is not None:
         render_matchmaking_search(connector, current_wallet_address, pool_27)
     else:
-        st.info("Pulsa **🔥 NUEVA PARTIDA** arriba para empezar a jugar.")
+        st.info("Pulsa **⚔️ LANZAR RETO ⚔️** o acepta un reto del panel de la derecha para empezar a jugar.")
     st.stop()
 
 
