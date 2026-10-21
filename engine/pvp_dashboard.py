@@ -189,7 +189,7 @@ def init_state() -> None:
         st.session_state.opponent_choice = "Bot"
     # Búsqueda de rival humano (matchmaking) antes de caer a BOT, Reto 1v1
     # activo y si ya se acreditó la recompensa/pozo de la partida en curso —
-    # ver render_matchmaking_search / render_challenges_panel más abajo.
+    # ver render_bot_challenges_feed / render_challenges_panel más abajo.
     st.session_state.setdefault("matchmaking_start", None)
     st.session_state.setdefault("active_challenge", None)
     st.session_state.setdefault("match_economy_mode", None)
@@ -773,11 +773,11 @@ def _reset_tactical_selection(player_key: str | None = None) -> None:
 
 def _launch_match(
     connector: BlockchainConnector, wallet_address: str, pool_27: list[Card],
-    name_b: str, hp_b: int | None = None,
+    name_b: str, hp_b: int | None = None, rival_avatar_id: int | None = None,
 ) -> None:
     """Arranca una partida ya resuelta de oponente (Bot, Hotseat o rival de
     Reto 1v1) — usado tanto por 🔥 NUEVA PARTIDA como por el desenlace de
-    render_matchmaking_search() y render_challenges_panel()."""
+    render_bot_challenges_feed() y render_challenges_panel()."""
     rarity = resolve_equipped_rarity(connector, wallet_address)
     base_hp = compute_base_hp(rarity)
     rng = random.Random()
@@ -792,10 +792,16 @@ def _launch_match(
     st.session_state["turn_start_time"] = time.time()
     st.session_state["match_economy_mode"] = st.session_state.match_mode
     st.session_state["match_reward_settled"] = False
-    # El rival/BOT no tiene "wallet" propia que consultar: su marco usa
-    # siempre el Fox fijo DEFAULT_GAMENFT_ID (gamenft_avatar_path cae a él
-    # cuando no hay id) — igual que un jugador Free sin NFT equipado en el
-    # suyo. rival_avatar_id se deja sin fijar (None).
+    # El rival/BOT no tiene "wallet" propia que consultar, así que su marco
+    # no puede leer un equipped_token_id real — antes caía siempre al Fox
+    # fijo DEFAULT_GAMENFT_ID (gamenft_avatar_path), por lo que el combate
+    # mostraba siempre los mismos dos personajes. Si quien llama ya conoce
+    # el Maestro del rival (p.ej. render_bot_challenges_feed, que lo mostró
+    # en su tarjeta de reto) lo pasa explícito para que coincida; si no,
+    # random.choice() sobre el catálogo completo de list_gamenft_ids().
+    st.session_state["rival_avatar_id"] = (
+        rival_avatar_id if rival_avatar_id is not None else rng.choice(list_gamenft_ids())
+    )
     st.session_state["arena_background_path"] = str(rng.choice(list_escenario_paths()))
     _reset_tactical_selection()
 
@@ -804,104 +810,61 @@ def render_new_match_button(connector: BlockchainConnector, wallet_address: str,
     with st.container(key="new_match_cta"):
         if st.button("⚔️ LANZAR RETO ⚔️", key="navbar_new_match", width="stretch", type="primary"):
             if st.session_state.opponent_choice == "Bot":
-                # Free/Competitivo buscan rival humano hasta MATCHMAKING_SECONDS
-                # antes de caer a BOT (ver render_matchmaking_search); Hotseat
-                # ya tiene un rival local conocido, no necesita buscar.
+                # Free/Competitivo publican nuestro propio reto en la columna
+                # de la derecha (render_bot_challenges_feed) hasta
+                # MATCHMAKING_SECONDS, luego cae a BOT; Hotseat ya tiene un
+                # rival local conocido, no necesita buscar.
                 st.session_state["matchmaking_start"] = time.time()
             else:
                 _launch_match(connector, wallet_address, pool_27, name_b="Jugador B")
             st.rerun()
 
 
-def render_matchmaking_search(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
-    """Pantalla de búsqueda de partida (requisito del equipo de pruebas): si
-    pasan MATCHMAKING_SECONDS sin "encontrar" un jugador humano —este
-    prototipo local no tiene backend de matchmaking real entre wallets—, la
-    partida arranca sola contra un BOT para garantizar fluidez."""
-    elapsed = time.time() - st.session_state["matchmaking_start"]
-    remaining = max(0.0, MATCHMAKING_SECONDS - elapsed)
-    with st.container(key="matchmaking_search"):
-        st.subheader("🔎 Buscando partida…")
-        pct = (remaining / MATCHMAKING_SECONDS) * 100
-        st.markdown(
-            f"<div class='turn-timer-wrap'>"
-            f"<div class='turn-timer-track'><div class='turn-timer-fill' id='matchmaking-timer-fill' "
-            f"style='width:{pct:.1f}%'></div></div>"
-            f"<div class='turn-timer-label'>Esperando jugador humano · "
-            f"<span id='matchmaking-timer-seconds'>{int(remaining)}</span>s</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-        st.caption("Si no aparece un rival a tiempo, se asigna un BOT automáticamente.")
-        if st.button("Cancelar búsqueda", key="matchmaking_cancel"):
-            st.session_state["matchmaking_start"] = None
-            st.rerun()
-    if remaining <= 0:
-        st.session_state["matchmaking_start"] = None
-        _launch_match(connector, wallet_address, pool_27, name_b="Bot")
-        st.rerun()
-    else:
-        with st.container(key="matchmaking_timeout_trigger"):
-            st.button("⏱", key="matchmaking_timeout_btn")
-        components.html(
-            f"""<script>
-            (function () {{
-                const totalMs = {MATCHMAKING_SECONDS * 1000};
-                const remainingMs = {remaining * 1000:.0f};
-                const startedAt = Date.now();
-                const fill = window.parent.document.getElementById('matchmaking-timer-fill');
-                const label = window.parent.document.getElementById('matchmaking-timer-seconds');
-                const btn = window.parent.document.querySelector(
-                    '[class*="st-key-matchmaking_timeout_trigger"] button'
-                );
-                const iv = setInterval(function () {{
-                    const left = Math.max(0, remainingMs - (Date.now() - startedAt));
-                    const pct = Math.max(0, Math.min(100, (left / totalMs) * 100));
-                    if (fill) fill.style.width = pct + '%';
-                    if (label) label.textContent = Math.ceil(left / 1000);
-                    if (left <= 0) {{
-                        clearInterval(iv);
-                        if (btn) btn.click();
-                    }}
-                }}, 250);
-            }})();
-            </script>""",
-            height=0,
-        )
-
-
 # --------------------------------------------------------------------------- #
-# Columna derecha del lobby ("🔍 RETOS DISPONIBLES EN TIEMPO REAL"): feed
-# decorativo de salas de bots ya "buscando rival" — no hay backend de
+# Columna derecha del lobby ("🔍 RETOS DISPONIBLES EN TIEMPO REAL"): combina
+# nuestro propio reto (si ⚔️ LANZAR RETO está buscando rival, puesto por
+# render_new_match_button) con el feed de salas de bots — no hay backend de
 # matchmaking real entre wallets en este prototipo (ver _launch_match).
-# Cada reto vive en st.session_state.bot_challenges con su propio
+#
+# El Maestro NFT de cada fila (propio o de bot) sale de random.choice()
+# sobre TODO el catálogo de list_gamenft_ids(), no de un id fijo — antes el
+# rival siempre caía al mismo Fox por defecto (DEFAULT_GAMENFT_ID, ver
+# gamenft_avatar_path) porque rival_avatar_id nunca se fijaba, así que el
+# tablero y esta lista repetían siempre los dos mismos personajes. La rareza
+# de cada bot se deriva de ese mismo id (derive_placeholder_rarity, la misma
+# función que usa el selector de Maestro propio) en vez de un pool de
+# rarezas aparte, para no tener dos fuentes de verdad.
+#
+# Cada reto de bot vive en st.session_state.bot_challenges con su propio
 # expires_at (time.time() real, no una cuenta en el cliente): el temporizador
 # que se ve SÍ descuenta en vivo (JS actualiza la etiqueta/barra cada 250ms a
 # partir de ese valor), y al llegar a 0 un botón oculto fuerza un rerun real
 # que _refresh_bot_challenges() usa para descartar ese reto y generar uno
-# nuevo random, igual que si el jugador lo hubiera aceptado. "✅ Aceptar
-# Reto" fuerza vs_bot/opponent_choice a Bot (igual que 🤝 Retos 1v1 más
-# abajo), saca ese reto de la lista y arranca la partida al instante contra
-# ese rival, con el HP de la rareza simulada que se le asignó.
+# nuevo random. Nuestro propio reto (matchmaking_start) usa el mismo
+# mecanismo de timer_specs/botón oculto para su cuenta de MATCHMAKING_SECONDS
+# — al llegar a 0 se asigna un Bot automáticamente (_launch_match con
+# name_b="Bot"); "❌ Cancelar Reto" o aceptar el reto de otro rival de la
+# lista detienen la búsqueda propia (ambos fijan matchmaking_start a None).
 # --------------------------------------------------------------------------- #
 SIMULATED_BOT_NAME_POOL = [
     "KitsuneMaster_99", "ShadowKitsune", "CyberFox_X", "KitsuneRogue", "FireFox_99",
     "NightVixen", "PhantomFox", "BlazeKitsune", "FrostFox_7", "VoidKitsune",
 ]
-SIMULATED_BOT_NFT_POOL = ["Fox Dorado", "Fox Sombra", "Fox Cyber", "Fox Carmesí", "Fox Glacial", "Fox Fantasma"]
-SIMULATED_BOT_RARITY_POOL = [NFTRarity.COMMON, NFTRarity.RARE, NFTRarity.EPIC, NFTRarity.LEGENDARY]
 BOT_CHALLENGE_COUNT = 3
 
 
-def _new_bot_challenge(rng: random.Random, taken_names: set[str]) -> dict:
+def _new_bot_challenge(rng: random.Random, taken_names: set[str], taken_ids: set[int]) -> dict:
     st.session_state["_bot_challenge_seq"] = st.session_state.get("_bot_challenge_seq", 0) + 1
-    available = [n for n in SIMULATED_BOT_NAME_POOL if n not in taken_names] or SIMULATED_BOT_NAME_POOL
+    available_names = [n for n in SIMULATED_BOT_NAME_POOL if n not in taken_names] or SIMULATED_BOT_NAME_POOL
+    all_ids = list_gamenft_ids()
+    available_ids = [i for i in all_ids if i not in taken_ids] or all_ids
+    gamenft_id = rng.choice(available_ids)
     duration = rng.randint(30, 60)
     return {
         "id": st.session_state["_bot_challenge_seq"],
-        "name": rng.choice(available),
-        "nft_label": rng.choice(SIMULATED_BOT_NFT_POOL),
-        "rarity": rng.choice(SIMULATED_BOT_RARITY_POOL),
+        "name": rng.choice(available_names),
+        "gamenft_id": gamenft_id,
+        "rarity": derive_placeholder_rarity(gamenft_id),
         "duration_s": duration,
         "expires_at": time.time() + duration,
     }
@@ -915,12 +878,33 @@ def _refresh_bot_challenges() -> None:
     rng = random.Random()
     now = time.time()
     challenges = [c for c in st.session_state.get("bot_challenges", []) if c["expires_at"] > now]
-    taken = {c["name"] for c in challenges}
+    taken_names = {c["name"] for c in challenges}
+    taken_ids = {c["gamenft_id"] for c in challenges}
     while len(challenges) < BOT_CHALLENGE_COUNT:
-        new = _new_bot_challenge(rng, taken)
-        taken.add(new["name"])
+        new = _new_bot_challenge(rng, taken_names, taken_ids)
+        taken_names.add(new["name"])
+        taken_ids.add(new["gamenft_id"])
         challenges.append(new)
     st.session_state.bot_challenges = challenges
+
+
+def _render_challenge_row(gamenft_id: int | None, name_html: str, detail_html: str, timer_id: str, pct: int, remaining_s: int) -> None:
+    """Fila compartida (avatar pequeño + nombre/rareza + barra de tiempo),
+    reusada tanto para nuestro propio reto como para los de bots."""
+    avatar_col, info_col = st.columns([1, 3])
+    with avatar_col:
+        st.image(str(gamenft_avatar_path(gamenft_id)), width=56)
+    with info_col:
+        st.markdown(name_html + detail_html, unsafe_allow_html=True)
+    st.markdown(
+        f"<div class='turn-timer-wrap'>"
+        f"<div class='turn-timer-track'><div class='turn-timer-fill' "
+        f"id='challenge-fill-{timer_id}' style='width:{pct}%'></div></div>"
+        f"<div class='turn-timer-label'>Buscando rival… "
+        f"<span id='challenge-seconds-{timer_id}'>{remaining_s}</span>s</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
@@ -929,38 +913,60 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
     timer_specs = []
     with st.container(key="bot_challenges_feed"):
         st.subheader("🔍 RETOS DISPONIBLES EN TIEMPO REAL")
+
+        matchmaking_start = st.session_state.get("matchmaking_start")
+        if matchmaking_start is not None:
+            remaining = max(0.0, MATCHMAKING_SECONDS - (now - matchmaking_start))
+            if remaining <= 0:
+                # Nadie "aceptó" nuestro propio reto a tiempo: igual que la
+                # vieja render_matchmaking_search, se asigna un Bot solo.
+                st.session_state["matchmaking_start"] = None
+                _launch_match(connector, wallet_address, pool_27, name_b="Bot")
+                st.rerun()
+            own_rarity = resolve_equipped_rarity(connector, wallet_address)
+            pct = max(5, int(remaining / MATCHMAKING_SECONDS * 100))
+            with st.container(key="challenge_row_own"):
+                _render_challenge_row(
+                    st.session_state.get("equipped_token_id"),
+                    "<div class='challenge-rival-name'>🦊 Tú (Jugador A)</div>",
+                    f"<div class='challenge-rival-nft'>{rarity_label(own_rarity)} · "
+                    f"HP {compute_base_hp(own_rarity)}</div>",
+                    "own", pct, int(remaining),
+                )
+                with st.container(key="cancel_own_challenge_wrap"):
+                    if st.button("❌ Cancelar Reto", key="cancel_own_challenge", width="stretch"):
+                        st.session_state["matchmaking_start"] = None
+                        st.rerun()
+            timer_specs.append(
+                {"id": "own", "remainingMs": remaining * 1000, "totalMs": MATCHMAKING_SECONDS * 1000}
+            )
+
         for ch in st.session_state.bot_challenges:
             remaining = max(0.0, ch["expires_at"] - now)
             pct = max(5, int(remaining / ch["duration_s"] * 100))
             with st.container(key=f"challenge_row_{ch['id']}"):
-                st.markdown(
-                    f"<div class='challenge-rival-name'>🦊 {ch['name']}</div>"
-                    f"<div class='challenge-rival-nft'>{ch['nft_label']} · "
+                _render_challenge_row(
+                    ch["gamenft_id"],
+                    f"<div class='challenge-rival-name'>🦊 {ch['name']}</div>",
+                    f"<div class='challenge-rival-nft'>Fox #{ch['gamenft_id']} · "
                     f"{rarity_label(ch['rarity'])} · HP {compute_base_hp(ch['rarity'])}</div>",
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    f"<div class='turn-timer-wrap'>"
-                    f"<div class='turn-timer-track'><div class='turn-timer-fill' "
-                    f"id='challenge-fill-{ch['id']}' style='width:{pct}%'></div></div>"
-                    f"<div class='turn-timer-label'>Buscando rival… "
-                    f"<span id='challenge-seconds-{ch['id']}'>{int(remaining)}</span>s</div>"
-                    f"</div>",
-                    unsafe_allow_html=True,
+                    str(ch["id"]), pct, int(remaining),
                 )
                 if st.button("✅ Aceptar Reto", key=f"accept_challenge_{ch['id']}", width="stretch"):
                     st.session_state.bot_challenges = [
                         c for c in st.session_state.bot_challenges if c["id"] != ch["id"]
                     ]
+                    st.session_state["matchmaking_start"] = None  # deja de buscar nuestro propio reto
                     st.session_state.vs_bot = True
                     st.session_state["_force_opponent_bot"] = True
                     _launch_match(
                         connector, wallet_address, pool_27,
                         name_b=ch["name"], hp_b=compute_base_hp(ch["rarity"]),
+                        rival_avatar_id=ch["gamenft_id"],
                     )
                     st.rerun()
             timer_specs.append(
-                {"id": ch["id"], "remainingMs": remaining * 1000, "totalMs": ch["duration_s"] * 1000}
+                {"id": str(ch["id"]), "remainingMs": remaining * 1000, "totalMs": ch["duration_s"] * 1000}
             )
 
         with st.container(key="bot_challenges_refresh_trigger"):
@@ -1951,6 +1957,20 @@ st.markdown(
         box-shadow: 0 4px 16px rgba(34, 197, 94, 0.7);
         color: #fff !important;
     }
+    /* "❌ Cancelar Reto" (nuestro propio reto, challenge_row_own): mismo
+       tamaño que "✅ Aceptar Reto" pero gris/rojo apagado en vez de verde,
+       para no confundirlo con aceptar el reto de un rival. Va después de la
+       regla verde de arriba — misma especificidad, gana por orden. */
+    [class*="st-key-cancel_own_challenge_wrap"] .stButton > button {
+        background: rgba(255, 255, 255, 0.08) !important;
+        border: 1px solid rgba(239, 68, 68, 0.5) !important;
+        color: rgba(255, 255, 255, 0.85) !important;
+        box-shadow: none !important;
+    }
+    [class*="st-key-cancel_own_challenge_wrap"] .stButton > button:hover {
+        background: rgba(239, 68, 68, 0.18) !important;
+        color: #fff !important;
+    }
     [class*="st-key-bot_challenges_refresh_trigger"] {
         display: none !important;
     }
@@ -2337,9 +2357,10 @@ if not game_started:
 
 match = st.session_state.match
 if match is None:
-    if st.session_state.get("matchmaking_start") is not None:
-        render_matchmaking_search(connector, current_wallet_address, pool_27)
-    else:
+    # La búsqueda de rival (matchmaking_start) ya se muestra arriba, como
+    # nuestra propia fila en el feed de la derecha (render_bot_challenges_feed)
+    # — no hay nada más que mostrar aquí en ese caso.
+    if st.session_state.get("matchmaking_start") is None:
         st.info("Pulsa **⚔️ LANZAR RETO ⚔️** o acepta un reto del panel de la derecha para empezar a jugar.")
     st.stop()
 
