@@ -730,11 +730,14 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
             # teclear o subir/bajar lo que quiera; la comprobación contra el
             # saldo pasa a hacerse solo al pulsar LANZAR RETO (ver
             # render_new_match_button), nunca mientras se edita el número.
-            stake_col, economy_col = st.columns([1, 3])
-            with stake_col:
-                stake = st.number_input(
-                    "Apuesta en KUR", min_value=0.0, value=10.0, step=1.0, key="navbar_stake"
-                )
+            # A todo el ancho del panel (no en columna junto al texto de
+            # economía) para que el widget tenga sitio de sobra y Streamlit
+            # dibuje sus botones nativos de +/- al enfocarlo — en una columna
+            # angosta (como dentro de nft_action_col) el contenedor no tiene
+            # los ~150px que esos botones necesitan y quedan recortados.
+            stake = st.number_input(
+                "Apuesta en KUR", min_value=0.0, value=10.0, step=1.0, key="navbar_stake"
+            )
             economy = compute_match_economy(st.session_state.match_mode, stake)
             # Bote real (ambos jugadores igualan la apuesta) y comisión sobre
             # ESE bote, no sobre la apuesta de uno solo — mismo cálculo que
@@ -744,12 +747,11 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
             pot = stake * 2
             fee = round(pot * MATCH_FEE_PCT, 2)
             premio = round(pot - fee, 2)
-            with economy_col:
-                st.caption(
-                    f"Victoria: +{economy.win_elo} ELO · +{premio:.2f} KUR "
-                    f"(bote {pot:.2f} − comisión {fee:.2f}) · "
-                    f"Derrota: {economy.loss_elo} ELO"
-                )
+            st.caption(
+                f"Victoria: +{economy.win_elo} ELO · +{premio:.2f} KUR "
+                f"(bote {pot:.2f} − comisión {fee:.2f}) · "
+                f"Derrota: {economy.loss_elo} ELO"
+            )
         else:
             economy = compute_match_economy(st.session_state.match_mode, 0.0)
             st.caption(f"Victoria: +{economy.win_elo} ELO · {economy.win_kur_reward_min:.0f} KUR · Derrota: {economy.loss_elo} ELO")
