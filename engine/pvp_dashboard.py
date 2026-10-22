@@ -710,11 +710,6 @@ def _reset_match_mode_if_empty() -> None:
         st.session_state.match_mode = "free"
 
 
-def _reset_opponent_choice_if_empty() -> None:
-    if st.session_state.get("opponent_choice") is None:
-        st.session_state.opponent_choice = "Bot"
-
-
 def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
     with st.container(key="battle_mode_bar"):
         st.segmented_control(
@@ -723,14 +718,6 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
             format_func=lambda v: "🆓 Free" if v == "free" else "💰 Competitivo",
             key="match_mode",
             on_change=_reset_match_mode_if_empty,
-            label_visibility="collapsed",
-        )
-        st.segmented_control(
-            "Oponente",
-            options=["Bot", "Hotseat (2 jugadores locales)"],
-            format_func=lambda v: "🤖 Bot" if v == "Bot" else "👥 Hotseat",
-            key="opponent_choice",
-            on_change=_reset_opponent_choice_if_empty,
             label_visibility="collapsed",
         )
 
@@ -2635,10 +2622,17 @@ st.markdown('<div id="arena-top-anchor"></div>', unsafe_allow_html=True)
 if match.status == MatchStatus.ONGOING:
     components.html(
         f"""<script>
-        setTimeout(function () {{
+        function scrollToArena() {{
             var el = window.parent.document.getElementById('arena-top-anchor') || document.getElementById('arena-top-anchor');
             if (el) {{ el.scrollIntoView({{ behavior: 'smooth', block: 'start' }}); }}
-        }}, 150);
+        }}
+        // shortcut: 3 intentos (150/500/1000ms) en vez de MutationObserver —
+        // en la Ronda 1 las imagenes de cartas/avatares aun estan cargando y
+        // desplazan el layout tras el primer intento; en rondas siguientes
+        // (todo cacheado) los intentos de mas son no-op.
+        setTimeout(scrollToArena, 150);
+        setTimeout(scrollToArena, 500);
+        setTimeout(scrollToArena, 1000);
         </script><!-- turno {match.turn_number} -->""",
         height=0,
     )
