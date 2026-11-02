@@ -3042,9 +3042,69 @@ _ZONE_LABELS = {"head": "Cabeza", "torso": "Torso", "legs": "Piernas"}
 # aunque Streamlit solo re-ejecute este script ante una interacción.
 # --------------------------------------------------------------------------- #
 st.session_state.setdefault("turn_start_time", time.time())
+
+# Prefijos de los botones con los que un jugador actúa en su turno.
+_PLAYER_ACTION_KEY_PREFIXES = ("confirm_turn_{pk}", "select_{pk}_", "desel_{pk}_",
+                               "pt_atk_{pk}_", "pt_def_{pk}_", "atk_pt_{pk}_", "def_pt_{pk}_")
+
+
+def _clicked_this_run(player_key: str) -> bool:
+    """¿El rerun actual lo ha provocado un clic de este jugador? En Streamlit
+    el script corre de arriba abajo: este bloque del temporizador va ANTES
+    que los botones, así que sin esta comprobación un clic hecho justo
+    cuando el reloj llega a 0 (o con 1 s de desfase entre el contador del
+    navegador y el servidor) se tomaba como "tiempo agotado sin actuar"."""
+    prefixes = tuple(p.format(pk=player_key) for p in _PLAYER_ACTION_KEY_PREFIXES)
+    return any(
+        isinstance(k, str) and k.startswith(prefixes) and v is True
+        for k, v in st.session_state.items()
+    )
+
+
+_TIMEOUT_GRACE_SECONDS = 5
+
+
+def _play_selected_on_timeout(player_key: str) -> int:
+    """Al agotarse el tiempo, juega las cartas que el jugador ya tenía
+    elegidas CON sus zonas completas (su intención estaba clara: no se pierde
+    la jugada por no haber llegado a pulsar el botón). Las que no tenían
+    zonas se descartan con la mano, como siempre. Devuelve cuántas jugó."""
+    player = match.player_a if player_key == "a" else match.player_b
+    hand = {c.id: c for c in player.hand}
+    zones = st.session_state.get(f"zones_{player_key}", {})
+    played = 0
+    for cid in list(st.session_state.get(f"sel_cards_{player_key}", [])):
+        card = hand.get(cid)
+        if card is None:
+            continue
+        zc = zones.get(cid) or {}
+        needs_atk = card.atk > 0
+        needs_def = card.defense > 0 or card.ability.value in ("heal_potion", "counter")
+        if (needs_atk and not zc.get("atk")) or (needs_def and not zc.get("def")):
+            continue
+        atk_z = zc.get("atk") or zc.get("def") or Zone.HEAD.value
+        def_z = zc.get("def") or zc.get("atk") or Zone.HEAD.value
+        try:
+            play_card(match, player_key, cid, Zone(atk_z), defense_zone=Zone(def_z))
+        except Exception as e:
+            print(f"[TIMEOUT] {cid} no se pudo jugar: {e!r}")
+            continue
+        _flash_energy_spend(player_key, card.cost_energy)
+        played += 1
+    return played
 if match.status == MatchStatus.ONGOING:
     elapsed = time.time() - st.session_state.turn_start_time
-    if elapsed >= TURN_TIMER_SECONDS:
+    _late_clickers = [pk for pk in ("a", "b") if _clicked_this_run(pk)] if elapsed >= TURN_TIMER_SECONDS else []
+    if _late_clickers:
+        # Clic justo al expirar: cuenta como actividad y se procesa con
+        # normalidad más abajo (Pasar Turno resuelve el turno él mismo). Si
+        # fue p.ej. elegir carta/zona, se dan unos segundos de cortesía para
+        # terminar la jugada en vez de cortarla.
+        for _pk in _late_clickers:
+            register_activity(match, _pk)
+        st.session_state.turn_start_time = time.time() - (TURN_TIMER_SECONDS - _TIMEOUT_GRACE_SECONDS)
+        print(f"[TIMEOUT] clic de {_late_clickers} al expirar: se procesa la jugada, sin penalización.")
+    elif elapsed >= TURN_TIMER_SECONDS:
         print(f"[TIMEOUT] Ronda {match.turn_number}: temporizador expirado, resolviendo turno.")
         try:
             # Tener cartas elegidas es interactuar: ese jugador no suma
@@ -3052,6 +3112,9 @@ if match.status == MatchStatus.ONGOING:
             for _pk in ("a", "b"):
                 if st.session_state.get(f"sel_cards_{_pk}"):
                     register_activity(match, _pk)
+                    _n = _play_selected_on_timeout(_pk)
+                    if _n:
+                        print(f"[TIMEOUT] {_pk}: jugadas {_n} cartas elegidas antes de expirar.")
             if st.session_state.vs_bot:
                 if not match.player_a.acted_this_turn:
                     auto_skip_turn(match, "a")
@@ -3161,9 +3224,17 @@ def _card_ready(player_key: str, card_dict: dict) -> bool:
     return (not needs_atk or zones["atk"] is not None) and (not needs_def or zones["def"] is not None)
 
 
+def _mark_activity(player_key: str) -> None:
+    """Cualquier interacción del jugador en su turno: inactividad a 0 ya."""
+    m = st.session_state.get("match")
+    if m is not None and m.status == MatchStatus.ONGOING:
+        register_activity(m, player_key)
+
+
 def _select_card(player_key: str, card_id: str) -> None:
     """Clic en una carta: si no estaba elegida se AÑADE a la selección (sin
     soltar las demás); en ambos casos pasa a ser la carta activa."""
+    _mark_activity(player_key)
     sel = st.session_state[f"sel_cards_{player_key}"]
     if card_id not in sel:
         sel.append(card_id)
@@ -3174,6 +3245,7 @@ def _select_card(player_key: str, card_id: str) -> None:
 def _deselect_card(player_key: str, card_id: str) -> None:
     """Botón ✕ de una carta: la quita SOLO a ella (libera su energía) y deja
     intactas las demás; si era la activa, pasa a serlo la última que quede."""
+    _mark_activity(player_key)
     sel = st.session_state[f"sel_cards_{player_key}"]
     if card_id in sel:
         sel.remove(card_id)
@@ -3215,6 +3287,7 @@ def render_tactical_points(player_key: str, overlay: bool = False) -> None:
     )
 
     def _set_zone(prefix: str, zone_value: str) -> None:
+        _mark_activity(player_key)
         if sel_card:
             active_zones[prefix] = zone_value
 

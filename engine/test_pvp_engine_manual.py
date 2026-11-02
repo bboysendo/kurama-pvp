@@ -215,6 +215,24 @@ end_turn(m, timed_out=True)
 assert m.player_a.inactive_turns == 0 and m.player_b.inactive_turns == 1
 print("interaction before timeout is not inactivity OK")
 
+# Cualquier acción pone el contador a 0 AL MOMENTO (no al cerrar el turno).
+for action in ("register", "pass", "play"):
+    m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=18)
+    end_turn(m, timed_out=True); end_turn(m, timed_out=True)
+    assert m.player_a.inactive_turns == 2
+    if action == "register":
+        register_activity(m, "a")
+    elif action == "pass":
+        pass_turn(m, "a")
+    else:
+        play_card(m, "a", m.player_a.hand[0].id, Zone.HEAD)
+    assert m.player_a.inactive_turns == 0, (action, m.player_a.inactive_turns)
+    assert get_match_state(m)["player_a"]["inactive_turns"] == 0
+    pass_turn(m, "b")
+    end_turn(m, timed_out=True)
+    assert m.player_a.inactive_turns == 0 and m.status == MatchStatus.ONGOING, action
+print("immediate reset on any action OK (elegir/pasar/jugar)")
+
 # Cerrar el turno sin timeout (p.ej. 'Resolver turno' en Hotseat) no penaliza.
 m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=17)
 for _ in range(5):

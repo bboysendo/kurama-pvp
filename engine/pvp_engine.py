@@ -234,6 +234,7 @@ def play_card(
     p.hand.remove(card)
     p.staged_plays.append(StagedPlay(card=card, zone=zone, defense_zone=defense_zone))
     p.acted_this_turn = True
+    p.inactive_turns = 0
     if defense_zone == zone:
         match.log.append(f"{p.name} juega {card.name} ({card.atk}/{card.defense}) en {zone.value}.")
     else:
@@ -366,9 +367,12 @@ def _collect_counter_hits(attacker: PlayerState, defender: PlayerState, maps_atk
 
 
 def register_activity(match: MatchState, player: str) -> None:
-    """El jugador ha interactuado este turno (p.ej. tenía cartas elegidas
-    cuando se agotó el tiempo): ese turno no cuenta como inactividad."""
-    _get_player(match, player).acted_this_turn = True
+    """El jugador ha interactuado este turno (elegir/quitar carta, marcar
+    zona, jugar, pasar...): ese turno no cuenta como inactividad y el
+    contador de inactividad vuelve a 0 AL MOMENTO (no al cerrar el turno)."""
+    p = _get_player(match, player)
+    p.acted_this_turn = True
+    p.inactive_turns = 0
 
 
 def pass_turn(match: MatchState, player: str) -> None:
@@ -377,6 +381,7 @@ def pass_turn(match: MatchState, player: str) -> None:
     energía como cualquier otro turno al cerrarse (end_turn)."""
     p = _get_player(match, player)
     p.acted_this_turn = True
+    p.inactive_turns = 0
     if not p.staged_plays:
         match.log.append(f"⏭️ {p.name} pasa turno.")
 
