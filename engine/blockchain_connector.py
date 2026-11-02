@@ -99,6 +99,19 @@ MATCH_FEE_PCT = 0.05
 CHALLENGE_FEE_PCT = 0.10
 
 
+# NFTs "con cristales" (revisión del creador 02/11/2026): de momento son los
+# de rareza Épica y Legendaria — no hay metadata real de cristales todavía
+# (ver derive_placeholder_rarity). Solo cuentan en modo Competitivo y en los
+# Retos 1v1 con apuesta: ganan más ELO y +3 $KUR extra al ganar.
+CRYSTAL_RARITIES = frozenset({NFTRarity.EPIC, NFTRarity.LEGENDARY})
+CRYSTAL_ELO_WIN_BONUS = 10      # +25 -> +35 ELO por victoria competitiva
+CRYSTAL_KUR_WIN_BONUS = 3.0     # +3 $KUR extra al ganar una apuesta/reto
+
+
+def has_crystals(rarity: NFTRarity) -> bool:
+    return rarity in CRYSTAL_RARITIES
+
+
 def roll_competitive_kur_reward() -> float:
     """Recompensa real (aleatoria) que se acredita al ganador de una partida
     en modo Competitivo/Cristal, dentro del rango 3-5 $KUR pedido."""
@@ -169,11 +182,14 @@ class MatchEconomy:
     loss_elo: int
     win_kur_reward_min: float
     win_kur_reward_max: float
+    crystals: bool = False          # NFT equipado con cristales (solo competitivo)
+    crystal_kur_bonus: float = 0.0  # $KUR extra al ganar por tener cristales
 
 
-def compute_match_economy(mode: str, stake_kur: float = 0.0) -> MatchEconomy:
+def compute_match_economy(mode: str, stake_kur: float = 0.0, crystals: bool = False) -> MatchEconomy:
     """Calcula comisión/apuesta antes de la partida y el rango de recompensa
-    de victoria, según el modo (sección 4 de PVP_Rules). No mueve fondos — el
+    de victoria, según el modo (sección 4 de PVP_Rules). `crystals` solo
+    tiene efecto en modo competitivo (el modo Free ignora cristales). No mueve fondos — el
     backend con custodia de claves es quien ejecuta la transferencia real
     usando estos importes (la liquidación real, bote de las 2 apuestas menos
     comisión, se calcula al terminar la partida — ver pvp_dashboard.py,
@@ -191,8 +207,10 @@ def compute_match_economy(mode: str, stake_kur: float = 0.0) -> MatchEconomy:
     fee = round(stake_kur * MATCH_FEE_PCT, 6)
     return MatchEconomy(
         mode=mode, stake_kur=stake_kur, fee_kur=fee, pool_kur=round(stake_kur - fee, 6),
-        win_elo=COMPETITIVE_MODE_ELO_WIN, loss_elo=COMPETITIVE_MODE_ELO_LOSS,
+        win_elo=COMPETITIVE_MODE_ELO_WIN + (CRYSTAL_ELO_WIN_BONUS if crystals else 0),
+        loss_elo=COMPETITIVE_MODE_ELO_LOSS,
         win_kur_reward_min=COMPETITIVE_MODE_KUR_REWARD_MIN, win_kur_reward_max=COMPETITIVE_MODE_KUR_REWARD_MAX,
+        crystals=crystals, crystal_kur_bonus=CRYSTAL_KUR_WIN_BONUS if crystals else 0.0,
     )
 
 

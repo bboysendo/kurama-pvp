@@ -43,6 +43,8 @@ import kurama_theme  # noqa: E402
 import marketplace_app  # noqa: E402  (MARKETPLACE/ — ver render_marketplace_panel() más abajo)
 
 from blockchain_connector import (
+    CRYSTAL_ELO_WIN_BONUS,
+    CRYSTAL_KUR_WIN_BONUS,
     DECK_STAT_BUFF_PCT,
     MATCH_FEE_PCT,
     BlockchainConnector,
@@ -51,6 +53,7 @@ from blockchain_connector import (
     compute_challenge_payout,
     compute_match_economy,
     derive_placeholder_rarity,
+    has_crystals,
 )
 from card_schema import (
     CRITICAL_COMBO_DAMAGE,
@@ -58,7 +61,9 @@ from card_schema import (
     ENERGY_PER_TURN,
     HAND_SIZE,
     MATCHMAKING_SECONDS,
+    MAX_ENERGY,
     MAX_ENERGY_SPEND_PER_TURN,
+    SIMULTANEOUS_COMBO_BONUS,
     STARTING_ENERGY,
     TRIPARTITE_COMBO_BONUS,
     TURN_TIMER_SECONDS,
@@ -194,12 +199,27 @@ def init_state() -> None:
     st.session_state.setdefault("active_challenge", None)
     st.session_state.setdefault("match_economy_mode", None)
     st.session_state.setdefault("match_reward_settled", False)
-    # Selección táctica de la ronda actual (puntos rojo/verde + carta elegida
-    # antes de "Pasar Turno" — ver render_tactical_points/render_hand).
+    # Selección táctica de la ronda actual — SELECCIÓN MÚLTIPLE: varias
+    # cartas a la vez mientras su coste total quepa en la energía del turno.
+    #   sel_cards_{pk}:   ids elegidos, en orden de selección (orden de juego)
+    #   active_card_{pk}: la carta que editan ahora los puntos rojo/verde
+    #   zones_{pk}:       {card_id: {"atk": zona|None, "def": zona|None}}
+    # (ver render_tactical_points/render_hand).
     for _pk in ("a", "b"):
-        st.session_state.setdefault(f"sel_card_{_pk}", None)
-        st.session_state.setdefault(f"atk_zone_{_pk}", None)
-        st.session_state.setdefault(f"def_zone_{_pk}", None)
+        st.session_state.setdefault(f"sel_cards_{_pk}", [])
+        st.session_state.setdefault(f"active_card_{_pk}", None)
+        st.session_state.setdefault(f"zones_{_pk}", {})
+
+
+def equipped_has_crystals(connector: BlockchainConnector, wallet_address: str) -> bool:
+    """¿El Maestro equipado es un NFT con cristales (Épico/Legendario)? Solo
+    se usa en modo Competitivo y en Retos 1v1 — en Free los cristales no
+    existen (ni se muestran ni cuentan)."""
+    return has_crystals(resolve_equipped_rarity(connector, wallet_address))
+
+
+def crystals_label(crystals: bool) -> str:
+    return "💎 Con cristales" if crystals else "Sin cristales"
 
 
 def rarity_label(rarity: NFTRarity) -> str:
@@ -227,7 +247,7 @@ def resolve_equipped_rarity(connector: BlockchainConnector, wallet_address: str)
 # --------------------------------------------------------------------------- #
 # Galería / Catálogo de cartas
 # --------------------------------------------------------------------------- #
-CATEGORY_LABELS = {"standard": "Común", "rare": "Rara", "legendary": "Legendaria"}
+CATEGORY_LABELS = {"standard": "Base", "special": "Especial", "rare": "Rara", "legendary": "Legendaria"}
 
 
 def card_type_label(card_dict: dict) -> str:
@@ -235,6 +255,10 @@ def card_type_label(card_dict: dict) -> str:
     (Poción/Perforante/Contraataque) o, si no tiene, de si pega, protege o
     ambas cosas (Ataque/Defensa/Híbrida)."""
     ability = card_dict.get("ability", "none")
+    if ability == "lifesteal":
+        return "Robo de Vida"
+    if ability == "combo_strike":
+        return "Combo Simultáneo"
     if ability == "heal_potion":
         return "Poción"
     if ability == "piercing":
@@ -256,6 +280,17 @@ def card_effect_text(card_dict: dict) -> str:
     (misma mecánica que resuelve pvp_engine.py `_resolve_direction` /
     `_collect_counter_hits`) o, si no tiene, según si ataca y/o defiende."""
     ability = card_dict.get("ability", "none")
+    if ability == "lifesteal":
+        heal = card_dict.get("heal_amount") or 0
+        return (
+            f"🩸 Ataca la zona elegida y, si hace daño, recuperas esos HP "
+            f"(máximo {heal} por turno)."
+        )
+    if ability == "combo_strike":
+        return (
+            f"⚡ Si este turno dañas 2 zonas a la vez, +{SIMULTANEOUS_COMBO_BONUS[2]} de daño; "
+            f"si dañas las 3, +{SIMULTANEOUS_COMBO_BONUS[3]}."
+        )
     if ability == "heal_potion":
         heal = card_dict.get("heal_amount") or 0
         return (
@@ -280,8 +315,9 @@ def card_effect_text(card_dict: dict) -> str:
 def render_gallery(catalog_dicts: list[dict]) -> None:
     st.header("📖 Catálogo de Cartas")
     st.caption(
-        f"Las {len(catalog_dicts)} cartas registradas en el juego — arte final y placeholders "
-        "incluidos. Filtra por rareza o por tipo para revisarlas todas de un vistazo."
+        f"Las {len(catalog_dicts)} cartas del juego: las cartas base son únicas (una de cada "
+        "combinación ATK/DEF) y las especiales, con arte NFT, son las únicas que pueden repetirse "
+        "en un mazo."
     )
 
     all_types = sorted({card_type_label(c) for c in catalog_dicts})
@@ -289,7 +325,7 @@ def render_gallery(catalog_dicts: list[dict]) -> None:
     f1, f2 = st.columns([1, 2])
     with f1:
         rarity_filter = st.radio(
-            "Rareza", ["Todas", "Común", "Rara", "Legendaria"], key="gallery_rarity_filter"
+            "Tipo de carta", ["Todas", "Base", "Especial"], key="gallery_rarity_filter"
         )
     with f2:
         type_filter = st.multiselect("Tipo", all_types, default=all_types, key="gallery_type_filter")
@@ -319,7 +355,13 @@ def render_gallery(catalog_dicts: list[dict]) -> None:
                 st.caption(f"⚡ Coste {card_dict['cost_energy']} · {card_dict['atk']} ATK / {card_dict['defense']} DEF")
                 st.caption(f"🏷️ {CATEGORY_LABELS.get(card_dict['category'], card_dict['category'])} · {card_type_label(card_dict)}")
                 ability_note = ""
-                if card_dict.get("ability") == "heal_potion" and card_dict.get("heal_amount"):
+                if card_dict.get("ability") == "lifesteal":
+                    ability_note = f"🩸 Roba hasta {card_dict.get('heal_amount') or 0} HP · repetible"
+                elif card_dict.get("ability") == "combo_strike":
+                    ability_note = (
+                        f"⚡ +{SIMULTANEOUS_COMBO_BONUS[2]} / +{SIMULTANEOUS_COMBO_BONUS[3]} en combo · repetible"
+                    )
+                elif card_dict.get("ability") == "heal_potion" and card_dict.get("heal_amount"):
                     ability_note = f"💚 Cura mínimo {card_dict['heal_amount']} HP"
                 elif card_dict.get("ability") == "counter" and card_dict.get("counter_damage"):
                     ability_note = f"↩️ Devuelve {card_dict['counter_damage']} de daño"
@@ -349,9 +391,9 @@ TUTORIAL_STEPS = [
         "zone": None,
         "text": (
             "Tú y el rival empezáis con la misma vida (depende de vuestra rareza de NFT — "
-            "aquí usamos 50 HP de ejemplo) y 3 cartas en la mano. Cada turno podéis gastar "
-            "hasta 2 puntos de energía jugando cartas, eligiendo en qué **zona** (Cabeza, "
-            "Tronco o Piernas) actúa cada una."
+            f"aquí usamos 50 HP de ejemplo) y {HAND_SIZE} cartas en la mano. Tienes "
+            f"{MAX_ENERGY} de energía como máximo: cada turno puedes gastarla jugando varias cartas, "
+            "eligiendo en qué **zona** (Cabeza, Tronco o Piernas) actúa cada una."
         ),
         "hp_a": 50, "hp_b": 50,
         "badge": None,
@@ -359,7 +401,7 @@ TUTORIAL_STEPS = [
     {
         "title": "Turno 1 — Ataque básico",
         "actor": "tú",
-        "card_id": "tz_std_atk_pure_1",
+        "card_id": "tz_shadow_claw_3x0",
         "zone": "Cabeza",
         "text": (
             "Juegas **Shadow Claw: Aerial Predator** (3 ATK / 0 DEF) apuntando a la **Cabeza** "
@@ -370,97 +412,87 @@ TUTORIAL_STEPS = [
         "badge": "⚔️ Ataque normal",
     },
     {
-        "title": "Turno 2 — El rival se cura con una poción",
+        "title": "Turno 2 — El rival responde",
         "actor": "rival",
-        "card_id": "ph_rare_potion_minor",
-        "zone": "Piernas",
+        "card_id": "kr_pyre_cosmos_3x1",
+        "zone": "Tronco",
         "text": (
-            "Atacas las **Piernas**, pero el rival había jugado una **Poción Curativa Menor** "
-            "ahí mismo. Las pociones **bloquean el daño de esa zona por completo** y "
-            "convierten esa cantidad en vida: en vez de recibir daño, el rival **cura**. "
-            "Esta zona NO cuenta como \"dañada\" para tu combo — quedó totalmente protegida."
+            "El rival juega **Pyre & Cosmos** (3 ATK / 1 DEF) contra tu **Tronco**, que esta vez "
+            "dejaste sin proteger: **recibes 3 de daño**. Su 1 DEF protege a la vez su propio Tronco."
         ),
-        "hp_a": 50, "hp_b": 49,
-        "badge": "🧪 Poción / Curación",
+        "hp_a": 47, "hp_b": 47,
+        "badge": "⚔️ Golpe del rival",
     },
     {
         "title": "Turno 3 — El escudo detiene el golpe",
         "actor": "rival",
-        "card_id": "tz_std_def_shield_1",
+        "card_id": "tz_lava_rage_0x3",
         "zone": "Tronco",
         "text": (
             "El rival protege el **Tronco** con **Lava Rage: Volcanic Striker** (0 ATK / 3 DEF). "
-            "Atacas ahí con una carta de 2 ATK normal: **Daño = max(0, 2 − 3) = 0**. "
-            "El escudo absorbe el golpe entero — con cartas normales, contra un buen escudo no pasa nada."
+            "Atacas ahí con **Cyber-Kitsune Operative** (2 ATK): **Daño = max(0, 2 − 3) = 0**. "
+            "Contra un buen escudo, un ataque normal no pasa."
         ),
-        "hp_a": 50, "hp_b": 49,
+        "hp_a": 47, "hp_b": 47,
         "badge": "🛡️ Defensa / Escudo",
     },
     {
-        "title": "Turno 4 — Una Perforante ignora el escudo",
+        "title": "Turno 4 — Robo de Vida",
         "actor": "tú",
-        "card_id": "ph_rare_piercing_2",
-        "zone": "Tronco",
-        "text": (
-            "Esta vez usas **Ataque Perforante Táctico** (3 ATK, habilidad Perforante) en el "
-            "**Tronco**. Las cartas perforantes **ignoran la defensa del rival por completo**, "
-            "así que el escudo no sirve de nada: **Daño = 3** aunque el rival tenga DEF alta."
-        ),
-        "hp_a": 50, "hp_b": 46,
-        "badge": "🗡️ Ataque perforante",
-    },
-    {
-        "title": "Turno 5 — ¡Combo Tripartito!",
-        "actor": "tú",
-        "card_id": "ph_std_hybrid_off_3",
+        "card_id": "sp_lifesteal_fox_888",
         "zone": "Piernas",
         "text": (
-            f"Atacas las **Piernas** sin que el rival se proteja: 2 de daño normal. Pero ya habías "
-            f"dañado antes la Cabeza (turno 1) y el Tronco (turno 4) — ¡al dañar también las Piernas "
-            f"completas las 3 zonas en el transcurso de la partida! Eso activa el **Combo Tripartito**: "
-            f"+{TRIPARTITE_COMBO_BONUS} de daño extra automático en ese mismo golpe. "
-            f"**Daño total = 2 + {TRIPARTITE_COMBO_BONUS} = 5**."
+            "Juegas la especial **Fox #888 · Blood Moon** (2 ATK, Robo de Vida) contra las "
+            "**Piernas**, desprotegidas: haces **2 de daño** y **recuperas esos 2 HP** "
+            "(esta carta roba hasta 3 por turno). Las especiales son las únicas cartas que "
+            "pueden venir repetidas en tu mazo."
         ),
-        "hp_a": 50, "hp_b": 41,
-        "badge": "🔥 Combo Tripartito",
+        "hp_a": 49, "hp_b": 45,
+        "badge": "🩸 Robo de Vida",
+    },
+    {
+        "title": "Turno 5 — Combo Simultáneo + Combo Tripartito",
+        "actor": "tú",
+        "card_id": "sp_combo_fox_999",
+        "zone": "Cabeza",
+        "text": (
+            f"Gastas tu energía en dos cartas a la vez: **Fox #999 · Twin Storm** (1 ATK, Combo "
+            f"Simultáneo) en la **Cabeza** y **Fox #666 · Swift Jab** (1 ATK) en el **Tronco**. "
+            f"Dañas 2 zonas el mismo turno: **+{SIMULTANEOUS_COMBO_BONUS[2]}** de Combo Simultáneo. "
+            f"Y como el Tronco era la única zona que aún no habías dañado, completas además el "
+            f"**Combo Tripartito**: **+{TRIPARTITE_COMBO_BONUS}**. "
+            f"**Daño total = 1 + 1 + {SIMULTANEOUS_COMBO_BONUS[2]} + {TRIPARTITE_COMBO_BONUS} = "
+            f"{2 + SIMULTANEOUS_COMBO_BONUS[2] + TRIPARTITE_COMBO_BONUS}**."
+        ),
+        "hp_a": 49, "hp_b": 45 - (2 + SIMULTANEOUS_COMBO_BONUS[2] + TRIPARTITE_COMBO_BONUS),
+        "badge": "⚡ Combo Simultáneo · 🔥 Combo Tripartito",
     },
     {
         "title": "Turno 6 — ¡Combo Crítico!",
         "actor": "tú",
-        "card_id": "ph_std_atk_pure_2",
+        "card_id": "tz_shadow_claw_3x0",
         "zone": "Cabeza",
         "text": (
-            f"Con el Combo Tripartito ya activo, **cualquier carta de Ataque Puro (3 ATK / 0 DEF)** "
-            f"que juegues se convierte en un golpe crítico: **{CRITICAL_COMBO_DAMAGE} de daño fijo, "
-            f"ignorando cualquier defensa o escudo**. Es el mejor momento de la partida para rematar."
+            f"Tu mazo se ha rebarajado y vuelves a robar **Shadow Claw**. Con el Combo Tripartito "
+            f"ya activo, tu carta de **Ataque Puro (3 ATK / 0 DEF)** se convierte en un golpe "
+            f"crítico: **{CRITICAL_COMBO_DAMAGE} de daño fijo, ignorando cualquier escudo**."
         ),
-        "hp_a": 50, "hp_b": 21,
+        "hp_a": 49,
+        "hp_b": 45 - (2 + SIMULTANEOUS_COMBO_BONUS[2] + TRIPARTITE_COMBO_BONUS) - CRITICAL_COMBO_DAMAGE,
         "badge": "💥 Combo Crítico",
     },
     {
-        "title": "Turno 7 — El rival contraataca",
-        "actor": "rival",
-        "card_id": "ph_rare_counter_2",
-        "zone": "Cabeza",
+        "title": "Cómo se gana",
+        "actor": None,
+        "card_id": None,
+        "zone": None,
         "text": (
-            "El rival juega **Contraataque de Repsilo Avanzado** en la **Cabeza**, apostando a que "
-            "no ataques ahí. Tú atacas las Piernas en su lugar (2 de daño). Como no atacaste la "
-            "Cabeza, el contraataque se activa y te devuelve 3 de daño directo — más 1 de daño "
-            "normal de la propia carta, que tampoco protegiste. **Recibes 4 en total.**"
+            "Sigue así hasta dejar al rival a **0 HP**: ganas la partida. Si eres tú quien llega "
+            "antes a 0, pierdes. Y cuidado: si pasas **3 turnos seguidos sin jugar ninguna carta**, "
+            "pierdes por inactividad."
         ),
-        "hp_a": 46, "hp_b": 19,
-        "badge": "↩️ Contraataque",
-    },
-    {
-        "title": "Turno 8 — ¡Victoria!",
-        "actor": "tú",
-        "card_id": "tz_std_atk_pure_1",
-        "zone": "Tronco",
-        "text": (
-            f"Rematas con otro Ataque Puro — como el combo sigue activo, vuelve a ser un golpe "
-            f"crítico de {CRITICAL_COMBO_DAMAGE}. El rival llega a 0 HP. **¡Ganas la partida!**"
-        ),
-        "hp_a": 46, "hp_b": 0,
+        "hp_a": 49,
+        "hp_b": 45 - (2 + SIMULTANEOUS_COMBO_BONUS[2] + TRIPARTITE_COMBO_BONUS) - CRITICAL_COMBO_DAMAGE,
         "badge": "🏆 Victoria",
     },
 ]
@@ -489,9 +521,10 @@ def render_tutorial(catalog_dicts: list[dict]) -> None:
         with c2:
             st.markdown("### ⚡ Energía por turno")
             st.markdown(
-                f"Empiezas con **{STARTING_ENERGY} de energía** y ganas **+{ENERGY_PER_TURN} cada turno**. "
-                f"Pero solo puedes **gastar hasta {MAX_ENERGY_SPEND_PER_TURN} por turno**, aunque tengas "
-                f"más acumulada — así que jugar una carta de coste 2, o dos de coste 1, es tu máximo por turno."
+                f"Empiezas con **{STARTING_ENERGY} de energía** y recuperas **+{ENERGY_PER_TURN} cada turno**, "
+                f"pero la energía **nunca supera {MAX_ENERGY}**. Puedes gastar hasta "
+                f"{MAX_ENERGY_SPEND_PER_TURN} por turno: por ejemplo una carta de coste 2 y otra de coste 1, "
+                f"o tres de coste 1 (una por zona)."
             )
         with c3:
             st.markdown("### 🂠 El mazo")
@@ -544,30 +577,36 @@ def render_tutorial(catalog_dicts: list[dict]) -> None:
                 if note:
                     st.caption(note)
 
-        st.markdown("#### ⚔️ Ataque Normal vs. 🗡️ Ataque Perforante")
+        st.markdown("#### 🃏 Cartas base: una de cada combinación")
         st.caption(
-            "Ambas atacan una zona. La diferencia: la Normal se mitiga por la defensa de esa zona, "
-            "la Perforante **ignora cualquier escudo** y pasa el daño completo."
+            "Hay 16 cartas base y ninguna se repite: todas las combinaciones de ataque (3/3, 3/2, 3/1, "
+            "3/0, 2/2, 2/1, 2/0, 1/1, 1/0, 0/0) y su inverso defensivo (2/3, 1/3, 0/3, 1/2, 0/2, 0/1)."
         )
-        c1, c2 = st.columns(2)
-        show_card(c1, "tz_std_atk_pure_1", "Ataque Normal: su daño SÍ se reduce por el escudo rival.")
-        show_card(c2, "ph_rare_piercing_2", "Perforante: ignora la defensa de la zona — siempre pasa entero.")
+        st.markdown("##### ⚔️ Ataque")
+        c1, c2, c3 = st.columns(3)
+        show_card(c1, "tz_shadow_claw_3x0", "Ataque Puro (3/0): máximo daño, nada de defensa.")
+        show_card(c2, "kr_pyre_cosmos_3x1", "Ataque pesado con algo de guardia (3/1).")
+        show_card(c3, "kr_cyber_operative_2x0", "Ataque Moderado (2/0): barato y directo.")
 
-        st.markdown("#### 🛡️ Defensa / Escudo")
-        st.caption("No atacan: protegen tu propia zona, restando su DEF al daño que recibas ahí este turno.")
-        c3, c4 = st.columns(2)
-        show_card(c3, "tz_std_def_shield_1", "Escudo pesado (0/3) — la mejor mitigación posible en una zona.")
-        show_card(c4, "tz_std_def_light_2", "Escudo ligero (0/2) — mitiga menos, pero cuesta menos energía.")
+        st.markdown("##### 🛡️ Defensa")
+        st.caption("Protegen tu propia zona, restando su DEF al daño que recibas ahí este turno.")
+        c4, c5, c6 = st.columns(3)
+        show_card(c4, "tz_lava_rage_0x3", "Escudo pesado (0/3): la mejor mitigación en una zona.")
+        show_card(c5, "kr_celestial_flux_1x3", "Escudo grande con un toque de ataque (1/3).")
+        show_card(c6, "kr_cyber_guardian_0x2", "Escudo ligero (0/2): mitiga menos, pero cuesta 1.")
 
-        st.markdown("#### 🧪 Cartas Curativas / Pociones")
+        st.markdown("#### ✨ Cartas Especiales (arte NFT, pueden repetirse)")
         st.caption(
-            "Bloquean el daño de la zona elegida por completo y, además, convierten esa cantidad "
-            "en vida para ti. Hay 3 niveles, de menor a mayor curación garantizada."
+            "Son las únicas cartas que pueden aparecer varias veces en tu mazo de "
+            f"{DECK_SIZE} cartas."
         )
-        c5, c6, c7 = st.columns(3)
-        show_card(c5, "ph_rare_potion_minor", "Curación mínima garantizada: 2 HP (o el daño bloqueado, el que sea mayor).")
-        show_card(c6, "ph_rare_potion_moderate", "Curación mínima garantizada: 4 HP.")
-        show_card(c7, "ph_rare_potion_major", "Curación mínima garantizada: 6 HP.")
+        c7, c8 = st.columns(2)
+        show_card(c7, "sp_lifesteal_fox_888", "🩸 Robo de Vida: recuperas los HP del daño que hace en su zona.")
+        show_card(
+            c8, "sp_combo_fox_999",
+            f"⚡ Combo Simultáneo: +{SIMULTANEOUS_COMBO_BONUS[2]} si dañas 2 zonas el mismo turno, "
+            f"+{SIMULTANEOUS_COMBO_BONUS[3]} si dañas las 3.",
+        )
 
     with tab_combos:
         st.subheader("Mecánicas especiales que deciden las partidas")
@@ -589,12 +628,21 @@ def render_tutorial(catalog_dicts: list[dict]) -> None:
                 f"Es el mejor momento para usar tus cartas más fuertes."
             )
 
-        with st.expander("↩️ Contraataques"):
+        with st.expander(
+            f"⚡ Combo Simultáneo (+{SIMULTANEOUS_COMBO_BONUS[2]} / +{SIMULTANEOUS_COMBO_BONUS[3]})"
+        ):
             st.markdown(
-                "Las cartas de Contraataque se juegan como protección en una zona, apostando a que "
-                "el rival **no** vaya a atacar ahí ese turno. Si aciertas (el rival ataca otra zona), "
-                "le devuelves daño directo. Si el rival SÍ ataca esa zona, el contraataque no se "
-                "activa — la carta solo actúa como una defensa normal con su propio DEF."
+                f"Si juegas una carta especial de **Combo Simultáneo** y ese MISMO turno consigues "
+                f"dañar **2 zonas distintas** del rival, sumas **+{SIMULTANEOUS_COMBO_BONUS[2]}** de "
+                f"daño; si dañas **las 3**, **+{SIMULTANEOUS_COMBO_BONUS[3]}**. Se aplica una vez por "
+                f"turno. Con {MAX_ENERGY_SPEND_PER_TURN} de energía puedes jugar hasta 3 cartas de coste 1."
+            )
+
+        with st.expander("🩸 Robo de Vida"):
+            st.markdown(
+                "Las especiales de **Robo de Vida** atacan como una carta normal y, si su zona "
+                "recibe daño, **recuperas esos mismos HP** (hasta el máximo de la carta). Si el "
+                "rival bloquea esa zona, no robas nada."
             )
 
     with tab_demo:
@@ -710,7 +758,7 @@ def _reset_match_mode_if_empty() -> None:
         st.session_state.match_mode = "free"
 
 
-def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
+def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, card_pool: list[Card]) -> None:
     with st.container(key="battle_mode_bar"):
         st.segmented_control(
             "Modo",
@@ -738,7 +786,8 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
             stake = st.number_input(
                 "Apuesta en KUR", min_value=0.0, value=10.0, step=1.0, key="navbar_stake"
             )
-            economy = compute_match_economy(st.session_state.match_mode, stake)
+            crystals = equipped_has_crystals(connector, wallet_address)
+            economy = compute_match_economy(st.session_state.match_mode, stake, crystals=crystals)
             # Bote real (ambos jugadores igualan la apuesta) y comisión sobre
             # ESE bote, no sobre la apuesta de uno solo — mismo cálculo que
             # la liquidación final (ver "state['status'] != ONGOING" más
@@ -746,15 +795,21 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
             # lo que de verdad se acredita al ganar.
             pot = stake * 2
             fee = round(pot * MATCH_FEE_PCT, 2)
-            premio = round(pot - fee, 2)
+            premio = round(pot - fee + economy.crystal_kur_bonus, 2)
+            crystal_txt = (
+                f" (incluye 💎 +{CRYSTAL_KUR_WIN_BONUS:.0f} KUR y +{CRYSTAL_ELO_WIN_BONUS} ELO por cristales)"
+                if crystals else ""
+            )
             st.caption(
                 f"Victoria: +{economy.win_elo} ELO · +{premio:.2f} KUR "
                 f"(bote {pot:.2f} − comisión {fee:.2f}) · "
-                f"Derrota: {economy.loss_elo} ELO"
+                f"Derrota: {economy.loss_elo} ELO{crystal_txt}"
             )
         else:
-            economy = compute_match_economy(st.session_state.match_mode, 0.0)
-            st.caption(f"Victoria: +{economy.win_elo} ELO · {economy.win_kur_reward_min:.0f} KUR · Derrota: {economy.loss_elo} ELO")
+            # Modo Free: partida de práctica — sin ELO, sin cristales y sin
+            # $KUR en juego (petición del creador: esos datos solo existen
+            # en modo Competitivo).
+            st.caption("Modo Free: partida de práctica, sin apuestas ni ranking.")
 
 
 # --------------------------------------------------------------------------- #
@@ -771,13 +826,86 @@ def _reset_tactical_selection(player_key: str | None = None) -> None:
     uno (la mano se renueva entera, así que cualquier card_id elegido deja de
     existir). `player_key=None` limpia ambos jugadores a la vez."""
     for pk in (player_key,) if player_key else ("a", "b"):
-        st.session_state[f"sel_card_{pk}"] = None
-        st.session_state[f"atk_zone_{pk}"] = None
-        st.session_state[f"def_zone_{pk}"] = None
+        st.session_state[f"sel_cards_{pk}"] = []
+        st.session_state[f"active_card_{pk}"] = None
+        st.session_state[f"zones_{pk}"] = {}
+
+
+_FX_KEYS = ("energy_fx", "hp_fx", "inact_fx")
+_FX_TTL_SECONDS = 2.5
+
+
+def _fx_begin() -> None:
+    """Inicio de un lote de avisos flotantes (gasto/daño/inactividad): si los
+    avisos guardados son de una acción ANTERIOR (más de 1s), se descartan
+    para no sumarlos a los nuevos. Todos los avisos de una misma acción se
+    generan en el mismo rerun, a milisegundos unos de otros."""
+    if time.time() - st.session_state.get("fx_time", 0.0) > 1.0:
+        for k in _FX_KEYS:
+            st.session_state[k] = {}
+    st.session_state["fx_time"] = time.time()
+    st.session_state["energy_fx_nonce"] = time.time_ns()
+
+
+def _flash_energy_spend(player_key: str, amount: int) -> None:
+    """Encola el feedback "-N" (texto flotante rojo bajo la barra de energía)
+    para `player_key`. Se llama justo tras cada gasto real (play_card del
+    jugador, bot_choose_plays del Bot) — no en end_turn, que ya ha vaciado
+    staged_plays y por tanto energy_spent_this_turn vuelve a 0. render_arena
+    lo pinta durante _FX_TTL_SECONDS (no lo borra al primer render: un rerun
+    extra, p.ej. el clic de reintento del temporizador al cerrar el turno
+    por tiempo, lo borraba a los ~100ms sin que llegara a verse)."""
+    if amount <= 0:
+        return
+    _fx_begin()
+    fx = st.session_state.setdefault("energy_fx", {})
+    fx[player_key] = fx.get(player_key, 0) + amount
+
+
+def _store_zone_report(match, turn_resolved: int, combo_before: dict) -> None:
+    """Guarda, por jugador, qué zonas del Combo Tripartito sumó en el turno
+    recién resuelto (para la etiqueta "NUEVA" del panel de combo de
+    render_arena). Ligado a esta partida por id(match)."""
+    report = {"match_id": id(match), "turn": turn_resolved}
+    for k, pl in (("a", match.player_a), ("b", match.player_b)):
+        report[k] = {"combo_new": sorted({z.value for z in pl.zones_damaged} - set(combo_before.get(k, [])))}
+    st.session_state["zone_report"] = report
+
+
+def _end_turn_with_fx(match) -> None:
+    """end_turn() + encola el aviso de DAÑO recibido por cada jugador (HP
+    antes vs. después) para que render_arena lo muestre igual que el gasto
+    de energía. Una curación neta (+N) también se muestra, en verde."""
+    hp_before = {"a": match.player_a.hp, "b": match.player_b.hp}
+    inact_before = {"a": match.player_a.inactive_turns, "b": match.player_b.inactive_turns}
+    # Zonas del combo ANTES de resolver, para marcar la "NUEVA" de la ronda.
+    turn_resolved = match.turn_number
+    combo_before = {
+        "a": sorted(z.value for z in match.player_a.zones_damaged),
+        "b": sorted(z.value for z in match.player_b.zones_damaged),
+    }
+    try:
+        end_turn(match)
+        try:
+            _store_zone_report(match, turn_resolved, combo_before)
+        except Exception as e:  # el informe es solo visual: nunca romper el turno
+            print(f"[ZONE_REPORT] fallo: {e!r}")
+    finally:
+        _fx_begin()
+        fx = st.session_state.setdefault("hp_fx", {})
+        for pk, pl in (("a", match.player_a), ("b", match.player_b)):
+            delta = pl.hp - hp_before[pk]
+            if delta:
+                fx[pk] = fx.get(pk, 0) + delta
+        # Aviso flotante de inactividad: solo cuando el contador SUBE.
+        ifx = st.session_state.setdefault("inact_fx", {})
+        for pk, pl in (("a", match.player_a), ("b", match.player_b)):
+            if pl.inactive_turns > inact_before[pk]:
+                ifx[pk] = pl.inactive_turns
 
 
 def _launch_match(
-    connector: BlockchainConnector, wallet_address: str, pool_27: list[Card],
+    connector: BlockchainConnector, wallet_address: str, card_pool: list[Card],
     name_b: str, hp_b: int | None = None, rival_avatar_id: int | None = None,
     stake_kur: float = 0.0,
 ) -> None:
@@ -787,8 +915,8 @@ def _launch_match(
     rarity = resolve_equipped_rarity(connector, wallet_address)
     base_hp = compute_base_hp(rarity)
     rng = random.Random()
-    deck_a = build_deck_from_pool(pool_27, rng=rng)
-    deck_b = build_deck_from_pool(pool_27, rng=rng)
+    deck_a = build_deck_from_pool(card_pool, rng=rng)
+    deck_b = build_deck_from_pool(card_pool, rng=rng)
     deck_a = apply_nft_buffs_to_deck(deck_a, rarity)
     if hp_b is None:
         hp_b = compute_base_hp(NFTRarity.NONE) if st.session_state.vs_bot else base_hp
@@ -802,6 +930,10 @@ def _launch_match(
     # ver la liquidación en el bloque "state['status'] != ONGOING" más abajo.
     st.session_state["match_stake"] = stake_kur
     st.session_state["match_reward_settled"] = False
+    # Cristales del Maestro con el que se lanza la partida (Épico/Legendario):
+    # se fija aquí para que cambiar de Maestro a mitad de partida no altere
+    # la liquidación. Solo se aplican en Competitivo / Retos 1v1.
+    st.session_state["match_crystals"] = has_crystals(rarity)
     # El rival/BOT no tiene "wallet" propia que consultar, así que su marco
     # no puede leer un equipped_token_id real — antes caía siempre al Fox
     # fijo DEFAULT_GAMENFT_ID (gamenft_avatar_path), por lo que el combate
@@ -816,7 +948,7 @@ def _launch_match(
     _reset_tactical_selection()
 
 
-def render_new_match_button(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
+def render_new_match_button(connector: BlockchainConnector, wallet_address: str, card_pool: list[Card]) -> None:
     is_competitive = st.session_state.match_mode == "competitive"
     with st.container(key="new_match_cta"):
         clicked = st.button("⚔️ LANZAR RETO ⚔️", key="navbar_new_match", width="stretch", type="primary")
@@ -839,7 +971,7 @@ def render_new_match_button(connector: BlockchainConnector, wallet_address: str,
             st.session_state["matchmaking_start"] = time.time()
             st.rerun()
         else:
-            _launch_match(connector, wallet_address, pool_27, name_b="Jugador B", stake_kur=stake)
+            _launch_match(connector, wallet_address, card_pool, name_b="Jugador B", stake_kur=stake)
             st.rerun()
 
 
@@ -937,7 +1069,7 @@ def _render_challenge_row(gamenft_id: int | None, name_html: str, detail_html: s
     return btn_col
 
 
-def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
+def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: str, card_pool: list[Card]) -> None:
     _refresh_bot_challenges()
     now = time.time()
     timer_specs = []
@@ -953,13 +1085,14 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
                 # con la misma apuesta que se venía mostrando en la tarjeta.
                 st.session_state["matchmaking_start"] = None
                 stake = st.session_state.get("navbar_stake", 10.0) if st.session_state.match_mode == "competitive" else 0.0
-                _launch_match(connector, wallet_address, pool_27, name_b="Bot", stake_kur=stake)
+                _launch_match(connector, wallet_address, card_pool, name_b="Bot", stake_kur=stake)
                 st.rerun()
             own_rarity = resolve_equipped_rarity(connector, wallet_address)
             pct = max(5, int(remaining / MATCHMAKING_SECONDS * 100))
             own_stake_html = (
                 f"<div class='challenge-rival-stake'>💰 Apuesta: "
-                f"{st.session_state.get('navbar_stake', 10.0):.2f} $KUR</div>"
+                f"{st.session_state.get('navbar_stake', 10.0):.2f} $KUR"
+                f"{' · 💎' if has_crystals(own_rarity) else ''}</div>"
                 if st.session_state.match_mode == "competitive" else ""
             )
             with st.container(key="challenge_row_own"):
@@ -1022,7 +1155,7 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
                     st.session_state.vs_bot = True
                     st.session_state["_force_opponent_bot"] = True
                     _launch_match(
-                        connector, wallet_address, pool_27,
+                        connector, wallet_address, card_pool,
                         name_b=ch["name"], hp_b=compute_base_hp(ch["rarity"]),
                         rival_avatar_id=ch["gamenft_id"],
                         stake_kur=ch["stake_kur"] if st.session_state.match_mode == "competitive" else 0.0,
@@ -1076,7 +1209,7 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
 # Bot); el pago (90% del pozo total, 10% de comisión) se liquida al terminar
 # la partida — ver el bloque "state['status'] != ONGOING" más abajo.
 # --------------------------------------------------------------------------- #
-def render_challenges_panel(connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]) -> None:
+def render_challenges_panel(connector: BlockchainConnector, wallet_address: str, card_pool: list[Card]) -> None:
     st.title("🤝 Retos 1v1")
     st.caption(
         "Define el pozo de apuesta en $KUR. Al aceptar el rival, el ganador se lleva el pozo "
@@ -1105,6 +1238,11 @@ def render_challenges_panel(connector: BlockchainConnector, wallet_address: str,
         f"Pozo total: {payout.pool_kur:.0f} $KUR · comisión 10%: {payout.fee_kur:.2f} $KUR · "
         f"el ganador se lleva: {payout.payout_kur:.2f} $KUR"
     )
+    if equipped_has_crystals(connector, wallet_address):
+        st.caption(
+            f"💎 Tu Maestro tiene cristales: si ganas, +{CRYSTAL_KUR_WIN_BONUS:.0f} $KUR extra "
+            f"y +{CRYSTAL_ELO_WIN_BONUS} ELO."
+        )
     insufficient = kur_balance < stake
     if insufficient:
         st.warning("Balance insuficiente para este pozo.")
@@ -1118,7 +1256,7 @@ def render_challenges_panel(connector: BlockchainConnector, wallet_address: str,
         st.session_state.vs_bot = True
         st.session_state.opponent_choice = "Bot"
         _launch_match(
-            connector, wallet_address, pool_27,
+            connector, wallet_address, card_pool,
             name_b="Rival (Reto 1v1)", hp_b=compute_base_hp(NFTRarity.NONE),
         )
         st.session_state.panel_mode = PANEL_OPTIONS[0]
@@ -1154,7 +1292,7 @@ def render_marketplace_quickbar(connector: BlockchainConnector, wallet_address: 
 
 
 def render_wallet_and_nft_bar(
-    connector: BlockchainConnector, wallet_address: str, pool_27: list[Card]
+    connector: BlockchainConnector, wallet_address: str, card_pool: list[Card]
 ) -> None:
     """Wallet + NFT equipado: selector arriba (fuera de la tarjeta), debajo
     una fila con la tarjeta de NFT (imagen + estadísticas) a la izquierda y
@@ -1175,8 +1313,8 @@ def render_wallet_and_nft_bar(
             w2.metric("NFTs", len(owned))
             w3.metric("Balance $KUR", f"{kur_balance:,.2f}")
             st.caption("No se encontraron imágenes en GAMENFT/ — jugarás con el HP base por defecto (sin NFT).")
-            render_new_match_button(connector, wallet_address, pool_27)
-            render_battle_mode_bar(connector, wallet_address, pool_27)
+            render_new_match_button(connector, wallet_address, card_pool)
+            render_battle_mode_bar(connector, wallet_address, card_pool)
             return
 
         if st.session_state.get("equipped_token_id") not in gamenft_ids:
@@ -1211,9 +1349,11 @@ def render_wallet_and_nft_bar(
                     st.metric("Rareza", rarity_label(rarity))
                     st.metric("HP base", compute_base_hp(rarity))
                     st.metric("Buff mazo", f"+{buff_pct:.0%}" if buff_pct else "—")
+                    if st.session_state.match_mode == "competitive":
+                        st.metric("Cristales", crystals_label(has_crystals(rarity)))
             with action_col.container(key="nft_action_col"):
-                render_new_match_button(connector, wallet_address, pool_27)
-                render_battle_mode_bar(connector, wallet_address, pool_27)
+                render_new_match_button(connector, wallet_address, card_pool)
+                render_battle_mode_bar(connector, wallet_address, card_pool)
 
         st.caption(f"🦊 Dirección {short_addr}")
 
@@ -1288,7 +1428,9 @@ st.set_page_config(
 init_state()
 catalog_dicts = load_catalog()
 catalog = [Card.from_dict(d) for d in catalog_dicts]
-pool_27 = [c for c in catalog if c.category in (CardCategory.STANDARD, CardCategory.RARE)]
+# Pool de combate: 16 cartas base únicas + especiales (las únicas repetibles,
+# ver pvp_engine.build_deck_from_pool).
+card_pool = [c for c in catalog if c.category in (CardCategory.STANDARD, CardCategory.SPECIAL)]
 cards_by_id = {c.id: c for c in catalog}
 
 # Disponibles pronto, antes de renderizar nada, para que la barra de
@@ -1530,7 +1672,7 @@ st.markdown(
            -415px. NO reducir el ancho de la arena para "arreglar" el
            scroll: eso descuadra a los Maestros NFT de las esquinas, que
            quedan encima de los luchadores del centro. */
-        margin: -340px auto 0;
+        margin: -305px auto 0; /* -340px + ~35px de la fila de iconos de zona (_render_zone_badges) que ya no existe */
         background: rgba(10, 10, 14, 0.6);
         border: 1px solid rgba(255, 255, 255, 0.14);
         border-radius: 16px;
@@ -1748,18 +1890,77 @@ st.markdown(
         border: 2px solid #ffc800;
         border-radius: 8px;
     }
+    /* Selección múltiple: la ACTIVA (la que editan los puntos) con aro
+       dorado intenso; las demás elegidas ("ancladas") con aro cian. */
+    [class*="st-key-card_glow_sel_act"] img {
+        box-shadow: 0 0 22px rgba(255, 200, 0, 1), 0 0 4px #fff;
+        border: 3px solid #ffc800;
+    }
+    [class*="st-key-card_glow_sel_pin"] img {
+        box-shadow: 0 0 14px rgba(64, 200, 255, 0.85);
+        border: 3px solid #40c8ff;
+    }
+    /* Pastillas de estado SUPERPUESTAS sobre el pie de la propia carta
+       (orden + zonas de la elegida, o "Sin energía"): fuera del flujo, para
+       que nada empuje hacia abajo el botón "Pasar Turno". */
+    /* Dentro de cada carta, sin gap de Streamlit (16px): sus hijos en flujo
+       son solo el tooltip (alto 0) y la imagen — el resto es absoluto — y
+       ese gap, más el del envoltorio stLayoutWrapper (alto 0) que Streamlit
+       pone alrededor de cada st.container, era lo que abría un hueco vacío
+       entre las cartas y "Pasar Turno". */
+    [class*="st-key-battle_hand"] [class*="st-key-card_glow_"] {
+        gap: 0 !important;
+    }
+    [class*="st-key-battle_hand"] [class*="st-key-card_overlay_chip_"] {
+        position: absolute !important;
+        left: 0; right: 0; bottom: 18px;
+        top: auto !important;
+        height: auto !important; /* Streamlit lo estiraba al alto de la carta */
+        z-index: 150 !important;
+        pointer-events: none;
+        width: 100% !important;
+    }
+    .card-sel-chip {
+        text-align: center; font-size: 0.74rem; font-weight: 700; color: #fff;
+        background: rgba(0, 0, 0, 0.78); border: 1px solid rgba(255, 200, 0, 0.6);
+        border-radius: 999px; padding: 1px 9px; margin: 0 auto; width: fit-content;
+        white-space: nowrap; pointer-events: none;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+    }
+    .card-sel-chip.ready { border-color: #2fb344; box-shadow: 0 0 8px rgba(47, 179, 68, 0.6); }
+    .card-sel-chip.pending { animation: chip-pulse 1.2s ease-in-out infinite; }
+    @keyframes chip-pulse {
+        0%, 100% { box-shadow: 0 0 0 rgba(255, 200, 0, 0); }
+        50% { box-shadow: 0 0 10px rgba(255, 200, 0, 0.9); }
+    }
+    .card-sel-chip.no-energy {
+        color: #ff9a9a; border-color: rgba(255, 107, 107, 0.6);
+        font-size: 0.7rem; font-weight: 600;
+    }
+    /* Zona ya usada por OTRA carta elegida (puntos superpuestos en la arena). */
+    [class*="st-key-arena_point_pt_"][class*="_used"] .stButton button {
+        outline: 3px dashed rgba(255, 255, 255, 0.8);
+        outline-offset: 2px;
+    }
     /* Energía disponible: destacada y grande junto a la barra de vida de
        cada jugador (antes iba metida en una caption pequeña junto a otros
        datos secundarios como mazo/descarte). */
     .energy-display {
-        font-size: 1.4rem;
-        font-weight: 700;
+        display: inline-block;
+        font-size: 1.35rem;
+        font-weight: 900;
         color: #ffd54a;
         margin: 0.15rem 0 0.1rem;
-        line-height: 1.2em;
+        padding: 0.1rem 0.7rem;
+        border-radius: 999px;
+        background: rgba(0, 0, 0, 0.45);
+        border: 2px solid rgba(255, 213, 74, 0.6);
+        line-height: 1.3em;
+        text-shadow: 0 1px 2px #000;
     }
     .energy-display.energy-low {
         color: #ff6b6b;
+        border-color: rgba(255, 107, 107, 0.7);
     }
     .deck-discard-count {
         font-size: 0.78rem;
@@ -2268,9 +2469,10 @@ st.markdown(
         text-shadow: 0 1px 3px rgba(0,0,0,0.9);
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
+    .arena-hp { position: relative; }
     .arena-hp-track {
-        position: relative; height: 14px; border-radius: 7px; overflow: hidden;
-        background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.25); margin-top: 2px;
+        position: relative; height: 24px; border-radius: 12px; overflow: hidden;
+        background: rgba(0,0,0,0.6); border: 2px solid rgba(255,255,255,0.3); margin-top: 3px;
     }
     .arena-hp-fill {
         height: 100%; background: linear-gradient(90deg, #ff4d4d, #ffb84d);
@@ -2279,14 +2481,122 @@ st.markdown(
     .arena-hp-right .arena-hp-fill { float: right; }
     .arena-hp-text {
         position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-        font-size: 0.65rem; font-weight: 700; color: #fff; text-shadow: 0 1px 2px #000;
+        font-size: 0.95rem; font-weight: 800; color: #fff; letter-spacing: 0.02em;
+        text-shadow: 0 0 3px #000, 0 1px 2px #000;
     }
-    .arena-energy { color: #ffe066; font-size: 0.72rem; margin-top: 1px; text-shadow: 0 1px 2px #000; }
+    /* Barra de ENERGÍA gruesa (mismo estilo que Valldeande): el relleno es
+       la energía que aún se puede gastar ESTE turno sobre el tope gastable
+       (min(MAX_ENERGY_SPEND_PER_TURN, pool)), segmentada en unidades, con el
+       número grande centrado dentro y la reserva total en un badge aparte. */
+    .arena-energy-row {
+        display: flex; align-items: center; gap: 6px; margin-top: 5px;
+    }
+    .arena-hp-right .arena-energy-row { flex-direction: row-reverse; }
+    .arena-energy-track {
+        position: relative; flex: 1 1 auto; height: 30px; border-radius: 15px; overflow: hidden;
+        background: rgba(0,0,0,0.65); border: 2px solid rgba(255,224,102,0.55);
+        box-shadow: 0 0 10px rgba(255,200,0,0.25);
+    }
+    .arena-energy-fill {
+        height: 100%;
+        background: linear-gradient(90deg, #ffb300, #ffe066);
+        box-shadow: inset 0 -4px 0 rgba(0,0,0,0.18);
+        transition: width 0.35s ease;
+    }
+    .arena-hp-right .arena-energy-fill { float: right; background: linear-gradient(270deg, #ffb300, #ffe066); }
+    .arena-energy-segs {
+        position: absolute; inset: 0; display: flex; pointer-events: none;
+    }
+    .arena-energy-segs span { flex: 1; border-right: 2px solid rgba(0,0,0,0.45); }
+    .arena-energy-segs span:last-child { border-right: none; }
+    .arena-energy-text {
+        position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+        font-size: 1.2rem; font-weight: 900; color: #fff; letter-spacing: 0.03em;
+        text-shadow: 0 0 4px #000, 0 0 2px #000, 0 1px 2px #000;
+    }
+    .arena-energy-track.energy-empty { border-color: rgba(255,107,107,0.75); box-shadow: 0 0 10px rgba(255,80,80,0.35); }
+    .arena-energy-track.energy-empty .arena-energy-text { color: #ff8a8a; }
+    .arena-energy-pool {
+        flex: 0 0 auto; padding: 3px 8px; border-radius: 10px;
+        background: rgba(0,0,0,0.6); border: 1px solid rgba(255,224,102,0.45);
+        color: #ffe066; font-size: 0.85rem; font-weight: 800; white-space: nowrap;
+        text-shadow: 0 1px 2px #000;
+    }
+    /* Feedback de gasto: "-N" grande en rojo que aparece justo DEBAJO de la
+       barra de energía de quien gastó, cae un poco y se desvanece (una sola
+       vez — ver _flash_energy_spend / render_arena, que lo consumen). */
+    @keyframes energy-float {
+        0%   { opacity: 0; transform: translateY(-10px) scale(0.6); }
+        15%  { opacity: 1; transform: translateY(0) scale(1.25); }
+        30%  { transform: translateY(2px) scale(1); }
+        75%  { opacity: 1; transform: translateY(14px) scale(1); }
+        100% { opacity: 0; transform: translateY(26px) scale(0.95); }
+    }
+    /* Avisos flotantes (-N⚡ energía, 💥-N daño) agrupados en el lado
+       INTERIOR de cada barra — el más cercano al centro de la arena / al
+       marcador de Ronda — en vez de pegados a los bordes y marcos
+       laterales, donde casi no se veían. */
+    .combat-floats {
+        position: absolute; top: 100%; margin-top: 6px;
+        display: flex; gap: 1rem; align-items: flex-start;
+        pointer-events: none; z-index: 40; white-space: nowrap;
+    }
+    .arena-hp-left .combat-floats { right: 6%; flex-direction: row-reverse; }
+    .arena-hp-right .combat-floats { left: 6%; }
+    .energy-float {
+        position: relative;
+        font-size: 2.6rem; font-weight: 900; line-height: 1;
+        color: #ff2e2e;
+        text-shadow: 0 0 6px rgba(0,0,0,0.95), 0 0 14px rgba(255,40,40,0.8), 0 2px 0 #5a0000;
+        /* Pastilla oscura: el rojo se perdía sobre el pelo naranja de los
+           luchadores centrales; con fondo propio se lee sobre cualquier zona. */
+        background: rgba(12, 0, 0, 0.72);
+        border: 3px solid rgba(255, 60, 60, 0.85);
+        border-radius: 18px;
+        padding: 4px 14px 6px;
+        box-shadow: 0 0 18px rgba(255, 40, 40, 0.55), 0 4px 12px rgba(0, 0, 0, 0.6);
+        pointer-events: none; z-index: 40;
+        animation: energy-float 1.9s ease-out forwards;
+    }
+    .energy-float.hp-float { color: #ff4040; animation-delay: 0.15s; opacity: 0; }
+    .energy-float.hp-float.heal {
+        color: #4dff7a; border-color: rgba(60, 255, 110, 0.85);
+        box-shadow: 0 0 18px rgba(40, 255, 90, 0.5), 0 4px 12px rgba(0, 0, 0, 0.6);
+        text-shadow: 0 0 6px rgba(0,0,0,0.95), 0 0 14px rgba(40,255,90,0.7), 0 2px 0 #00380e;
+    }
     .arena-turn {
         flex: 0 0 auto; color: #fff; font-weight: 800; text-align: center; font-size: 0.85rem;
         text-shadow: 0 1px 3px rgba(0,0,0,0.9); white-space: nowrap;
     }
     .arena-timer { font-size: 0.78rem; color: #9be7ff; }
+    /* Regla de inactividad: pastilla junto al nombre mientras el contador
+       sea > 0 (roja y pulsante en el último aviso) + aviso bajo el reloj
+       para TI cuando te queda 1 turno, + texto flotante al subir. */
+    .arena-inactive {
+        display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px;
+        font-size: 0.72rem; font-weight: 800; color: #2a1600;
+        background: #ffc94a; border: 1px solid #fff0b0; vertical-align: middle;
+        text-shadow: none;
+    }
+    .arena-inactive.last {
+        background: #ff3b3b; color: #fff; border-color: #ffb0b0;
+        animation: inact-pulse 0.9s ease-in-out infinite;
+    }
+    @keyframes inact-pulse {
+        0%, 100% { box-shadow: 0 0 0 rgba(255, 59, 59, 0); }
+        50% { box-shadow: 0 0 12px rgba(255, 59, 59, 1); }
+    }
+    .arena-last-warning {
+        margin-top: 4px; padding: 3px 8px; border-radius: 8px;
+        background: rgba(255, 40, 40, 0.88); border: 1px solid #ffb0b0;
+        font-size: 0.72rem; font-weight: 800; line-height: 1.2; white-space: nowrap;
+        animation: inact-pulse 0.9s ease-in-out infinite;
+    }
+    .energy-float.inact-float {
+        font-size: 1.35rem; color: #ffd54a; border-color: rgba(255, 200, 60, 0.9);
+        text-shadow: 0 0 6px rgba(0,0,0,0.95);
+        box-shadow: 0 0 18px rgba(255, 190, 40, 0.55), 0 4px 12px rgba(0, 0, 0, 0.6);
+    }
     /* Levitación suave de los Maestros NFT (avatares en los marcos
        laterales): sube y baja en bucle, -8px en el punto medio del ciclo.
        El avatar derecho ya viene espejado (scaleX(-1), ver abajo) — ese
@@ -2313,6 +2623,104 @@ st.markdown(
     }
     .arena-portal-left { left: 1%; }
     .arena-portal-right { right: 1%; animation-name: levitate-mirror; animation-delay: -1.75s; }
+    /* HUD de Combo Tripartito: UNA sola cápsula horizontal en la esquina
+       inferior de cada bando — a la izquierda la pastilla de progreso
+       (🔥 COMBO n/3), a la derecha las 3 zonas en fila fija (nowrap).
+       font-size con clamp() para que, aun en ventanas estrechas, la
+       cápsula quepa en la esquina sin invadir el panel de la mano. */
+    .combo-hud {
+        position: absolute; bottom: 3.5%; z-index: 5;
+        display: flex; align-items: center; flex-wrap: nowrap; gap: 6px;
+        width: max-content;
+        padding: 4px 8px 4px 5px;
+        background: rgba(8, 8, 14, 0.82);
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 999px;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55);
+        font-size: clamp(0.55rem, 0.7vw, 0.74rem); line-height: 1; color: #fff;
+        white-space: nowrap;
+    }
+    .combo-hud-left { left: 1%; box-shadow: inset 3px 0 0 #4da3ff, 0 4px 14px rgba(0,0,0,0.55); }
+    .combo-hud-right { right: 1%; box-shadow: inset -3px 0 0 #ff5a5a, 0 4px 14px rgba(0,0,0,0.55); }
+    .combo-hud-count {
+        flex: 0 0 auto;
+        padding: 3px 7px; border-radius: 999px;
+        background: rgba(255, 140, 0, 0.22); border: 1px solid rgba(255, 179, 71, 0.7);
+        color: #ffd27a; font-weight: 800; letter-spacing: 0.04em;
+    }
+    .combo-hud-count b { color: #fff; font-size: 1.1em; margin-left: 2px; }
+    .combo-hud-zones { display: flex; align-items: center; flex-wrap: nowrap; gap: 4px; }
+    .cz {
+        padding: 2px 6px; border-radius: 999px; font-weight: 700;
+        border: 1px solid transparent;
+        transition: background 0.3s ease;
+    }
+    .cz.ok {
+        background: rgba(40, 200, 90, 0.85); border-color: #8cffa0; color: #fff;
+        text-shadow: 0 1px 1px rgba(0, 0, 0, 0.5);
+    }
+    .cz.todo {
+        background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.18);
+        color: rgba(255, 255, 255, 0.42); font-weight: 600;
+    }
+    /* Zona sumada en la última ronda: destello verde breve en vez de texto
+       extra (mantiene la cápsula compacta). */
+    .cz.new { animation: cz-new 1.1s ease-in-out 3; }
+    @keyframes cz-new {
+        0%, 100% { box-shadow: 0 0 0 rgba(140, 255, 160, 0); }
+        50% { box-shadow: 0 0 12px rgba(140, 255, 160, 1); }
+    }
+    /* 3/3: la cápsula entera en dorado con brillo pulsante + cartel
+       compacto encima (posición absoluta: no ensancha la cápsula). */
+    .combo-hud.is-done {
+        background: linear-gradient(90deg, rgba(90, 50, 0, 0.92), rgba(40, 24, 0, 0.92));
+        border-color: #ffd54a;
+        animation: combo-glow 1.6s ease-in-out infinite;
+    }
+    .combo-hud.is-done .combo-hud-count {
+        background: linear-gradient(90deg, #ff8a00, #ffd54a); border-color: #fff3b0; color: #2a1600;
+    }
+    .combo-hud.is-done .combo-hud-count b { color: #2a1600; }
+    .combo-hud.is-done .cz.ok { background: rgba(255, 200, 40, 0.9); border-color: #fff3b0; color: #2a1600; text-shadow: none; }
+    @keyframes combo-glow {
+        0%, 100% { box-shadow: 0 0 6px rgba(255, 200, 0, 0.45), 0 4px 14px rgba(0,0,0,0.55); }
+        50% { box-shadow: 0 0 20px rgba(255, 210, 0, 0.95), 0 4px 14px rgba(0,0,0,0.55); }
+    }
+    .cz-short { display: none; }
+    /* Ventanas estrechas: el panel flotante de la mano tiene ancho fijo
+       (~706px) y deja menos esquina libre — la cápsula se compacta para no
+       meterse debajo de él (ver t12: medido a 1280/1400/1600/1920px). */
+    @media (max-width: 1500px) {
+        .combo-hud .combo-word { display: none; }
+        .combo-hud-left { left: 0.6%; }
+        .combo-hud-right { right: 0.6%; }
+    }
+    @media (max-width: 1350px) {
+        .combo-hud .cz-full { display: none; }
+        .combo-hud .cz-short { display: inline; }
+    }
+    /* Pestaña de etiqueta encima de la cápsula (absoluta: no la ensancha),
+       alineada al borde exterior de su esquina: roja = golpes que RECIBES
+       (cápsula bajo tu personaje), azul = golpes que DAS (bajo el rival). */
+    .combo-hud-tag {
+        position: absolute; bottom: calc(100% + 3px);
+        padding: 2px 8px; border-radius: 6px 6px 6px 6px;
+        font-size: 0.86em; font-weight: 900; letter-spacing: 0.05em; white-space: nowrap;
+        background: rgba(8, 8, 14, 0.85); text-shadow: 0 1px 2px #000;
+    }
+    .combo-hud-left .combo-hud-tag { left: 4px; }
+    .combo-hud-right .combo-hud-tag { right: 4px; }
+    .combo-hud-tag.tag-received { color: #ff9a9a; border: 1px solid rgba(255, 90, 90, 0.7); }
+    .combo-hud-tag.tag-dealt { color: #8cc8ff; border: 1px solid rgba(77, 163, 255, 0.7); }
+    /* Cartel de combo activado: encima de la pestaña de etiqueta. */
+    .combo-hud-banner {
+        position: absolute; bottom: calc(100% + 1.9em); left: 50%; transform: translateX(-50%);
+        white-space: nowrap;
+        padding: 3px 10px; border-radius: 6px;
+        background: linear-gradient(90deg, #ff8a00, #ffd54a); color: #2a1600;
+        font-weight: 900; letter-spacing: 0.06em; font-size: 0.95em;
+        box-shadow: 0 0 12px rgba(255, 200, 0, 0.8);
+    }
 
     /* Puntos tácticos (botones reales, estilo Waves Ducks): rojo = zona de
        ataque al rival, verde = zona propia a defender. El punto activo se
@@ -2504,7 +2912,7 @@ st.markdown(
     }
     /* Clic = selección = zoom grande hasta elegir otra carta: esta vuelve al
        tamaño base y la nueva se agranda — ver card_glow_sel, calculado en
-       render_hand según sel_card_{jugador} en session_state.
+       render_hand según sel_cards_{jugador}/active_card_{jugador}.
        transform-origin: bottom center + scale/translateY negativo: la carta
        crece HACIA ARRIBA (hacia el escenario) en vez de crecer también hacia
        abajo (origen por defecto = centro), que era lo que hacía que el marco
@@ -2512,11 +2920,45 @@ st.markdown(
     [class*="st-key-battle_hand"] [data-testid="stImage"] img {
         transition: transform 0.2s ease;
     }
+    /* Selección MÚLTIPLE: con varias cartas elegidas a la vez el zoom
+       grande (scale 1.2) las solapaba entre sí, así que ahora la carta
+       elegida solo se eleva (anclada) y la ACTIVA, además, crece un poco. */
     [class*="st-key-battle_hand"] [class*="st-key-card_glow_sel"] [data-testid="stImage"] img {
         transform-origin: bottom center;
-        transform: scale(1.2) translateY(-12px);
+        transform: translateY(-10px);
         position: relative;
         z-index: 100;
+    }
+    [class*="st-key-battle_hand"] [class*="st-key-card_glow_sel_act"] [data-testid="stImage"] img {
+        transform: translateY(-12px) scale(1.06);
+    }
+    /* Botón ✕ (deseleccionar SOLO esta carta) en la esquina superior
+       derecha de la imagen elevada. right: alineado con el borde derecho
+       real de la imagen (centrada dentro de su columna): 208px de ancho en
+       el panel flotante (Vs. Bot), min(416px, 100%) en Hotseat. */
+    [class*="st-key-battle_hand"] [class*="st-key-desel_"] {
+        position: absolute !important;
+        top: -20px;
+        right: max(-8px, calc(50% - 208px - 12px));
+        z-index: 160 !important;
+        width: auto !important;
+    }
+    [class*="st-key-battle_hand_overlay"] [class*="st-key-desel_"] {
+        right: calc(50% - 104px - 12px);
+    }
+    [class*="st-key-battle_hand"] [class*="st-key-desel_"] .stButton button,
+    [class*="st-key-battle_hand"] [class*="st-key-desel_"] button {
+        width: 34px !important; height: 34px !important; min-height: 34px !important;
+        border-radius: 50% !important; padding: 0 !important;
+        background: #e5484d !important; color: #fff !important;
+        border: 2px solid #fff !important;
+        font-size: 1.05rem !important; font-weight: 900 !important; line-height: 1 !important;
+        display: flex; align-items: center; justify-content: center;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+        cursor: pointer;
+    }
+    [class*="st-key-battle_hand"] [class*="st-key-desel_"] button:hover {
+        background: #ff2e2e !important; transform: scale(1.1);
     }
     </style>
     """,
@@ -2525,7 +2967,7 @@ st.markdown(
 
 
 if panel_mode.startswith("🤝"):
-    render_challenges_panel(connector, current_wallet_address, pool_27)
+    render_challenges_panel(connector, current_wallet_address, card_pool)
     st.stop()
 
 if panel_mode.startswith("🎓"):
@@ -2561,9 +3003,9 @@ if not game_started:
     lobby_left, lobby_right = st.columns([1, 1])
     with lobby_left:
         with st.container(key="left_info_panel"):
-            render_wallet_and_nft_bar(connector, current_wallet_address, pool_27)
+            render_wallet_and_nft_bar(connector, current_wallet_address, card_pool)
     with lobby_right:
-        render_bot_challenges_feed(connector, current_wallet_address, pool_27)
+        render_bot_challenges_feed(connector, current_wallet_address, card_pool)
     render_wallet_config_expander(connector, current_wallet_address)
 
 match = st.session_state.match
@@ -2580,38 +3022,8 @@ _ZONE_ICONS = {"head": "🗣️", "torso": "👕", "legs": "🦵"}
 _ZONE_LABELS = {"head": "Cabeza", "torso": "Torso", "legs": "Piernas"}
 
 
-def _render_zone_badges(p: dict, align: str = "left") -> None:
-    """Badge por zona corporal (combo tripartito) en vez del texto plano
-    anterior: intacta en gris sutil, dañada resaltada en rojo con brillo y
-    check — más fácil de leer de un vistazo que una lista separada por comas.
-    align="right" (rival/Bot) lo empuja al borde derecho de su columna para
-    dejar libre el centro, donde flota el panel de cartas (render_hand con
-    overlay_cards=True) — ver render_arena."""
-    damaged = set(p["zones_damaged"])
-    badges = []
-    for zone in ("head", "torso", "legs"):
-        is_damaged = zone in damaged
-        css_class = "zone-badge zone-badge-damaged" if is_damaged else "zone-badge"
-        badges.append(
-            f"<span class='{css_class}' title='{_ZONE_LABELS[zone]}'>"
-            f"{_ZONE_ICONS[zone]}</span>"
-        )
-    if p["tripartite_claimed"]:
-        combo_tag = " <span class='zone-combo-claimed'>🔥 Combo Tripartito</span>"
-    else:
-        combo_tag = f" <span class='zone-combo-progress'>🔥 Progreso: {len(damaged)}/3</span>"
-    tooltip = (
-        "Completa las 3 zonas (🗣️ Cabeza, 👕 Torso, 🦵 Piernas) para activar el Combo Tripartito"
-    )
-    align_cls = " zone-badges-right" if align == "right" else ""
-    st.markdown(
-        f"<div class='zone-badges{align_cls}' title='{tooltip}'>{''.join(badges)}{combo_tag}</div>",
-        unsafe_allow_html=True,
-    )
-
-
 # --------------------------------------------------------------------------- #
-# Temporizador de turno (TURN_TIMER_SECONDS = 20s, card_schema.py): si pasa
+# Temporizador de turno (TURN_TIMER_SECONDS = 30s, card_schema.py): si pasa
 # el tiempo sin que el jugador actúe, el turno se resuelve solo (motor:
 # auto_skip_turn + end_turn, ya existían en pvp_engine.py sin usar desde
 # ningún sitio). st.session_state.turn_start_time se arma en NUEVA PARTIDA y
@@ -2629,13 +3041,14 @@ if match.status == MatchStatus.ONGOING:
                 auto_skip_turn(match, "a")
                 try:
                     bot_choose_plays(match, "b")
+                    _flash_energy_spend("b", match.player_b.energy_spent_this_turn)
                 except Exception as e:
                     # No dejar el round a medio resolver si el Bot falla al
                     # elegir jugada: igualmente hay que cerrar el turno, si
                     # no la partida queda congelada en esta misma ronda.
                     print(f"[TIMEOUT] bot_choose_plays fallo: {e!r}")
                     match.log.append(f"El Bot no pudo jugar cartas este turno ({e}).")
-            end_turn(match)
+            _end_turn_with_fx(match)
         except EngineError as e:
             print(f"[TIMEOUT] end_turn fallo: {e!r}")
             match.log.append(f"Error al resolver el turno automáticamente: {e}")
@@ -2707,11 +3120,50 @@ def _card_zone_requirements(card_dict: dict) -> tuple[bool, bool]:
 
 
 def _selected_card(player_key: str) -> dict | None:
-    sel_id = st.session_state.get(f"sel_card_{player_key}")
+    """La carta ACTIVA (la que están configurando ahora los puntos
+    tácticos) dentro de la selección múltiple."""
+    sel_id = st.session_state.get(f"active_card_{player_key}")
     if sel_id is None:
         return None
     hand = state[f"player_{player_key}"]["hand"]
     return next((c for c in hand if c["id"] == sel_id), None)
+
+
+def _selected_cards(player_key: str) -> list[dict]:
+    """Todas las cartas seleccionadas este turno, en orden de selección."""
+    hand = {c["id"]: c for c in state[f"player_{player_key}"]["hand"]}
+    return [hand[cid] for cid in st.session_state[f"sel_cards_{player_key}"] if cid in hand]
+
+
+def _card_zones(player_key: str, card_id: str) -> dict:
+    return st.session_state[f"zones_{player_key}"].setdefault(card_id, {"atk": None, "def": None})
+
+
+def _card_ready(player_key: str, card_dict: dict) -> bool:
+    needs_atk, needs_def = _card_zone_requirements(card_dict)
+    zones = _card_zones(player_key, card_dict["id"])
+    return (not needs_atk or zones["atk"] is not None) and (not needs_def or zones["def"] is not None)
+
+
+def _select_card(player_key: str, card_id: str) -> None:
+    """Clic en una carta: si no estaba elegida se AÑADE a la selección (sin
+    soltar las demás); en ambos casos pasa a ser la carta activa."""
+    sel = st.session_state[f"sel_cards_{player_key}"]
+    if card_id not in sel:
+        sel.append(card_id)
+        st.session_state[f"zones_{player_key}"][card_id] = {"atk": None, "def": None}
+    st.session_state[f"active_card_{player_key}"] = card_id
+
+
+def _deselect_card(player_key: str, card_id: str) -> None:
+    """Botón ✕ de una carta: la quita SOLO a ella (libera su energía) y deja
+    intactas las demás; si era la activa, pasa a serlo la última que quede."""
+    sel = st.session_state[f"sel_cards_{player_key}"]
+    if card_id in sel:
+        sel.remove(card_id)
+    st.session_state[f"zones_{player_key}"].pop(card_id, None)
+    if st.session_state[f"active_card_{player_key}"] == card_id:
+        st.session_state[f"active_card_{player_key}"] = sel[-1] if sel else None
 
 
 def render_tactical_points(player_key: str, overlay: bool = False) -> None:
@@ -2727,43 +3179,62 @@ def render_tactical_points(player_key: str, overlay: bool = False) -> None:
     En ambos casos, el grupo (verde/rojo) que la carta elegida no necesita
     (ver _card_zone_requirements) se deshabilita — y sin carta elegida
     todavía, los 2 grupos quedan deshabilitados: hay que elegir carta primero."""
+    # Selección múltiple: los puntos editan SOLO la carta activa (la última
+    # clicada); las zonas ya fijadas por las OTRAS cartas elegidas se marcan
+    # con un contorno discontinuo ("_used") para no perder de vista el plan.
     sel_card = _selected_card(player_key)
     needs_atk, needs_def = _card_zone_requirements(sel_card) if sel_card else (False, False)
+    active_zones = _card_zones(player_key, sel_card["id"]) if sel_card else {"atk": None, "def": None}
+    used_by_others: dict[str, set] = {"atk": set(), "def": set()}
+    for other in _selected_cards(player_key):
+        if sel_card and other["id"] == sel_card["id"]:
+            continue
+        oz = _card_zones(player_key, other["id"])
+        for k in ("atk", "def"):
+            if oz[k]:
+                used_by_others[k].add(oz[k])
     specs = (
-        ("def", f"def_zone_{player_key}", "🟢 Defender", "tactical-label-def", needs_def),
-        ("atk", f"atk_zone_{player_key}", "🔴 Atacar", "tactical-label-atk", needs_atk),
+        ("def", "🟢 Defender", "tactical-label-def", needs_def),
+        ("atk", "🔴 Atacar", "tactical-label-atk", needs_atk),
     )
+
+    def _set_zone(prefix: str, zone_value: str) -> None:
+        if sel_card:
+            active_zones[prefix] = zone_value
+
     if overlay:
-        for prefix, state_key, _label, _cls, needed in specs:
+        for prefix, _label, _cls, needed in specs:
             for z in ZONE_ORDER:
-                selected = st.session_state[state_key] == z.value
+                selected = active_zones[prefix] == z.value
+                used = z.value in used_by_others[prefix]
                 point_key = f"pt_{prefix}_{player_key}_{z.value}"
-                with st.container(key=f"arena_point_{point_key}"):
+                with st.container(key=f"arena_point_{point_key}{'_used' if used else ''}"):
                     if st.button(
                         ZONE_ICON[z.value], key=point_key,
                         type="primary" if selected else "secondary",
                         disabled=not needed,
                         help=f"{'Defender' if prefix == 'def' else 'Atacar'} {ZONE_NAME[z.value]}",
                     ):
-                        st.session_state[state_key] = z.value
+                        _set_zone(prefix, z.value)
                         st.rerun()
         return
 
     col_def, col_atk = st.columns(2)
-    for col, (prefix, state_key, label_txt, label_cls, needed) in zip((col_def, col_atk), specs):
+    for col, (prefix, label_txt, label_cls, needed) in zip((col_def, col_atk), specs):
         with col:
             st.markdown(f"<div class='tactical-label {label_cls}'>{label_txt}</div>", unsafe_allow_html=True)
             with st.container(key=f"tactical_{prefix}_{player_key}"):
                 for z in ZONE_ORDER:
-                    selected = st.session_state[state_key] == z.value
+                    selected = active_zones[prefix] == z.value
+                    used = z.value in used_by_others[prefix]
                     if st.button(
-                        f"{ZONE_ICON[z.value]} {ZONE_NAME[z.value]}",
+                        f"{ZONE_ICON[z.value]} {ZONE_NAME[z.value]}{' ◆' if used else ''}",
                         key=f"{prefix}_pt_{player_key}_{z.value}",
                         type="primary" if selected else "secondary",
                         width="stretch",
                         disabled=not needed,
                     ):
-                        st.session_state[state_key] = z.value
+                        _set_zone(prefix, z.value)
                         st.rerun()
 
 
@@ -2780,16 +3251,116 @@ def render_arena(state: dict) -> None:
     av_b = _image_b64(str(gamenft_avatar_path(st.session_state.get("rival_avatar_id"))))
     pa, pb = state["player_a"], state["player_b"]
     ongoing = state["status"] == MatchStatus.ONGOING.value
+    # Feedback de gasto pendiente (ver _flash_energy_spend): se consume aquí
+    # para que el "-N" se anime una única vez.
+    # Avisos flotantes vigentes durante _FX_TTL_SECONDS: se pintan con el
+    # MISMO HTML (mismo nonce) en los reruns de ese intervalo — Streamlit no
+    # re-crea un markdown idéntico, así que la animación no se reinicia — y
+    # pasado ese tiempo se descartan.
+    if time.time() - st.session_state.get("fx_time", 0.0) > _FX_TTL_SECONDS:
+        for _k in _FX_KEYS:
+            st.session_state[_k] = {}
+    energy_fx = st.session_state.get("energy_fx") or {}
+    hp_fx = st.session_state.get("hp_fx") or {}
+    inact_fx = st.session_state.get("inact_fx") or {}
+    inact_limit = state.get("inactivity_limit", 3)
+    fx_nonce = st.session_state.get("energy_fx_nonce", 0)
 
-    def hp_bar(p: dict, align: str) -> str:
+    def hp_bar(p: dict, align: str, player_key: str) -> str:
         pct = max(0.0, min(1.0, p["hp"] / p["max_hp"])) * 100
-        energy_left = min(MAX_ENERGY_SPEND_PER_TURN, p["energy"]) - p["energy_spent_this_turn"]
+        energy_cap = min(MAX_ENERGY_SPEND_PER_TURN, p["energy"])
+        energy_left = max(0, energy_cap - p["energy_spent_this_turn"])
+        energy_pct = (energy_left / energy_cap * 100) if energy_cap > 0 else 0.0
+        segs = "<span></span>" * max(1, energy_cap)
+        empty_cls = " energy-empty" if energy_left <= 0 else ""
+        spent = energy_fx.get(player_key, 0)
+        hp_delta = hp_fx.get(player_key, 0)
+        floats = []
+        if hp_delta < 0:
+            floats.append(f"<div class='energy-float hp-float'>💥 −{-hp_delta}</div>")
+        elif hp_delta > 0:
+            floats.append(f"<div class='energy-float hp-float heal'>💚 +{hp_delta}</div>")
+        if spent > 0:
+            floats.append(f"<div class='energy-float'>−{spent}⚡</div>")
+        if inact_fx.get(player_key):
+            floats.append(
+                f"<div class='energy-float inact-float'>⚠️ INACTIVO {inact_fx[player_key]}/{inact_limit}</div>"
+            )
+        idle = p.get("inactive_turns", 0)
+        idle_pill = (
+            f" <span class='arena-inactive{' last' if idle >= inact_limit - 1 else ''}' "
+            f"title='Turnos seguidos sin jugar. Al llegar a {inact_limit}, derrota por inactividad.'>"
+            f"⚠️ Inactivo {idle}/{inact_limit}</span>"
+            if idle > 0 and state["status"] == MatchStatus.ONGOING.value else ""
+        )
+        float_html = (
+            f"<div class='combat-floats' data-n='{fx_nonce}'>{''.join(floats)}</div>" if floats else ""
+        )
         return (
             f"<div class='arena-hp arena-hp-{align}'>"
-            f"<div class='arena-hp-name'>{html.escape(p['name'])}</div>"
+            f"<div class='arena-hp-name'>{html.escape(p['name'])}{idle_pill}</div>"
             f"<div class='arena-hp-track'><div class='arena-hp-fill' style='width:{pct:.1f}%'></div>"
-            f"<span class='arena-hp-text'>{p['hp']}/{p['max_hp']}</span></div>"
-            f"<div class='arena-energy'>⚡ {energy_left}/{p['energy']}</div>"
+            f"<span class='arena-hp-text'>❤️ {p['hp']}/{p['max_hp']}</span></div>"
+            f"<div class='arena-energy-row'>"
+            f"<div class='arena-energy-track{empty_cls}'>"
+            f"<div class='arena-energy-fill' style='width:{energy_pct:.1f}%'></div>"
+            f"<div class='arena-energy-segs'>{segs}</div>"
+            f"<span class='arena-energy-text'>⚡ {energy_left}/{energy_cap}</span></div>"
+            f"<div class='arena-energy-pool' title='Energía total acumulada'>🔋 {p['energy']}</div>"
+            f"</div>"
+            f"{float_html}"
+            f"</div>"
+        )
+
+    def zone_report_html(player_key: str, align: str) -> str:
+        """Panel minimalista bajo cada bando: SOLO el progreso del Combo
+        Tripartito, acumulativo durante toda la partida (motor:
+        zones_damaged / tripartite_claimed). Las 3 zonas siempre a la vista:
+        ✓ conseguida, atenuada pendiente, "NUEVA" si se sumó en la última
+        ronda; a 3/3 se marca "¡Combo activado!"."""
+        rep = st.session_state.get("zone_report")
+        if not rep or rep.get("match_id") != id(match) or player_key not in rep:
+            rep = None
+        p_state = state[f"player_{player_key}"]
+        done = set(p_state["zones_damaged"])
+        new_zones = set(rep[player_key].get("combo_new", [])) if rep else set()
+        claimed = p_state["tripartite_claimed"]
+        short = {"head": "Cab.", "torso": "Tron.", "legs": "Pier."}
+        zone_chips = []
+        for z in ("head", "torso", "legs"):
+            # Nombre completo + abreviado: el CSS muestra uno u otro según el
+            # ancho de ventana (ver @media de .combo-hud).
+            label = f"<span class='cz-full'>{ZONE_NAME[z]}</span><span class='cz-short'>{short[z]}</span>"
+            if z in done:
+                cls = "cz ok new" if z in new_zones else "cz ok"
+                zone_chips.append(f"<span class='{cls}'>✓ {label}</span>")
+            else:
+                zone_chips.append(f"<span class='cz todo'>{label}</span>")
+        # player_key = quién ATACA (de quién es el combo). Cada cápsula se
+        # pinta bajo el personaje que RECIBE esos golpes (ver la llamada en
+        # render_arena): bajo ti, el combo del rival (las zonas de TU cuerpo
+        # que te ha dañado); bajo el rival, TU combo (las zonas de SU cuerpo
+        # que tú le has dañado). Pestaña roja = golpes que sufres; azul =
+        # golpes que das.
+        if player_key == "a":
+            tag = "⚔️ GOLPES QUE LE HAS DADO"
+            tag_cls = "tag-dealt"
+            tip = "Zonas del rival que TÚ ya has dañado. Completa las 3 para tu Combo Tripartito (+3 de daño)."
+            banner_txt = "¡TU COMBO ACTIVADO!"
+        else:
+            tag = "💢 GOLPES RECIBIDOS"
+            tag_cls = "tag-received"
+            tip = "Zonas de TU cuerpo que el rival ya ha dañado. Si completa las 3, activa su Combo Tripartito (+3)."
+            banner_txt = "¡COMBO RIVAL!"
+        icon = "⚡" if claimed else "🔥"
+        banner = f"<span class='combo-hud-banner'>{banner_txt}</span>" if claimed else ""
+        done_cls = " is-done" if claimed else ""
+        return (
+            f"<div class='combo-hud combo-hud-{align}{done_cls}' title='{tip}'>"
+            f"<span class='combo-hud-tag {tag_cls}'>{tag}</span>"
+            f"{banner}"
+            f"<span class='combo-hud-count'>{icon}<span class='combo-word'> COMBO</span> <b>{len(done)}/3</b></span>"
+            f"<span class='combo-hud-zones'>{''.join(zone_chips)}</span>"
             f"</div>"
         )
 
@@ -2802,17 +3373,24 @@ def render_arena(state: dict) -> None:
         remaining = None
         timer_html = ""
 
+    my_idle = pa.get("inactive_turns", 0)
+    last_warning_html = (
+        "<div class='arena-last-warning'>⚠️ ¡Juega una carta o<br>perderás por inactividad!</div>"
+        if ongoing and my_idle >= state.get("inactivity_limit", 3) - 1 else ""
+    )
+
     with st.container(key="arena_outer"):
         st.markdown(
             f"""
             <div class="arena-bg" style="background-image:url(data:image/png;base64,{bg});">
                 <div class="arena-topbar">
-                    {hp_bar(pa, 'left')}
-                    <div class="arena-turn">Ronda {state['turn_number']}{timer_html}</div>
-                    {hp_bar(pb, 'right')}
+                    {hp_bar(pa, 'left', 'a')}
+                    <div class="arena-turn">Ronda {state['turn_number']}{timer_html}{last_warning_html}</div>
+                    {hp_bar(pb, 'right', 'b')}
                 </div>
                 <img class="arena-portal arena-portal-left" src="data:image/png;base64,{av_a}">
                 <img class="arena-portal arena-portal-right" src="data:image/png;base64,{av_b}">
+                {zone_report_html('b', 'left')}{zone_report_html('a', 'right')}
             </div>
             """,
             unsafe_allow_html=True,
@@ -2856,12 +3434,6 @@ def render_arena(state: dict) -> None:
         if ongoing and st.session_state.vs_bot:
             render_tactical_points("a", overlay=True)
 
-    badge_a, badge_b = st.columns(2)
-    with badge_a:
-        _render_zone_badges(pa)
-    with badge_b:
-        _render_zone_badges(pb, align="right")
-
 
 render_arena(state)
 
@@ -2876,8 +3448,16 @@ if state["status"] != MatchStatus.ONGOING.value:
             payout = compute_challenge_payout(active_challenge["stake_kur"])
             balance = connector.kur_balance(current_wallet_address)
             if state["status"] == MatchStatus.PLAYER_A_WINS.value:
-                new_balance = balance + payout.payout_kur
-                st.success(f"🏆 ¡Ganaste el reto! +{payout.payout_kur:.2f} $KUR (comisión {payout.fee_kur:.2f} $KUR).")
+                crystal_bonus = CRYSTAL_KUR_WIN_BONUS if st.session_state.get("match_crystals") else 0.0
+                new_balance = balance + payout.payout_kur + crystal_bonus
+                crystal_txt = (
+                    f" 💎 +{crystal_bonus:.0f} $KUR y +{CRYSTAL_ELO_WIN_BONUS} ELO extra por cristales."
+                    if crystal_bonus else ""
+                )
+                st.success(
+                    f"🏆 ¡Ganaste el reto! +{payout.payout_kur:.2f} $KUR "
+                    f"(comisión {payout.fee_kur:.2f} $KUR).{crystal_txt}"
+                )
             elif state["status"] == MatchStatus.DRAW.value:
                 new_balance = balance + active_challenge["stake_kur"]
                 st.info("🤝 Reto empatado: se te devuelve tu apuesta.")
@@ -2895,16 +3475,22 @@ if state["status"] != MatchStatus.ONGOING.value:
             # aleatorio de 3-5 $KUR sin relación alguna con la apuesta real
             # mostrada en la tarjeta del reto, el bug reportado.
             stake = st.session_state.get("match_stake", 0.0)
+            crystals = bool(st.session_state.get("match_crystals"))
+            economy = compute_match_economy("competitive", stake, crystals=crystals)
             pot = stake * 2
             fee = round(pot * MATCH_FEE_PCT, 2)
-            reward = round(pot - fee, 2)
+            reward = round(pot - fee + economy.crystal_kur_bonus, 2)
             balance = connector.kur_balance(current_wallet_address)
             connector.simulated_backend.seed_wallet(
                 current_wallet_address, connector.owned_token_ids(current_wallet_address), balance + reward
             )
+            crystal_txt = (
+                f" 💎 Cristales: +{economy.crystal_kur_bonus:.0f} $KUR y +{CRYSTAL_ELO_WIN_BONUS} ELO extra."
+                if crystals else ""
+            )
             st.success(
-                f"🏆 ¡Victoria en Modo Competitivo! Recompensa obtenida: +{reward:.2f} $KUR "
-                f"(Bote: {pot:.2f} $KUR - Comisión: {fee:.2f} $KUR)."
+                f"🏆 ¡Victoria en Modo Competitivo! +{economy.win_elo} ELO · Recompensa: +{reward:.2f} $KUR "
+                f"(Bote: {pot:.2f} $KUR - Comisión: {fee:.2f} $KUR).{crystal_txt}"
             )
         st.session_state.match_reward_settled = True
 
@@ -2913,7 +3499,23 @@ if state["status"] != MatchStatus.ONGOING.value:
         MatchStatus.PLAYER_B_WINS.value: f"🏆 ¡Gana {state['player_b']['name']}!",
         MatchStatus.DRAW.value: "🤝 Empate.",
     }[state["status"]]
-    st.success(banner)
+    if state.get("end_reason") == "inactivity":
+        # Ganador (o empate) por la regla de inactividad: mismo cartel con
+        # el motivo explícito, para que no parezca una victoria por vida.
+        banner = {
+            MatchStatus.PLAYER_A_WINS.value: f"⛔ ¡Gana {state['player_a']['name']} por inactividad del rival! "
+                                             f"({state['inactivity_limit']} turnos seguidos sin jugar)",
+            MatchStatus.PLAYER_B_WINS.value: f"⛔ Derrota por inactividad: llevabas {state['inactivity_limit']} "
+                                             f"turnos seguidos sin jugar. Gana {state['player_b']['name']}.",
+            MatchStatus.DRAW.value: "⛔ Empate por inactividad: ningún jugador ha jugado en "
+                                    f"{state['inactivity_limit']} turnos seguidos.",
+        }[state["status"]]
+        if state["status"] == MatchStatus.PLAYER_B_WINS.value:
+            st.error(banner)
+        else:
+            st.warning(banner)
+    else:
+        st.success(banner)
     if st.button("🔄 Jugar otra partida", type="primary"):
         st.session_state.match = None
         st.session_state.active_challenge = None
@@ -2997,8 +3599,8 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
     remaining_energy = min(MAX_ENERGY_SPEND_PER_TURN, p["energy"]) - p["energy_spent_this_turn"]
     energy_css_class = "energy-low" if remaining_energy <= 0 else ""
     st.markdown(
-        f"**Mano de {label}** · <span class='energy-display {energy_css_class}' "
-        f"style='font-size:1.05rem'>⚡ {remaining_energy} disponible{'s' if remaining_energy != 1 else ''}</span> · "
+        f"**Mano de {label}** · <span class='energy-display {energy_css_class}'>"
+        f"⚡ {remaining_energy} disponible{'s' if remaining_energy != 1 else ''}</span> · "
         f"<span class='deck-discard-count'>🂠 Mazo: {p['deck_remaining']} · 🗑️ Descarte: {p['discard_count']}</span>",
         unsafe_allow_html=True,
     )
@@ -3006,20 +3608,33 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
         st.caption("Sin cartas en mano.")
         return
 
-    sel_card_key = f"sel_card_{player_key}"
-    if st.session_state[sel_card_key] not in {c["id"] for c in p["hand"]}:
-        st.session_state[sel_card_key] = None
+    # Poda: la mano se renueva cada turno, así que cualquier id elegido que
+    # ya no esté en ella se descarta (y con él sus zonas).
+    hand_ids = {c["id"] for c in p["hand"]}
+    sel_ids = [cid for cid in st.session_state[f"sel_cards_{player_key}"] if cid in hand_ids]
+    st.session_state[f"sel_cards_{player_key}"] = sel_ids
+    if st.session_state[f"active_card_{player_key}"] not in sel_ids:
+        st.session_state[f"active_card_{player_key}"] = sel_ids[-1] if sel_ids else None
+    active_id = st.session_state[f"active_card_{player_key}"]
+    selected_cards = _selected_cards(player_key)
+    committed_energy = sum(c["cost_energy"] for c in selected_cards)
+    free_energy = remaining_energy - committed_energy
 
     hand_container_key = f"battle_hand_overlay_{player_key}" if auto_resolve else f"battle_hand_{player_key}"
     with st.container(key=hand_container_key):
         cols = st.columns(len(p["hand"]))
         for col, card_dict in zip(cols, p["hand"]):
-            affordable = card_dict["cost_energy"] <= remaining_energy
-            selected = st.session_state[sel_card_key] == card_dict["id"]
-            glow_key = (
-                f"card_glow_{'sel' if selected else ('playable' if affordable else 'locked')}"
-                f"_{player_key}_{card_dict['id']}"
-            )
+            selected = card_dict["id"] in sel_ids
+            is_active = card_dict["id"] == active_id
+            # Una carta NO elegida solo es asequible si cabe en la energía
+            # que queda libre tras las ya elegidas; las elegidas siempre son
+            # clicables (para volver a activarlas y editar sus zonas).
+            affordable = selected or card_dict["cost_energy"] <= free_energy
+            if selected:
+                glow_state = "sel_act" if is_active else "sel_pin"
+            else:
+                glow_state = "playable" if affordable else "locked"
+            glow_key = f"card_glow_{glow_state}_{player_key}_{card_dict['id']}"
             with col, st.container(key=glow_key):
                 # Sin letreros fijos (nombre/ATK-DEF/coste/habilidad/Info):
                 # todo vive en este tooltip, revelado solo al pasar el
@@ -3057,7 +3672,33 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                 img = card_image_path(card_dict)
                 if img:
                     st.image(str(img), width="stretch")
-                btn_label = "✅ Elegida" if selected else "Seleccionar"
+                if selected:
+                    # ✕ en la esquina superior derecha: deselecciona SOLO
+                    # esta carta y libera su energía (ver _deselect_card).
+                    if st.button("✕", key=f"desel_{player_key}_{card_dict['id']}", help="Quitar esta carta"):
+                        _deselect_card(player_key, card_dict["id"])
+                        st.rerun()
+                    # Chip con el orden de juego + zonas fijadas de la carta.
+                    order = sel_ids.index(card_dict["id"]) + 1
+                    zc = _card_zones(player_key, card_dict["id"])
+                    n_atk, n_def = _card_zone_requirements(card_dict)
+                    parts = []
+                    if n_atk:
+                        parts.append(f"🔴 {ZONE_NAME[zc['atk']] if zc['atk'] else '?'}")
+                    if n_def:
+                        parts.append(f"🟢 {ZONE_NAME[zc['def']] if zc['def'] else '?'}")
+                    chip_cls = "card-sel-chip ready" if _card_ready(player_key, card_dict) else "card-sel-chip"
+                    if is_active and not _card_ready(player_key, card_dict):
+                        chip_cls += " pending"
+                    # Contenedor con key propia => el CSS lo saca del flujo
+                    # (position:absolute sobre el pie de la imagen): no
+                    # añade alto entre las cartas y "Pasar Turno".
+                    with st.container(key=f"card_overlay_chip_{player_key}_{card_dict['id']}"):
+                        st.markdown(
+                            f"<div class='{chip_cls}'><b>#{order}</b> {' · '.join(parts)}</div>",
+                            unsafe_allow_html=True,
+                        )
+                btn_label = ("✅ Activa" if is_active else "✅ Elegida") if selected else "Seleccionar"
                 if st.button(
                     btn_label,
                     key=f"select_{player_key}_{card_dict['id']}",
@@ -3065,12 +3706,11 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                     type="primary" if selected else "secondary",
                     disabled=not affordable,
                 ):
-                    st.session_state[sel_card_key] = None if selected else card_dict["id"]
-                    st.session_state[f"atk_zone_{player_key}"] = None
-                    st.session_state[f"def_zone_{player_key}"] = None
+                    _select_card(player_key, card_dict["id"])
                     st.rerun()
                 if not affordable:
-                    st.caption("⚠️ Energía insuficiente")
+                    with st.container(key=f"card_overlay_chip_noen_{player_key}_{card_dict['id']}"):
+                        st.markdown("<div class='card-sel-chip no-energy'>⚡ Sin energía</div>", unsafe_allow_html=True)
 
         # El resto del flujo (zonas + "Pasar Turno") vive DENTRO del mismo
         # contenedor que las 3 cartas (hand_container_key), justo debajo —
@@ -3084,35 +3724,39 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
             # jugadores a la vez, así que cada uno tiene su fila aquí.
             render_tactical_points(player_key)
 
-        sel_card_id = st.session_state[sel_card_key]
-        sel_card = _selected_card(player_key)
-        needs_atk, needs_def = _card_zone_requirements(sel_card) if sel_card else (False, False)
-        atk_zone_val = st.session_state[f"atk_zone_{player_key}"]
-        def_zone_val = st.session_state[f"def_zone_{player_key}"]
-        ready = (
-            sel_card_id is not None
-            and (not needs_atk or atk_zone_val is not None)
-            and (not needs_def or def_zone_val is not None)
-        )
+        selected_cards = _selected_cards(player_key)
+        ready = bool(selected_cards) and all(_card_ready(player_key, c) for c in selected_cards)
+        n_sel = len(selected_cards)
+        confirm_label = "✅ Pasar Turno" + (f" ({n_sel} cartas · ⚡{committed_energy})" if n_sel > 1 else "")
         if st.button(
-            "✅ Pasar Turno", key=f"confirm_turn_{player_key}",
+            confirm_label, key=f"confirm_turn_{player_key}",
             type="primary", width="stretch", disabled=not ready,
         ):
-            # La carta puede no necesitar una de las 2 zonas (p.ej. 0 ATK no
-            # ataca nada): play_card exige igualmente un Zone para cada una,
-            # así que la que sobra se rellena con la otra elegida (su efecto
-            # es 0, no cambia el resultado) en vez de forzar a fijarla.
-            atk_zone_final = atk_zone_val or def_zone_val
-            def_zone_final = def_zone_val or atk_zone_val
             try:
-                play_card(match, player_key, sel_card_id, Zone(atk_zone_final), defense_zone=Zone(def_zone_final))
+                attack_zones: list[Zone] = []
+                for card_dict in selected_cards:
+                    zc = _card_zones(player_key, card_dict["id"])
+                    # La carta puede no necesitar una de las 2 zonas (p.ej. 0
+                    # ATK no ataca nada): play_card exige igualmente un Zone
+                    # para cada una, así que la que sobra se rellena con la
+                    # otra elegida (su efecto es 0, no cambia el resultado).
+                    atk_zone_final = zc["atk"] or zc["def"]
+                    def_zone_final = zc["def"] or zc["atk"]
+                    play_card(
+                        match, player_key, card_dict["id"], Zone(atk_zone_final),
+                        defense_zone=Zone(def_zone_final),
+                    )
+                    _flash_energy_spend(player_key, card_dict["cost_energy"])
+                    if _card_zone_requirements(card_dict)[0]:
+                        attack_zones.append(Zone(atk_zone_final))
                 if auto_resolve:
                     bot_choose_plays(match, "b")
-                    if needs_atk:
-                        attacker = match.player_a if player_key == "a" else match.player_b
-                        defender = match.player_b if player_key == "a" else match.player_a
-                        match.log.append(_describe_tactical_result(attacker, defender, Zone(atk_zone_final)))
-                    end_turn(match)
+                    _flash_energy_spend("b", match.player_b.energy_spent_this_turn)
+                    attacker = match.player_a if player_key == "a" else match.player_b
+                    defender = match.player_b if player_key == "a" else match.player_a
+                    for atk_zone in attack_zones:
+                        match.log.append(_describe_tactical_result(attacker, defender, atk_zone))
+                    _end_turn_with_fx(match)
                     st.session_state.turn_start_time = time.time()
             except EngineError as e:
                 st.error(str(e))
@@ -3136,7 +3780,7 @@ if state["status"] == MatchStatus.ONGOING.value:
         render_hand("b", state["player_b"]["name"], auto_resolve=False)
         if st.button("⏭️ Resolver turno", type="primary", width="stretch"):
             try:
-                end_turn(match)
+                _end_turn_with_fx(match)
             except EngineError as e:
                 st.error(str(e))
             else:
@@ -3151,13 +3795,11 @@ with st.expander("📜 Registro completo de la partida", expanded=False):
     )
     st.markdown(log_html, unsafe_allow_html=True)
 
-with st.expander("🗂️ Catálogo de cartas (27 competitivas + 2 legendarias)"):
-    tabs = st.tabs(["Estándar (18)", "Raras (9)", "Legendarias (fuera de pool)"])
-    buckets = {
-        0: [c for c in catalog_dicts if c["category"] == "standard"],
-        1: [c for c in catalog_dicts if c["category"] == "rare"],
-        2: [c for c in catalog_dicts if c["category"] == "legendary"],
-    }
+_base_cards = [c for c in catalog_dicts if c["category"] == "standard"]
+_special_cards = [c for c in catalog_dicts if c["category"] == "special"]
+with st.expander(f"🗂️ Catálogo de cartas ({len(_base_cards)} base únicas + {len(_special_cards)} especiales)"):
+    tabs = st.tabs([f"Base únicas ({len(_base_cards)})", f"Especiales · repetibles ({len(_special_cards)})"])
+    buckets = {0: _base_cards, 1: _special_cards}
     for idx, tab in enumerate(tabs):
         with tab:
             bucket = buckets[idx]

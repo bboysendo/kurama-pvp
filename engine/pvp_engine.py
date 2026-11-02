@@ -23,10 +23,15 @@ Reglas modeladas (ver PVP_Rules/PVP KURAMARUN....md para el texto original):
 - Combo Crítico: una vez completado el combo tripartito, cualquier carta de
   Ataque Puro (3 ATK/0 DEF) jugada después inflige 20 de daño directo fijo en
   vez del cálculo normal (ignora escudo/perforante/etc. de esa zona).
-- Energía: empieza en STARTING_ENERGY, +1 por turno, pero el gasto de un
-  mismo turno no puede superar MAX_ENERGY_SPEND_PER_TURN (tal cual la
-  sección 2.2 — la energía no gastada sí se acumula en el pool para turnos
-  futuros, solo el GASTO por turno está topado).
+- Cartas especiales (las únicas repetibles en un mazo):
+    * Robo de Vida (LIFESTEAL): si la zona que ataca recibe daño (>0), el
+      atacante recupera ese daño en HP, hasta `heal_amount` por carta.
+    * Combo Simultáneo (COMBO_STRIKE): si ese MISMO turno el jugador daña 2
+      o 3 zonas distintas del rival, suma SIMULTANEOUS_COMBO_BONUS[2|3] de
+      daño extra (una vez por turno aunque juegue varias).
+- Energía: empieza en STARTING_ENERGY, +1 por turno, y el acumulador NUNCA
+  supera MAX_ENERGY (3). El gasto de un mismo turno tampoco puede superar
+  MAX_ENERGY_SPEND_PER_TURN (sección 2.2).
 - Mano: se renueva por completo cada turno (se descartan las cartas no
   jugadas y se roban HAND_SIZE nuevas) — el mazo de descarte se reباraja
   automáticamente en cuanto el mazo de robo se queda sin cartas.
@@ -47,11 +52,16 @@ from card_schema import (
     DECK_SIZE,
     ENERGY_PER_TURN,
     HAND_SIZE,
+    INACTIVITY_LIMIT,
+    MAX_ENERGY,
     MAX_ENERGY_SPEND_PER_TURN,
+    SIMULTANEOUS_COMBO_BONUS,
+    SPECIALS_PER_DECK,
     STARTING_ENERGY,
     TRIPARTITE_COMBO_BONUS,
     Ability,
     Card,
+    CardCategory,
 )
 
 
@@ -88,11 +98,12 @@ class PlayerState:
     deck: list[Card]
     hand: list[Card] = field(default_factory=list)
     discard: list[Card] = field(default_factory=list)
-    energy: int = STARTING_ENERGY
+    energy: int = min(STARTING_ENERGY, MAX_ENERGY)
     staged_plays: list[StagedPlay] = field(default_factory=list)
     zones_damaged: set = field(default_factory=set)   # Zone completados contra el rival, toda la partida
     tripartite_claimed: bool = False
     battles_played: int = 0  # informativo para el dashboard (no afecta al combate)
+    inactive_turns: int = 0  # turnos SEGUIDOS terminados sin jugar ninguna carta (regla de inactividad)
 
     @property
     def energy_spent_this_turn(self) -> int:
@@ -107,16 +118,42 @@ class MatchState:
     status: MatchStatus = MatchStatus.ONGOING
     log: list[str] = field(default_factory=list)
     rng: random.Random = field(default_factory=random.Random)
+    end_reason: Optional[str] = None  # "ko" | "inactivity" cuando la partida termina
 
 
-def build_deck_from_pool(pool: list[Card], size: int = DECK_SIZE, rng: Optional[random.Random] = None) -> list[Card]:
-    """Construye un mazo de `size` cartas a partir de un pool (p.ej. las 27
-    del catálogo competitivo). Sin repetidas si el pool alcanza; si no,
-    completa con repetición para no romper el tamaño fijo del mazo."""
+def _special_copy(card: Card, n: int) -> Card:
+    """Copia n-ésima (n >= 2) de una carta especial dentro de un mismo mazo,
+    con id propio (`<id>__c<n>`) para que dos copias en la misma mano se
+    puedan elegir por separado; `base_id` apunta a la carta del catálogo."""
+    import copy
+
+    c = copy.deepcopy(card)
+    c.base_id = card.catalog_id
+    c.id = f"{card.catalog_id}__c{n}"
+    return c
+
+
+def build_deck_from_pool(pool: list[Card], size: int = DECK_SIZE, rng: Optional[random.Random] = None,
+                         specials: int = SPECIALS_PER_DECK) -> list[Card]:
+    """Mazo de `size` cartas: las cartas base (STANDARD) van SIN repetir
+    (cada una como mucho una vez) y los huecos restantes —`specials` como
+    mínimo si hay especiales en el pool— se llenan con cartas ESPECIALES,
+    que sí pueden repetirse. Si no hay especiales, el mazo nunca repite una
+    carta base aunque quede más corto que `size`."""
     rng = rng or random
-    if size <= len(pool):
-        return rng.sample(pool, size)
-    return [rng.choice(pool) for _ in range(size)]
+    base = [c for c in pool if c.category != CardCategory.SPECIAL]
+    special_pool = [c for c in pool if c.category == CardCategory.SPECIAL]
+    n_special = min(specials, size) if special_pool else 0
+    n_base = min(len(base), size - n_special)
+    deck = rng.sample(base, n_base)
+    if special_pool:
+        n_special = size - n_base  # las especiales completan lo que falte
+        copies: dict[str, int] = {}
+        for _ in range(n_special):
+            card = rng.choice(special_pool)
+            copies[card.id] = copies.get(card.id, 0) + 1
+            deck.append(card if copies[card.id] == 1 else _special_copy(card, copies[card.id]))
+    return deck
 
 
 def _draw(player: PlayerState, rng: random.Random, n: int = HAND_SIZE) -> None:
@@ -199,6 +236,8 @@ class _ZoneMaps:
     potion_zone: Optional[Zone]
     potion_card: Optional[Card]
     heavy_attack_zones: set  # zonas donde se jugó una carta 3 ATK/0 DEF este turno
+    lifesteal_cap: dict      # zona -> HP máximos que roba el atacante si daña esa zona
+    combo_strike: bool       # jugó al menos una carta de Combo Simultáneo este turno
 
 
 def _build_zone_maps(player: PlayerState) -> _ZoneMaps:
@@ -207,6 +246,8 @@ def _build_zone_maps(player: PlayerState) -> _ZoneMaps:
     counter_damage = {z: 0 for z in Zone}
     piercing_zones = set()
     heavy_attack_zones = set()
+    lifesteal_cap = {z: 0 for z in Zone}
+    combo_strike = False
     potion_zone, potion_card = None, None
 
     for staged in player.staged_plays:
@@ -220,21 +261,30 @@ def _build_zone_maps(player: PlayerState) -> _ZoneMaps:
             piercing_zones.add(zone)
         if card.ability == Ability.COUNTER:
             counter_damage[def_zone] += card.counter_damage
+        if card.ability == Ability.LIFESTEAL:
+            lifesteal_cap[zone] += card.heal_amount
+        if card.ability == Ability.COMBO_STRIKE:
+            combo_strike = True
         if card.atk == 3 and card.defense == 0:
             heavy_attack_zones.add(zone)
 
-    return _ZoneMaps(attack, shield, piercing_zones, counter_damage, potion_zone, potion_card, heavy_attack_zones)
+    return _ZoneMaps(
+        attack, shield, piercing_zones, counter_damage, potion_zone, potion_card, heavy_attack_zones,
+        lifesteal_cap, combo_strike,
+    )
 
 
-def _resolve_direction(attacker: PlayerState, defender: PlayerState, maps_atk: _ZoneMaps, maps_def: _ZoneMaps, log: list[str]) -> tuple[int, int]:
-    """Daño total que `attacker` inflige a `defender` y curación que
-    `defender` recibe, resolviendo las 3 zonas. Devuelve (daño_total,
-    curacion_total); no aplica los cambios de HP (eso lo hace el caller, para
-    que las dos direcciones se calculen sobre el MISMO estado "congelado" de
-    inicio de turno, de verdad síncrono)."""
+def _resolve_direction(attacker: PlayerState, defender: PlayerState, maps_atk: _ZoneMaps, maps_def: _ZoneMaps, log: list[str]) -> tuple[int, int, int]:
+    """Daño total que `attacker` inflige a `defender`, curación que
+    `defender` recibe (pociones) y HP que `attacker` roba (Robo de Vida),
+    resolviendo las 3 zonas. Devuelve (daño_total, curacion_defensor,
+    robo_vida_atacante); no aplica los cambios de HP (eso lo hace el caller,
+    para que las dos direcciones se calculen sobre el MISMO estado
+    "congelado" de inicio de turno, de verdad síncrono)."""
     total_damage = 0
     total_heal = 0
-    newly_completed = False
+    total_steal = 0
+    zones_hit = 0
 
     for z in Zone:
         raw_atk = maps_atk.attack[z]
@@ -264,13 +314,25 @@ def _resolve_direction(attacker: PlayerState, defender: PlayerState, maps_atk: _
             if not attacker.tripartite_claimed and len(attacker.zones_damaged) == 3:
                 attacker.tripartite_claimed = True
                 damage += TRIPARTITE_COMBO_BONUS
-                newly_completed = True
                 log.append(f"¡Combo Tripartito completado por {attacker.name}! +{TRIPARTITE_COMBO_BONUS} de daño extra.")
 
         total_damage += damage
+        zones_hit += 1
         log.append(f"{attacker.name} inflige {damage} de daño en {z.value} de {defender.name}.")
 
-    return total_damage, total_heal
+        steal = min(damage, maps_atk.lifesteal_cap[z])
+        if steal > 0:
+            total_steal += steal
+            log.append(f"🩸 Robo de Vida: {attacker.name} recupera {steal} HP.")
+
+    if maps_atk.combo_strike and zones_hit >= 2:
+        bonus = SIMULTANEOUS_COMBO_BONUS[min(zones_hit, 3)]
+        total_damage += bonus
+        log.append(
+            f"⚡ ¡Combo Simultáneo de {attacker.name}! {zones_hit} zonas dañadas a la vez: +{bonus} de daño."
+        )
+
+    return total_damage, total_heal, total_steal
 
 
 def _collect_counter_hits(attacker: PlayerState, defender: PlayerState, maps_atk: _ZoneMaps, maps_def: _ZoneMaps, log: list[str]) -> int:
@@ -295,13 +357,29 @@ def end_turn(match: MatchState) -> MatchState:
     maps_a = _build_zone_maps(a)
     maps_b = _build_zone_maps(b)
 
-    damage_to_b, heal_to_b = _resolve_direction(a, b, maps_a, maps_b, match.log)
-    damage_to_a, heal_to_a = _resolve_direction(b, a, maps_b, maps_a, match.log)
+    damage_to_b, heal_to_b, steal_to_a = _resolve_direction(a, b, maps_a, maps_b, match.log)
+    damage_to_a, heal_to_a, steal_to_b = _resolve_direction(b, a, maps_b, maps_a, match.log)
+    heal_to_a += steal_to_a
+    heal_to_b += steal_to_b
     counter_to_a = _collect_counter_hits(a, b, maps_a, maps_b, match.log)  # contraataques de B que golpean a A
     counter_to_b = _collect_counter_hits(b, a, maps_b, maps_a, match.log)  # contraataques de A que golpean a B
 
     b.hp = max(0, min(b.max_hp, b.hp - damage_to_b - counter_to_b + heal_to_b))
     a.hp = max(0, min(a.max_hp, a.hp - damage_to_a - counter_to_a + heal_to_a))
+
+    # Regla de inactividad: un turno sin NINGUNA carta jugada (p.ej. se agotó
+    # el temporizador sin elegir nada) suma 1; jugar cualquier carta lo
+    # reinicia a 0. Se calcula ANTES de vaciar staged_plays.
+    for player in (a, b):
+        if player.staged_plays:
+            player.inactive_turns = 0
+        else:
+            player.inactive_turns += 1
+            if player.inactive_turns < INACTIVITY_LIMIT:
+                match.log.append(
+                    f"⚠️ {player.name} no ha jugado este turno: inactividad "
+                    f"{player.inactive_turns}/{INACTIVITY_LIMIT}."
+                )
 
     # Fin de turno: las cartas jugadas y las que quedaron en mano van a descarte.
     for player in (a, b):
@@ -309,18 +387,45 @@ def end_turn(match: MatchState) -> MatchState:
         player.discard.extend(player.hand)
         player.hand = []
         player.staged_plays = []
-        player.energy += ENERGY_PER_TURN
+        player.energy = min(MAX_ENERGY, player.energy + ENERGY_PER_TURN)
         _draw(player, match.rng)
 
+    a_idle = a.inactive_turns >= INACTIVITY_LIMIT
+    b_idle = b.inactive_turns >= INACTIVITY_LIMIT
+    # El KO por vida tiene prioridad: si alguien llega a 0 HP en este mismo
+    # turno, gana/empata por vida aunque además se cumpla la inactividad.
     if a.hp <= 0 and b.hp <= 0:
         match.status = MatchStatus.DRAW
+        match.end_reason = "ko"
         match.log.append("¡Empate! Ambos jugadores llegan a 0 HP en el mismo turno.")
     elif a.hp <= 0:
         match.status = MatchStatus.PLAYER_B_WINS
+        match.end_reason = "ko"
         match.log.append(f"{b.name} gana la partida.")
     elif b.hp <= 0:
         match.status = MatchStatus.PLAYER_A_WINS
+        match.end_reason = "ko"
         match.log.append(f"{a.name} gana la partida.")
+    elif a_idle and b_idle:
+        match.status = MatchStatus.DRAW
+        match.end_reason = "inactivity"
+        match.log.append(
+            f"⛔ Empate por inactividad: ambos jugadores llevan {INACTIVITY_LIMIT} turnos seguidos sin jugar."
+        )
+    elif a_idle:
+        match.status = MatchStatus.PLAYER_B_WINS
+        match.end_reason = "inactivity"
+        match.log.append(
+            f"⛔ {a.name} pierde por inactividad ({INACTIVITY_LIMIT} turnos seguidos sin jugar). "
+            f"{b.name} gana la partida."
+        )
+    elif b_idle:
+        match.status = MatchStatus.PLAYER_A_WINS
+        match.end_reason = "inactivity"
+        match.log.append(
+            f"⛔ {b.name} pierde por inactividad ({INACTIVITY_LIMIT} turnos seguidos sin jugar). "
+            f"{a.name} gana la partida."
+        )
     else:
         match.turn_number += 1
         match.log.append(f"--- Turno {match.turn_number} ---")
@@ -329,7 +434,7 @@ def end_turn(match: MatchState) -> MatchState:
 
 
 def auto_skip_turn(match: MatchState, player: str) -> None:
-    """El temporizador de 20s expiró sin acción: no se stagea nada extra para
+    """El temporizador de turno (TURN_TIMER_SECONDS) expiró sin acción: no se stagea nada extra para
     ese jugador (sus cartas no jugadas se descartan igualmente en
     end_turn)."""
     match.log.append(f"{_get_player(match, player).name} no actuó a tiempo: turno pasa automáticamente.")
@@ -368,11 +473,14 @@ def get_match_state(match: MatchState) -> dict:
             "discard_count": len(p.discard),
             "zones_damaged": sorted(z.value for z in p.zones_damaged),
             "tripartite_claimed": p.tripartite_claimed,
+            "inactive_turns": p.inactive_turns,
         }
 
     return {
         "turn_number": match.turn_number,
         "status": match.status.value,
+        "end_reason": match.end_reason,
+        "inactivity_limit": INACTIVITY_LIMIT,
         "player_a": player_snapshot(match.player_a),
         "player_b": player_snapshot(match.player_b),
         "log": list(match.log),
