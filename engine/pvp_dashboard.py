@@ -391,7 +391,8 @@ TUTORIAL_STEPS = [
         "text": (
             "Tú y el rival empezáis con la misma vida (depende de vuestra rareza de NFT — "
             f"aquí usamos 50 HP de ejemplo) y {HAND_SIZE} cartas en la mano. Tienes "
-            f"{MAX_ENERGY} de energía como máximo: cada turno puedes gastarla jugando varias cartas, "
+            f"{MAX_ENERGY} de energía (el máximo): cada carta que juegas resta su coste y cada turno "
+            f"recuperas +{ENERGY_PER_TURN}. Puedes jugar varias cartas a la vez, "
             "eligiendo en qué **zona** (Cabeza, Tronco o Piernas) actúa cada una."
         ),
         "hp_a": 50, "hp_b": 50,
@@ -516,10 +517,10 @@ def render_tutorial(catalog_dicts: list[dict]) -> None:
         with c2:
             st.markdown("### ⚡ Energía por turno")
             st.markdown(
-                f"Empiezas con **{STARTING_ENERGY} de energía** y recuperas **+{ENERGY_PER_TURN} cada turno**, "
-                f"pero la energía **nunca supera {MAX_ENERGY}**. Puedes gastar hasta "
-                f"{MAX_ENERGY_SPEND_PER_TURN} por turno: por ejemplo una carta de coste 2 y otra de coste 1, "
-                f"o tres de coste 1 (una por zona)."
+                f"Empiezas con **{STARTING_ENERGY} de energía**. Cada carta que juegas **resta su coste** "
+                f"de la barra. Al empezar el turno siguiente recuperas **+{ENERGY_PER_TURN}** sobre lo que te "
+                f"quedó, sin pasar nunca de **{MAX_ENERGY}**. Ejemplo: gastas 3 → empiezas el siguiente con 1; "
+                f"gastas 1 de 3 → vuelves a 3. Ahorrar energía un turno te deja jugar más fuerte el siguiente."
             )
         with c3:
             st.markdown("### 🂠 El mazo")
@@ -3241,10 +3242,13 @@ def render_arena(state: dict) -> None:
 
     def hp_bar(p: dict, align: str, player_key: str) -> str:
         pct = max(0.0, min(1.0, p["hp"] / p["max_hp"])) * 100
-        energy_cap = min(MAX_ENERGY_SPEND_PER_TURN, p["energy"])
-        energy_left = max(0, energy_cap - p["energy_spent_this_turn"])
-        energy_pct = (energy_left / energy_cap * 100) if energy_cap > 0 else 0.0
-        segs = "<span></span>" * max(1, energy_cap)
+        # Barra siempre sobre el tope (3): se vacía según lo que gastas este
+        # turno y arranca el siguiente con lo que quedó +1 (ver end_turn).
+        energy_cap = MAX_ENERGY
+        energy_left = max(0, min(MAX_ENERGY_SPEND_PER_TURN, p["energy"]) - p["energy_spent_this_turn"])
+        energy_pct = energy_left / energy_cap * 100
+        energy_next = min(MAX_ENERGY, max(0, p["energy"] - p["energy_spent_this_turn"]) + ENERGY_PER_TURN)
+        segs = "<span></span>" * energy_cap
         empty_cls = " energy-empty" if energy_left <= 0 else ""
         spent = energy_fx.get(player_key, 0)
         hp_delta = hp_fx.get(player_key, 0)
@@ -3279,7 +3283,8 @@ def render_arena(state: dict) -> None:
             f"<div class='arena-energy-fill' style='width:{energy_pct:.1f}%'></div>"
             f"<div class='arena-energy-segs'>{segs}</div>"
             f"<span class='arena-energy-text'>⚡ {energy_left}/{energy_cap}</span></div>"
-            f"<div class='arena-energy-pool' title='Energía total acumulada'>🔋 {p['energy']}</div>"
+            f"<div class='arena-energy-pool' title='Energía con la que empezarás el próximo turno "
+            f"(lo que te quede +{ENERGY_PER_TURN}, máximo {MAX_ENERGY})'>🔋 {energy_next}</div>"
             f"</div>"
             f"{float_html}"
             f"</div>"
@@ -3569,7 +3574,7 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
     sentido con una única mano (Vs. Bot); en Hotseat, con 2 manos a la vez,
     se queda con el grid de siempre."""
     p = state[f"player_{player_key}"]
-    remaining_energy = min(MAX_ENERGY_SPEND_PER_TURN, p["energy"]) - p["energy_spent_this_turn"]
+    remaining_energy = max(0, min(MAX_ENERGY_SPEND_PER_TURN, p["energy"]) - p["energy_spent_this_turn"])
     energy_css_class = "energy-low" if remaining_energy <= 0 else ""
     st.markdown(
         f"**Mano de {label}** · <span class='energy-display {energy_css_class}'>"

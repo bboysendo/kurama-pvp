@@ -205,8 +205,38 @@ for _ in range(6):
     play_card(m, "b", "b_e", Zone.TORSO)
     end_turn(m)
     assert m.player_a.energy <= MAX_ENERGY and m.player_b.energy <= MAX_ENERGY, (m.player_a.energy, m.player_b.energy)
-assert m.player_a.energy == MAX_ENERGY
 print("energy cap 3 OK, energy =", m.player_a.energy)
+
+# --- Energía: lo gastado se descuenta y se recupera +1 por turno (máx. 3) ---
+deckA = [mk("e1", 1, 0), mk("e2", 0, 1), mk("e3", 2, 1), mk("e4", 1, 1)] * 4
+deckB = [mk("f1", 0, 0)] * 16
+m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=30)
+
+def end_turn_no_idle(m):
+    # este test solo mira la energía: se neutraliza la regla de inactividad
+    m.player_a.inactive_turns = m.player_b.inactive_turns = 0
+    end_turn(m)
+
+m.player_a.hand = [mk("c2", 2, 1), mk("c1", 1, 0), mk("c1b", 0, 1)]
+play_card(m, "a", "c2", Zone.HEAD)      # coste 2
+play_card(m, "a", "c1", Zone.TORSO)     # coste 1 -> gastados 3 de 3
+end_turn_no_idle(m)
+assert m.player_a.energy == 1, m.player_a.energy   # 3 - 3 + 1
+assert m.player_b.energy == 3, m.player_b.energy   # no gastó: sigue en el tope
+m.player_a.hand = [mk("d2", 2, 1), mk("d1", 1, 0), mk("d0", 0, 0)]
+try:
+    play_card(m, "a", "d2", Zone.HEAD)  # coste 2 con solo 1 de energía
+    raise AssertionError("debía faltar energía")
+except EngineError:
+    pass
+play_card(m, "a", "d1", Zone.HEAD)      # coste 1 -> 0
+end_turn_no_idle(m)
+assert m.player_a.energy == 1, m.player_a.energy   # 1 - 1 + 1
+end_turn_no_idle(m)                                        # no juega nada
+assert m.player_a.energy == 2, m.player_a.energy
+end_turn_no_idle(m); end_turn_no_idle(m)
+assert m.player_a.energy == 3, m.player_a.energy   # nunca pasa de 3
+print("energy spend/regen OK")
 
 # --- Robo de Vida: cura al atacante el daño hecho en su zona (hasta heal_amount) ---
 deckA = [mk("a_vamp", 2, 0, ability=Ability.LIFESTEAL, heal=3)] * 15

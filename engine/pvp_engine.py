@@ -32,9 +32,11 @@ Reglas modeladas (ver PVP_Rules/PVP KURAMARUN....md para el texto original):
     * Combo Simultáneo (COMBO_STRIKE): si ese MISMO turno el jugador daña 2
       o 3 zonas distintas del rival, suma SIMULTANEOUS_COMBO_BONUS[2|3] de
       daño extra (una vez por turno aunque juegue varias).
-- Energía: empieza en STARTING_ENERGY, +1 por turno, y el acumulador NUNCA
-  supera MAX_ENERGY (3). El gasto de un mismo turno tampoco puede superar
-  MAX_ENERGY_SPEND_PER_TURN (sección 2.2).
+- Energía: empieza en STARTING_ENERGY (3). Jugar cartas DESCUENTA su coste
+  de la energía disponible; al cerrar el turno se resta lo gastado y se
+  recupera +ENERGY_PER_TURN, sin superar nunca MAX_ENERGY (3). Ej.: 3 ->
+  gastas 3 -> 0 + 1 = 1 al turno siguiente; gastas 1 -> 0 + 1 = 1; pasas
+  sin gastar -> 2; y así hasta volver a 3.
 - Mano: se renueva por completo cada turno (se descartan las cartas no
   jugadas y se roban HAND_SIZE nuevas) — el mazo de descarte se reباraja
   automáticamente en cuanto el mazo de robo se queda sin cartas.
@@ -394,12 +396,15 @@ def end_turn(match: MatchState) -> MatchState:
                 )
 
     # Fin de turno: las cartas jugadas y las que quedaron en mano van a descarte.
+    # Energía: se DESCUENTA lo gastado este turno y luego se recupera
+    # +ENERGY_PER_TURN, sin pasar nunca de MAX_ENERGY (3).
     for player in (a, b):
+        spent = player.energy_spent_this_turn
+        player.energy = min(MAX_ENERGY, max(0, player.energy - spent) + ENERGY_PER_TURN)
         player.discard.extend(sp.card for sp in player.staged_plays)
         player.discard.extend(player.hand)
         player.hand = []
         player.staged_plays = []
-        player.energy = min(MAX_ENERGY, player.energy + ENERGY_PER_TURN)
         _draw(player, match.rng)
 
     a_idle = a.inactive_turns >= INACTIVITY_LIMIT
