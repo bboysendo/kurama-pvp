@@ -400,13 +400,7 @@ def end_turn(match: MatchState) -> MatchState:
     # +ENERGY_PER_TURN, sin pasar nunca de MAX_ENERGY (3).
     for player in (a, b):
         spent = player.energy_spent_this_turn
-        before = player.energy
-        left = max(0, before - spent)
-        player.energy = min(MAX_ENERGY, left + ENERGY_PER_TURN)
-        match.log.append(
-            f"⚡ {player.name}: gasta {spent} de energía ({before} → {left}) "
-            f"y recarga +{player.energy - left} → {player.energy}/{MAX_ENERGY}."
-        )
+        player.energy = min(MAX_ENERGY, max(0, player.energy - spent) + ENERGY_PER_TURN)
         player.discard.extend(sp.card for sp in player.staged_plays)
         player.discard.extend(player.hand)
         player.hand = []

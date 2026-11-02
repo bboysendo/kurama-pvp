@@ -825,7 +825,7 @@ def _reset_tactical_selection(player_key: str | None = None) -> None:
         st.session_state[f"zones_{pk}"] = {}
 
 
-_FX_KEYS = ("energy_fx", "hp_fx", "inact_fx")
+_FX_KEYS = ("energy_fx", "regen_fx", "hp_fx")
 _FX_TTL_SECONDS = 2.5
 
 
@@ -871,7 +871,12 @@ def _end_turn_with_fx(match) -> None:
     antes vs. después) para que render_arena lo muestre igual que el gasto
     de energía. Una curación neta (+N) también se muestra, en verde."""
     hp_before = {"a": match.player_a.hp, "b": match.player_b.hp}
-    inact_before = {"a": match.player_a.inactive_turns, "b": match.player_b.inactive_turns}
+    # Energía que quedará tras pagar lo jugado: lo que se sume por encima es
+    # la recarga del nuevo turno (burbuja "+N ⚡ ✨").
+    energy_left = {
+        "a": max(0, match.player_a.energy - match.player_a.energy_spent_this_turn),
+        "b": max(0, match.player_b.energy - match.player_b.energy_spent_this_turn),
+    }
     # Zonas del combo ANTES de resolver, para marcar la "NUEVA" de la ronda.
     turn_resolved = match.turn_number
     combo_before = {
@@ -891,11 +896,11 @@ def _end_turn_with_fx(match) -> None:
             delta = pl.hp - hp_before[pk]
             if delta:
                 fx[pk] = fx.get(pk, 0) + delta
-        # Aviso flotante de inactividad: solo cuando el contador SUBE.
-        ifx = st.session_state.setdefault("inact_fx", {})
+        rfx = st.session_state.setdefault("regen_fx", {})
         for pk, pl in (("a", match.player_a), ("b", match.player_b)):
-            if pl.inactive_turns > inact_before[pk]:
-                ifx[pk] = pl.inactive_turns
+            gain = pl.energy - energy_left[pk]
+            if gain > 0:
+                rfx[pk] = gain
 
 
 def _launch_match(
@@ -2554,7 +2559,8 @@ st.markdown(
         animation: energy-float 1.9s ease-out forwards;
     }
     .energy-float.hp-float { color: #ff4040; animation-delay: 0.15s; opacity: 0; }
-    .energy-float.hp-float.heal {
+    .energy-float.regen { animation-delay: 0.3s; opacity: 0; }
+    .energy-float.gain {
         color: #4dff7a; border-color: rgba(60, 255, 110, 0.85);
         box-shadow: 0 0 18px rgba(40, 255, 90, 0.5), 0 4px 12px rgba(0, 0, 0, 0.6);
         text-shadow: 0 0 6px rgba(0,0,0,0.95), 0 0 14px rgba(40,255,90,0.7), 0 2px 0 #00380e;
@@ -2586,11 +2592,6 @@ st.markdown(
         background: rgba(255, 40, 40, 0.88); border: 1px solid #ffb0b0;
         font-size: 0.72rem; font-weight: 800; line-height: 1.2; white-space: nowrap;
         animation: inact-pulse 0.9s ease-in-out infinite;
-    }
-    .energy-float.inact-float {
-        font-size: 1.35rem; color: #ffd54a; border-color: rgba(255, 200, 60, 0.9);
-        text-shadow: 0 0 6px rgba(0,0,0,0.95);
-        box-shadow: 0 0 18px rgba(255, 190, 40, 0.55), 0 4px 12px rgba(0, 0, 0, 0.6);
     }
     /* Levitación suave de los Maestros NFT (avatares en los marcos
        laterales): sube y baja en bucle, -8px en el punto medio del ciclo.
@@ -3257,7 +3258,7 @@ def render_arena(state: dict) -> None:
             st.session_state[_k] = {}
     energy_fx = st.session_state.get("energy_fx") or {}
     hp_fx = st.session_state.get("hp_fx") or {}
-    inact_fx = st.session_state.get("inact_fx") or {}
+    regen_fx = st.session_state.get("regen_fx") or {}
     inact_limit = state.get("inactivity_limit", 3)
     fx_nonce = st.session_state.get("energy_fx_nonce", 0)
 
@@ -3283,19 +3284,17 @@ def render_arena(state: dict) -> None:
         spent = energy_fx.get(player_key, 0)
         hp_delta = hp_fx.get(player_key, 0)
         floats = []
+        # Burbujas minimalistas: solo número + icono. Rojo con "-" si se
+        # pierde, verde con "+" y emoticono si se recupera.
+        regen = regen_fx.get(player_key, 0)
         if hp_delta < 0:
-            floats.append(f"<div class='energy-float hp-float'>💥 −{-hp_delta}</div>")
+            floats.append(f"<div class='energy-float hp-float'>-{-hp_delta} 🩸</div>")
         elif hp_delta > 0:
-            floats.append(f"<div class='energy-float hp-float heal'>💚 +{hp_delta}</div>")
+            floats.append(f"<div class='energy-float hp-float gain'>+{hp_delta} 🩸 💚</div>")
         if spent > 0:
-            floats.append(
-                f"<div class='energy-float'>−{spent}⚡ · +{ENERGY_PER_TURN} recarga → "
-                f"{p['energy']}/{MAX_ENERGY}</div>"
-            )
-        if inact_fx.get(player_key):
-            floats.append(
-                f"<div class='energy-float inact-float'>⚠️ INACTIVO {inact_fx[player_key]}/{inact_limit}</div>"
-            )
+            floats.append(f"<div class='energy-float'>-{spent} ⚡</div>")
+        if regen > 0:
+            floats.append(f"<div class='energy-float gain regen'>+{regen} ⚡ ✨</div>")
         idle = p.get("inactive_turns", 0)
         idle_pill = (
             f" <span class='arena-inactive{' last' if idle >= inact_limit - 1 else ''}' "
