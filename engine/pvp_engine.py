@@ -156,14 +156,46 @@ def build_deck_from_pool(pool: list[Card], size: int = DECK_SIZE, rng: Optional[
     return deck
 
 
+def _conflicts_with_hand(card: Card, hand: list[Card]) -> bool:
+    """Una mano nunca lleva dos cartas iguales: ni dos copias de la misma
+    carta (p.ej. dos copias de una especial) ni dos cartas con la misma
+    combinación ATK/DEF (p.ej. una especial 2/0 junto a la base 2/0)."""
+    return any(
+        c.catalog_id == card.catalog_id or (c.atk, c.defense) == (card.atk, card.defense)
+        for c in hand
+    )
+
+
 def _draw(player: PlayerState, rng: random.Random, n: int = HAND_SIZE) -> None:
+    """Roba hasta `n` cartas, todas distintas entre sí (ver
+    _conflicts_with_hand). Si la siguiente carta del mazo choca con la mano,
+    se coge la siguiente que no choque; las que choquen se quedan en el mazo
+    para turnos futuros. Si en el mazo no queda ninguna válida, se rebaraja
+    el descarte dentro del mazo; si aun así no hay ninguna, la mano se queda
+    más corta antes que repetir carta."""
     for _ in range(n):
         if not player.deck:
             if not player.discard:
                 return  # sin cartas en ningún sitio (mazo muy pequeño en pruebas)
             player.deck, player.discard = player.discard, []
             rng.shuffle(player.deck)
-        player.hand.append(player.deck.pop())
+        idx = next(
+            (i for i in range(len(player.deck) - 1, -1, -1)
+             if not _conflicts_with_hand(player.deck[i], player.hand)),
+            None,
+        )
+        if idx is None and player.discard:
+            player.deck.extend(player.discard)
+            player.discard = []
+            rng.shuffle(player.deck)
+            idx = next(
+                (i for i in range(len(player.deck) - 1, -1, -1)
+                 if not _conflicts_with_hand(player.deck[i], player.hand)),
+                None,
+            )
+        if idx is None:
+            return
+        player.hand.append(player.deck.pop(idx))
 
 
 def start_match(

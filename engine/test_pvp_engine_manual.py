@@ -281,6 +281,27 @@ for seed in range(200):
     assert len(specials) == 3 and all(c.ability in (Ability.LIFESTEAL, Ability.COMBO_STRIKE) for c in specials)
 print(f"deck building OK ({len(REQUIRED_BASE_COMBOS)} base únicas + especiales repetibles)")
 
+# Mano: nunca dos cartas iguales ni dos con la misma combinación ATK/DEF,
+# durante toda la partida (incluidos rebarajados), aunque el mazo traiga
+# copias repetidas de una especial.
+from pvp_engine import bot_choose_plays as _bot
+
+for seed in range(300):
+    rng = _random.Random(seed)
+    m = start_match(build_deck_from_pool(catalog, rng=rng), build_deck_from_pool(catalog, rng=rng),
+                    hp_a=999, hp_b=999, seed=seed)
+    for _turn in range(12):
+        for pl in (m.player_a, m.player_b):
+            combos = [(c.atk, c.defense) for c in pl.hand]
+            bases = [c.catalog_id for c in pl.hand]
+            assert len(pl.hand) == 3, (seed, _turn, [c.id for c in pl.hand])
+            assert len(set(combos)) == 3 and len(set(bases)) == 3, (seed, _turn, [c.id for c in pl.hand])
+        _bot(m, "a"); _bot(m, "b")
+        end_turn(m)
+        if m.status != MatchStatus.ONGOING:
+            break
+print("hand uniqueness OK (300 partidas x 12 turnos)")
+
 # Dos copias de la misma especial en la mano se juegan por separado.
 sp = next(c for c in catalog if c.category == CardCategory.SPECIAL)
 deck = build_deck_from_pool([sp], size=4, rng=_random.Random(1))
