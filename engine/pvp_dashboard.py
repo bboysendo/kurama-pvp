@@ -3588,6 +3588,55 @@ def _describe_tactical_result(attacker, defender, atk_zone: Zone) -> str:
     return f"🎯 Atacaste {atk_label} sin encontrar defensa → ¡Impacto directo!"
 
 
+def _confirm_turn(player_key: str, ready_cards: list[dict], auto_resolve: bool) -> None:
+    """Acción del botón PASAR TURNO. Nunca puede dejar el turno atascado:
+    1) juega una a una las cartas listas — una carta que no necesita zonas
+       (p.ej. la 0/0 Fox #27 · Feint) recibe Cabeza por defecto (su efecto
+       es 0, no cambia nada); si una carta falla por cualquier motivo, se
+       omite con un aviso y se siguen jugando las demás;
+    2) en Vs. Bot, el Bot responde y el turno SE RESUELVE SIEMPRE, aunque
+       algo anterior haya fallado;
+    3) la selección se limpia pase lo que pase."""
+    attack_zones: list[Zone] = []
+    skipped: list[str] = []
+    try:
+        for card_dict in ready_cards:
+            zc = _card_zones(player_key, card_dict["id"])
+            atk_zone_final = zc["atk"] or zc["def"] or Zone.HEAD.value
+            def_zone_final = zc["def"] or zc["atk"] or Zone.HEAD.value
+            try:
+                play_card(
+                    match, player_key, card_dict["id"], Zone(atk_zone_final),
+                    defense_zone=Zone(def_zone_final),
+                )
+            except Exception as e:  # EngineError, zona inválida, carta ya no en mano...
+                print(f"[CONFIRM] {card_dict['id']} omitida: {e!r}")
+                skipped.append(f"{card_dict['name']}: {e}")
+                continue
+            _flash_energy_spend(player_key, card_dict["cost_energy"])
+            if _card_zone_requirements(card_dict)[0]:
+                attack_zones.append(Zone(atk_zone_final))
+        if auto_resolve and match.status == MatchStatus.ONGOING:
+            try:
+                bot_choose_plays(match, "b")
+                _flash_energy_spend("b", match.player_b.energy_spent_this_turn)
+            except Exception as e:
+                print(f"[CONFIRM] bot_choose_plays fallo: {e!r}")
+            attacker = match.player_a if player_key == "a" else match.player_b
+            defender = match.player_b if player_key == "a" else match.player_a
+            for atk_zone in attack_zones:
+                match.log.append(_describe_tactical_result(attacker, defender, atk_zone))
+            _end_turn_with_fx(match)
+            st.session_state.turn_start_time = time.time()
+    except Exception as e:
+        print(f"[CONFIRM] fallo al pasar turno: {e!r}")
+        skipped.append(str(e))
+    finally:
+        _reset_tactical_selection(player_key)
+    if skipped:
+        st.session_state["confirm_warning"] = "No se pudo jugar: " + " · ".join(skipped)
+
+
 def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None:
     """Mano de 3 cartas: solo imagen, coste y tooltip de efecto al pasar el
     cursor (ℹ️ Info) — clicar una carta la SELECCIONA (no la juega al
@@ -3617,6 +3666,9 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
         f"<span class='deck-discard-count'>🂠 Mazo: {p['deck_remaining']} · 🗑️ Descarte: {p['discard_count']}</span>",
         unsafe_allow_html=True,
     )
+    _warn = st.session_state.pop("confirm_warning", None)
+    if _warn:
+        st.warning(_warn)
     if not p["hand"]:
         st.caption("Sin cartas en mano.")
         return
@@ -3759,36 +3811,7 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
             confirm_label, key=f"confirm_turn_{player_key}",
             type="primary", width="stretch",
         ):
-            try:
-                attack_zones: list[Zone] = []
-                for card_dict in ready_cards:
-                    zc = _card_zones(player_key, card_dict["id"])
-                    # La carta puede no necesitar una de las 2 zonas (p.ej. 0
-                    # ATK no ataca nada): play_card exige igualmente un Zone
-                    # para cada una, así que la que sobra se rellena con la
-                    # otra elegida (su efecto es 0, no cambia el resultado).
-                    atk_zone_final = zc["atk"] or zc["def"]
-                    def_zone_final = zc["def"] or zc["atk"]
-                    play_card(
-                        match, player_key, card_dict["id"], Zone(atk_zone_final),
-                        defense_zone=Zone(def_zone_final),
-                    )
-                    _flash_energy_spend(player_key, card_dict["cost_energy"])
-                    if _card_zone_requirements(card_dict)[0]:
-                        attack_zones.append(Zone(atk_zone_final))
-                if auto_resolve:
-                    bot_choose_plays(match, "b")
-                    _flash_energy_spend("b", match.player_b.energy_spent_this_turn)
-                    attacker = match.player_a if player_key == "a" else match.player_b
-                    defender = match.player_b if player_key == "a" else match.player_a
-                    for atk_zone in attack_zones:
-                        match.log.append(_describe_tactical_result(attacker, defender, atk_zone))
-                    _end_turn_with_fx(match)
-                    st.session_state.turn_start_time = time.time()
-            except EngineError as e:
-                st.error(str(e))
-            else:
-                _reset_tactical_selection(player_key)
+            _confirm_turn(player_key, ready_cards, auto_resolve)
             st.rerun()
 
         if p["staged_plays"]:
