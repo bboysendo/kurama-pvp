@@ -2562,6 +2562,18 @@ st.markdown(
     }
     .energy-float.hp-float { color: #ff4040; animation-delay: 0.15s; opacity: 0; }
     .energy-float.regen { animation-delay: 0.3s; opacity: 0; }
+    /* Popup "Carta deseleccionada" (st.dialog, ver _show_zone_dialog). */
+    .zone-dialog-lead { font-size: 1.15rem; font-weight: 700; margin-bottom: 0.6rem; }
+    .zone-dialog-missing {
+        display: inline-block; padding: 4px 12px; border-radius: 999px;
+        background: rgba(255, 60, 60, 0.15); border: 1px solid rgba(255, 80, 80, 0.7);
+        color: #ff8a8a; font-weight: 800;
+    }
+    .zone-dialog-help {
+        margin: 0.8rem 0 0.6rem; padding: 10px 14px; border-radius: 12px;
+        background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.12);
+        line-height: 1.7;
+    }
     .energy-float.gain {
         color: #4dff7a; border-color: rgba(60, 255, 110, 0.85);
         box-shadow: 0 0 18px rgba(40, 255, 90, 0.5), 0 4px 12px rgba(0, 0, 0, 0.6);
@@ -3597,6 +3609,41 @@ def _describe_tactical_result(attacker, defender, atk_zone: Zone) -> str:
     return f"🎯 Atacaste {atk_label} sin encontrar defensa → ¡Impacto directo!"
 
 
+@st.dialog("⚠️ Carta deseleccionada", width="medium")
+def _show_zone_dialog(cards: list[dict]) -> None:
+    """Popup modal centrado: explica que la(s) carta(s) se quitaron de la
+    selección por no tener asignadas sus zonas, y que el turno NO ha pasado."""
+    plural = len(cards) > 1
+    st.markdown(
+        f"<div class='zone-dialog-lead'>No has elegido las zonas que "
+        f"{'necesitan estas cartas' if plural else 'necesita esta carta'}, así que "
+        f"{'se han deseleccionado' if plural else 'se ha deseleccionado'} automáticamente.</div>",
+        unsafe_allow_html=True,
+    )
+    for c in cards:
+        img_col, txt_col = st.columns([1, 2.2], vertical_alignment="center")
+        with img_col:
+            if c.get("image"):
+                st.image(c["image"], width="stretch")
+        with txt_col:
+            st.markdown(f"**{html.escape(c['name'])}**")
+            st.markdown(
+                f"<div class='zone-dialog-missing'>{html.escape(c['missing']).capitalize()}</div>",
+                unsafe_allow_html=True,
+            )
+    st.markdown(
+        "<div class='zone-dialog-help'>"
+        "✅ <b>El turno NO ha pasado</b> y no pierdes nada: replantea tu jugada con libertad.<br>"
+        "🔴 Elige la carta otra vez y marca su <b>zona de ataque</b> (puntos rojos, en el rival)"
+        " y/o 🟢 su <b>zona de defensa</b> (puntos verdes, en tu lado).<br>"
+        "⏭️ O pulsa <b>Pasar Turno</b> para ceder el turno sin jugarla."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    if st.button("Entendido, replantear jugada", type="primary", width="stretch", key="zone_dialog_ok"):
+        st.rerun()
+
+
 def _missing_zones_text(player_key: str, card_dict: dict) -> str:
     needs_atk, needs_def = _card_zone_requirements(card_dict)
     zones = _card_zones(player_key, card_dict["id"])
@@ -3691,6 +3738,9 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
     _warn = st.session_state.pop("confirm_warning", None)
     if _warn:
         st.warning(_warn)
+    _zone_cards = st.session_state.pop("zone_dialog_cards", None)
+    if _zone_cards:
+        _show_zone_dialog(_zone_cards)
     if not p["hand"]:
         st.caption("Sin cartas en mano.")
         return
@@ -3838,16 +3888,19 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
             type="primary", width="stretch",
         ):
             if incomplete_cards:
-                # No se juega a ciegas ni se penaliza: se avisa y se quitan de
-                # la selección las cartas sin zonas; el turno NO pasa todavía,
-                # así puedes asignarlas o pulsar de nuevo para pasar sin ellas.
+                # No se juega a ciegas ni se penaliza: se quitan de la
+                # selección las cartas sin zonas y se abre un popup modal que
+                # lo explica; el turno NO pasa todavía.
+                st.session_state["zone_dialog_cards"] = [
+                    {
+                        "name": c["name"],
+                        "missing": _missing_zones_text(player_key, c),
+                        "image": str(card_image_path(c) or ""),
+                    }
+                    for c in incomplete_cards
+                ]
                 for c in incomplete_cards:
                     _deselect_card(player_key, c["id"])
-                st.session_state["confirm_warning"] = (
-                    "Quitada de tu selección por no tener zona: "
-                    + ", ".join(c["name"] for c in incomplete_cards)
-                    + ". Elige sus zonas o pulsa Pasar Turno de nuevo."
-                )
             else:
                 _confirm_turn(player_key, ready_cards, auto_resolve)
             st.rerun()
