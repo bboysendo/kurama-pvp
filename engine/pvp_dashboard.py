@@ -21,6 +21,7 @@ BSC real si el equipo quiere probarlo con web3 instalado.
 from __future__ import annotations
 
 import base64
+import hashlib
 import html
 import json
 import random
@@ -99,18 +100,38 @@ PANEL_OPTIONS = [
 ]
 
 
+def _file_fingerprint(path: Path) -> str:
+    """Hash del CONTENIDO de un archivo, para usarlo como clave de caché.
+    st.cache_data solo invalida si cambian el código de la función o sus
+    argumentos — no si cambia el archivo que lee. Streamlit Cloud actualiza
+    el código tras un git push SIN reiniciar el proceso, así que sin esto
+    seguía sirviendo desde memoria el cards_database.json antiguo."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 @st.cache_data
-def load_catalog() -> list[dict]:
-    with open(DATABASE_PATH, encoding="utf-8") as f:
+def _load_catalog_cached(_path_str: str, fingerprint: str) -> list[dict]:
+    with open(_path_str, encoding="utf-8") as f:
         return json.load(f)
 
 
+def load_catalog() -> list[dict]:
+    return _load_catalog_cached(str(DATABASE_PATH), _file_fingerprint(DATABASE_PATH))
+
+
 @st.cache_data
+def _image_b64_cached(path_str: str, mtime_ns: int, size: int) -> str:
+    return base64.b64encode(Path(path_str).read_bytes()).decode("ascii")
+
+
 def _image_b64(path_str: str) -> str:
     """Imagen como data URI — para incrustarla en CSS/HTML plano (arena de
     combate) donde no vale un st.image (necesitamos <img>/background-image
-    dentro de un único bloque de markdown, no un widget aparte)."""
-    return base64.b64encode(Path(path_str).read_bytes()).decode("ascii")
+    dentro de un único bloque de markdown, no un widget aparte). La clave de
+    caché incluye fecha y tamaño del archivo para no servir una imagen vieja
+    si se sustituye con el mismo nombre."""
+    stat = Path(path_str).stat()
+    return _image_b64_cached(path_str, stat.st_mtime_ns, stat.st_size)
 
 
 @st.cache_data
