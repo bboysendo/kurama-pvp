@@ -3245,9 +3245,18 @@ def render_arena(state: dict) -> None:
         # Barra siempre sobre el tope (3): se vacía según lo que gastas este
         # turno y arranca el siguiente con lo que quedó +1 (ver end_turn).
         energy_cap = MAX_ENERGY
-        energy_left = max(0, min(MAX_ENERGY_SPEND_PER_TURN, p["energy"]) - p["energy_spent_this_turn"])
+        # Gasto EN TIEMPO REAL: lo ya jugado (staged) + las cartas que el
+        # jugador tiene seleccionadas ahora mismo (aún sin confirmar). Antes
+        # solo contaba lo jugado, y en Vs. Bot jugar y cerrar el turno es un
+        # único clic, así que la barra nunca se veía bajar.
+        committed = (
+            sum(c["cost_energy"] for c in _selected_cards(player_key))
+            if state["status"] == MatchStatus.ONGOING.value else 0
+        )
+        used = p["energy_spent_this_turn"] + committed
+        energy_left = max(0, min(MAX_ENERGY_SPEND_PER_TURN, p["energy"]) - used)
         energy_pct = energy_left / energy_cap * 100
-        energy_next = min(MAX_ENERGY, max(0, p["energy"] - p["energy_spent_this_turn"]) + ENERGY_PER_TURN)
+        energy_next = min(MAX_ENERGY, max(0, p["energy"] - used) + ENERGY_PER_TURN)
         segs = "<span></span>" * energy_cap
         empty_cls = " energy-empty" if energy_left <= 0 else ""
         spent = energy_fx.get(player_key, 0)
@@ -3258,7 +3267,10 @@ def render_arena(state: dict) -> None:
         elif hp_delta > 0:
             floats.append(f"<div class='energy-float hp-float heal'>💚 +{hp_delta}</div>")
         if spent > 0:
-            floats.append(f"<div class='energy-float'>−{spent}⚡</div>")
+            floats.append(
+                f"<div class='energy-float'>−{spent}⚡ · +{ENERGY_PER_TURN} recarga → "
+                f"{p['energy']}/{MAX_ENERGY}</div>"
+            )
         if inact_fx.get(player_key):
             floats.append(
                 f"<div class='energy-float inact-float'>⚠️ INACTIVO {inact_fx[player_key]}/{inact_limit}</div>"
@@ -3576,9 +3588,12 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
     p = state[f"player_{player_key}"]
     remaining_energy = max(0, min(MAX_ENERGY_SPEND_PER_TURN, p["energy"]) - p["energy_spent_this_turn"])
     energy_css_class = "energy-low" if remaining_energy <= 0 else ""
+    _committed_now = sum(c["cost_energy"] for c in _selected_cards(player_key))
+    _free_now = max(0, remaining_energy - _committed_now)
+    energy_css_class = "energy-low" if _free_now <= 0 else ""
     st.markdown(
         f"**Mano de {label}** · <span class='energy-display {energy_css_class}'>"
-        f"⚡ {remaining_energy} disponible{'s' if remaining_energy != 1 else ''}</span> · "
+        f"⚡ {_free_now}/{MAX_ENERGY} disponible{'s' if _free_now != 1 else ''}</span> · "
         f"<span class='deck-discard-count'>🂠 Mazo: {p['deck_remaining']} · 🗑️ Descarte: {p['discard_count']}</span>",
         unsafe_allow_html=True,
     )
