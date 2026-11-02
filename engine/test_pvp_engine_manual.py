@@ -165,34 +165,62 @@ assert s["player_b"]["hp"] == 48, s["player_b"]["hp"]  # A's 2 atk on HEAD, B un
 assert s["player_a"]["hp"] == 50, s["player_a"]["hp"]  # B's 2 atk on LEGS fully blocked by A's 3 def there
 print("decoupled attack/defense zone OK, A hp =", s["player_a"]["hp"], "B hp =", s["player_b"]["hp"])
 
-# --- Inactividad: 3 turnos SEGUIDOS sin jugar ninguna carta => derrota ---
+# --- Inactividad: SOLO cuando se agota el tiempo sin actuar 3 turnos seguidos ---
 deckA = [mk("a_act", 0, 1)] * 15
 deckB = [mk("b_idle", 0, 1)] * 15
 m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=12)
 for _ in range(3):
-    play_card(m, "a", "a_act", Zone.HEAD)  # A juega; B no hace nada
-    end_turn(m)
+    play_card(m, "a", "a_act", Zone.HEAD)  # A juega; a B se le agota el tiempo
+    end_turn(m, timed_out=True)
 s = get_match_state(m)
 assert s["status"] == "player_a_wins" and s["end_reason"] == "inactivity", (s["status"], s["end_reason"])
-print("inactivity loss OK, status =", s["status"])
+print("inactivity loss (timeouts) OK, status =", s["status"])
 
 # Jugar cualquier carta reinicia el contador de inactividad.
 m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=13)
 for _ in range(2):
     play_card(m, "a", "a_act", Zone.HEAD)
-    end_turn(m)
+    end_turn(m, timed_out=True)
+assert m.player_b.inactive_turns == 2
 play_card(m, "a", "a_act", Zone.HEAD)
 play_card(m, "b", "b_idle", Zone.HEAD)
-end_turn(m)
+end_turn(m, timed_out=True)
 assert m.player_b.inactive_turns == 0 and m.status == MatchStatus.ONGOING
-print("inactivity counter reset OK")
+print("inactivity counter reset by playing OK")
 
-# Ambos inactivos => empate por inactividad.
+# Ambos agotan el tiempo 3 veces => empate por inactividad.
 m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=14)
 for _ in range(3):
-    end_turn(m)
+    end_turn(m, timed_out=True)
 assert m.status == MatchStatus.DRAW and m.end_reason == "inactivity"
 print("double inactivity draw OK")
+
+# PASAR TURNO voluntario NUNCA suma inactividad (aunque pueda pagar cartas),
+# y además reinicia el contador acumulado por tiempos agotados.
+from pvp_engine import pass_turn, register_activity
+m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=15)
+end_turn(m, timed_out=True); end_turn(m, timed_out=True)
+assert m.player_a.inactive_turns == 2 and m.player_b.inactive_turns == 2
+for _ in range(10):
+    pass_turn(m, "a"); pass_turn(m, "b")
+    end_turn(m, timed_out=True)
+    assert m.status == MatchStatus.ONGOING
+assert m.player_a.inactive_turns == 0 and m.player_b.inactive_turns == 0
+print("voluntary pass never counts as inactivity OK (10 pases seguidos)")
+
+# Interactuar (cartas elegidas) cuando se agota el tiempo tampoco es inactividad.
+m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=16)
+register_activity(m, "a")
+end_turn(m, timed_out=True)
+assert m.player_a.inactive_turns == 0 and m.player_b.inactive_turns == 1
+print("interaction before timeout is not inactivity OK")
+
+# Cerrar el turno sin timeout (p.ej. 'Resolver turno' en Hotseat) no penaliza.
+m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=17)
+for _ in range(5):
+    end_turn(m)
+assert m.player_a.inactive_turns == 0 and m.status == MatchStatus.ONGOING
+print("end_turn without timeout never penalizes OK")
 
 # --- Energía: el acumulador nunca supera MAX_ENERGY (3) ---
 assert MAX_ENERGY == 3
@@ -238,22 +266,15 @@ end_turn_no_idle(m); end_turn_no_idle(m)
 assert m.player_a.energy == 3, m.player_a.energy   # nunca pasa de 3
 print("energy spend/regen OK")
 
-# --- Pasar turno sin energía: recarga +1 y NO cuenta como inactividad ---
+# --- Pasar turno sin energía: recarga +1 y sin inactividad ---
 m = start_match([mk("p1", 1, 0)] * 16, [mk("q1", 1, 0)] * 16, hp_a=50, hp_b=50, seed=40)
 m.player_a.energy = 1
 m.player_a.hand = [mk("big1", 3, 0), mk("big2", 2, 1), mk("big3", 0, 3)]  # todas coste 2
-end_turn(m)  # A pasa forzado; B también pasa pero SÍ podía pagar
+pass_turn(m, "a")
+end_turn(m, timed_out=True)
 assert m.player_a.energy == 2, m.player_a.energy
 assert m.player_a.inactive_turns == 0, m.player_a.inactive_turns
-assert m.player_b.inactive_turns == 1, m.player_b.inactive_turns
-print("forced pass OK: energía", m.player_a.energy, "inactividad", m.player_a.inactive_turns)
-
-# Pasar voluntariamente (pudiendo pagar) sí suma inactividad.
-m = start_match([mk("p1", 1, 0)] * 16, [mk("q1", 1, 0)] * 16, hp_a=50, hp_b=50, seed=41)
-play_card(m, "b", "q1", Zone.HEAD)
-end_turn(m)
-assert m.player_a.inactive_turns == 1 and m.player_a.energy == 3
-print("voluntary pass counts as inactivity OK")
+print("pass without energy OK: energía", m.player_a.energy)
 
 # --- Robo de Vida: cura al atacante el daño hecho en su zona (hasta heal_amount) ---
 deckA = [mk("a_vamp", 2, 0, ability=Ability.LIFESTEAL, heal=3)] * 15

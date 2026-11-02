@@ -80,7 +80,9 @@ from pvp_engine import (
     build_deck_from_pool,
     end_turn,
     get_match_state,
+    pass_turn,
     play_card,
+    register_activity,
     start_match,
 )
 
@@ -505,8 +507,8 @@ TUTORIAL_STEPS = [
         "zone": None,
         "text": (
             "Sigue así hasta dejar al rival a **0 HP**: ganas la partida. Si eres tú quien llega "
-            "antes a 0, pierdes. Y cuidado: si pasas **3 turnos seguidos sin jugar ninguna carta**, "
-            "pierdes por inactividad."
+            "antes a 0, pierdes. Pasar turno es una jugada válida (guardas energía), pero si se te "
+            "**agota el tiempo 3 turnos seguidos sin hacer nada**, pierdes por inactividad."
         ),
         "hp_a": 47,
         "hp_b": 45 - (2 + TRIPARTITE_COMBO_BONUS) - CRITICAL_COMBO_DAMAGE,
@@ -866,7 +868,7 @@ def _store_zone_report(match, turn_resolved: int, combo_before: dict) -> None:
     st.session_state["zone_report"] = report
 
 
-def _end_turn_with_fx(match) -> None:
+def _end_turn_with_fx(match, timed_out: bool = False) -> None:
     """end_turn() + encola el aviso de DAÑO recibido por cada jugador (HP
     antes vs. después) para que render_arena lo muestre igual que el gasto
     de energía. Una curación neta (+N) también se muestra, en verde."""
@@ -884,7 +886,7 @@ def _end_turn_with_fx(match) -> None:
         "b": sorted(z.value for z in match.player_b.zones_damaged),
     }
     try:
-        end_turn(match)
+        end_turn(match, timed_out=timed_out)
         try:
             _store_zone_report(match, turn_resolved, combo_before)
         except Exception as e:  # el informe es solo visual: nunca romper el turno
@@ -3033,8 +3035,14 @@ if match.status == MatchStatus.ONGOING:
     if elapsed >= TURN_TIMER_SECONDS:
         print(f"[TIMEOUT] Ronda {match.turn_number}: temporizador expirado, resolviendo turno.")
         try:
+            # Tener cartas elegidas es interactuar: ese jugador no suma
+            # inactividad aunque no llegara a pulsar PASAR TURNO.
+            for _pk in ("a", "b"):
+                if st.session_state.get(f"sel_cards_{_pk}"):
+                    register_activity(match, _pk)
             if st.session_state.vs_bot:
-                auto_skip_turn(match, "a")
+                if not match.player_a.acted_this_turn:
+                    auto_skip_turn(match, "a")
                 try:
                     bot_choose_plays(match, "b")
                     _flash_energy_spend("b", match.player_b.energy_spent_this_turn)
@@ -3044,7 +3052,7 @@ if match.status == MatchStatus.ONGOING:
                     # no la partida queda congelada en esta misma ronda.
                     print(f"[TIMEOUT] bot_choose_plays fallo: {e!r}")
                     match.log.append(f"El Bot no pudo jugar cartas este turno ({e}).")
-            _end_turn_with_fx(match)
+            _end_turn_with_fx(match, timed_out=True)
         except EngineError as e:
             print(f"[TIMEOUT] end_turn fallo: {e!r}")
             match.log.append(f"Error al resolver el turno automáticamente: {e}")
@@ -3298,7 +3306,8 @@ def render_arena(state: dict) -> None:
         idle = p.get("inactive_turns", 0)
         idle_pill = (
             f" <span class='arena-inactive{' last' if idle >= inact_limit - 1 else ''}' "
-            f"title='Turnos seguidos sin jugar. Al llegar a {inact_limit}, derrota por inactividad.'>"
+            f"title='Turnos seguidos en que se agotó el tiempo sin actuar. Al llegar a {inact_limit}, "
+            f"derrota por inactividad. Pasar turno no cuenta.'>"
             f"⚠️ Inactivo {idle}/{inact_limit}</span>"
             if idle > 0 and state["status"] == MatchStatus.ONGOING.value else ""
         )
@@ -3385,7 +3394,7 @@ def render_arena(state: dict) -> None:
 
     my_idle = pa.get("inactive_turns", 0)
     last_warning_html = (
-        "<div class='arena-last-warning'>⚠️ ¡Juega una carta o<br>perderás por inactividad!</div>"
+        "<div class='arena-last-warning'>⚠️ ¡Juega o pasa turno<br>antes de que acabe el tiempo!</div>"
         if ongoing and my_idle >= state.get("inactivity_limit", 3) - 1 else ""
     )
 
@@ -3514,10 +3523,10 @@ if state["status"] != MatchStatus.ONGOING.value:
         # el motivo explícito, para que no parezca una victoria por vida.
         banner = {
             MatchStatus.PLAYER_A_WINS.value: f"⛔ ¡Gana {state['player_a']['name']} por inactividad del rival! "
-                                             f"({state['inactivity_limit']} turnos seguidos sin jugar)",
-            MatchStatus.PLAYER_B_WINS.value: f"⛔ Derrota por inactividad: llevabas {state['inactivity_limit']} "
-                                             f"turnos seguidos sin jugar. Gana {state['player_b']['name']}.",
-            MatchStatus.DRAW.value: "⛔ Empate por inactividad: ningún jugador ha jugado en "
+                                             f"({state['inactivity_limit']} turnos seguidos sin actuar)",
+            MatchStatus.PLAYER_B_WINS.value: f"⛔ Derrota por inactividad: se te agotó el tiempo {state['inactivity_limit']} "
+                                             f"turnos seguidos sin actuar. Gana {state['player_b']['name']}.",
+            MatchStatus.DRAW.value: "⛔ Empate por inactividad: a ningún jugador le dio tiempo a actuar en "
                                     f"{state['inactivity_limit']} turnos seguidos.",
         }[state["status"]]
         if state["status"] == MatchStatus.PLAYER_B_WINS.value:
@@ -3588,6 +3597,17 @@ def _describe_tactical_result(attacker, defender, atk_zone: Zone) -> str:
     return f"🎯 Atacaste {atk_label} sin encontrar defensa → ¡Impacto directo!"
 
 
+def _missing_zones_text(player_key: str, card_dict: dict) -> str:
+    needs_atk, needs_def = _card_zone_requirements(card_dict)
+    zones = _card_zones(player_key, card_dict["id"])
+    missing = []
+    if needs_atk and zones["atk"] is None:
+        missing.append("zona de ataque 🔴")
+    if needs_def and zones["def"] is None:
+        missing.append("zona de defensa 🟢")
+    return "falta " + " y ".join(missing)
+
+
 def _confirm_turn(player_key: str, ready_cards: list[dict], auto_resolve: bool) -> None:
     """Acción del botón PASAR TURNO. Nunca puede dejar el turno atascado:
     1) juega una a una las cartas listas — una carta que no necesita zonas
@@ -3616,6 +3636,8 @@ def _confirm_turn(player_key: str, ready_cards: list[dict], auto_resolve: bool) 
             _flash_energy_spend(player_key, card_dict["cost_energy"])
             if _card_zone_requirements(card_dict)[0]:
                 attack_zones.append(Zone(atk_zone_final))
+        # Pulsar el botón es SIEMPRE una jugada válida: nunca inactividad.
+        pass_turn(match, player_key)
         if auto_resolve and match.status == MatchStatus.ONGOING:
             try:
                 bot_choose_plays(match, "b")
@@ -3801,17 +3823,33 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
             )
         else:
             confirm_label = "⏭️ Pasar Turno"
+        incomplete_cards = [c for c in selected_cards if not _card_ready(player_key, c)]
         hand_cost_min = min((c["cost_energy"] for c in p["hand"]), default=0)
-        if p["hand"] and hand_cost_min > remaining_energy:
+        if incomplete_cards:
             st.caption(
-                f"⚡ No te llega la energía para ninguna carta: pasa turno y recargarás "
-                f"+{ENERGY_PER_TURN} ⚡ (no cuenta como inactividad)."
+                "⚠️ " + " · ".join(f"{c['name']}: {_missing_zones_text(player_key, c)}" for c in incomplete_cards)
+            )
+        elif p["hand"] and hand_cost_min > remaining_energy:
+            st.caption(
+                f"⚡ No te llega la energía para ninguna carta: pasa turno y recargarás +{ENERGY_PER_TURN} ⚡."
             )
         if st.button(
             confirm_label, key=f"confirm_turn_{player_key}",
             type="primary", width="stretch",
         ):
-            _confirm_turn(player_key, ready_cards, auto_resolve)
+            if incomplete_cards:
+                # No se juega a ciegas ni se penaliza: se avisa y se quitan de
+                # la selección las cartas sin zonas; el turno NO pasa todavía,
+                # así puedes asignarlas o pulsar de nuevo para pasar sin ellas.
+                for c in incomplete_cards:
+                    _deselect_card(player_key, c["id"])
+                st.session_state["confirm_warning"] = (
+                    "Quitada de tu selección por no tener zona: "
+                    + ", ".join(c["name"] for c in incomplete_cards)
+                    + ". Elige sus zonas o pulsa Pasar Turno de nuevo."
+                )
+            else:
+                _confirm_turn(player_key, ready_cards, auto_resolve)
             st.rerun()
 
         if p["staged_plays"]:

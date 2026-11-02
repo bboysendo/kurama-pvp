@@ -106,7 +106,8 @@ class PlayerState:
     zones_damaged: set = field(default_factory=set)   # Zone completados contra el rival, toda la partida
     tripartite_claimed: bool = False
     battles_played: int = 0  # informativo para el dashboard (no afecta al combate)
-    inactive_turns: int = 0  # turnos SEGUIDOS terminados sin jugar ninguna carta (regla de inactividad)
+    inactive_turns: int = 0  # turnos SEGUIDOS en que se le agotó el tiempo sin actuar (regla de inactividad)
+    acted_this_turn: bool = False  # jugó, pasó turno o interactuó este turno (nunca es inactividad)
 
     @property
     def energy_spent_this_turn(self) -> int:
@@ -232,6 +233,7 @@ def play_card(
     defense_zone = Zone(defense_zone) if defense_zone is not None else zone
     p.hand.remove(card)
     p.staged_plays.append(StagedPlay(card=card, zone=zone, defense_zone=defense_zone))
+    p.acted_this_turn = True
     if defense_zone == zone:
         match.log.append(f"{p.name} juega {card.name} ({card.atk}/{card.defense}) en {zone.value}.")
     else:
@@ -363,13 +365,26 @@ def _collect_counter_hits(attacker: PlayerState, defender: PlayerState, maps_atk
     return total
 
 
-def can_afford_any(player: PlayerState) -> bool:
-    """¿Puede pagar este turno al menos una carta de las que tiene en mano?"""
-    budget = min(MAX_ENERGY_SPEND_PER_TURN, player.energy) - player.energy_spent_this_turn
-    return any(c.cost_energy <= budget for c in player.hand)
+def register_activity(match: MatchState, player: str) -> None:
+    """El jugador ha interactuado este turno (p.ej. tenía cartas elegidas
+    cuando se agotó el tiempo): ese turno no cuenta como inactividad."""
+    _get_player(match, player).acted_this_turn = True
 
 
-def end_turn(match: MatchState) -> MatchState:
+def pass_turn(match: MatchState, player: str) -> None:
+    """PASAR TURNO voluntario: jugada táctica válida (guardar energía, no
+    querer jugar, no poder pagar...). Nunca suma inactividad; recarga la
+    energía como cualquier otro turno al cerrarse (end_turn)."""
+    p = _get_player(match, player)
+    p.acted_this_turn = True
+    if not p.staged_plays:
+        match.log.append(f"⏭️ {p.name} pasa turno.")
+
+
+def end_turn(match: MatchState, timed_out: bool = False) -> MatchState:
+    """Resuelve el turno. `timed_out=True` cuando lo cierra el temporizador
+    (TURN_TIMER_SECONDS) — solo entonces puede sumar inactividad, y solo a
+    quien no haya actuado (ni jugado, ni pasado, ni interactuado)."""
     if match.status != MatchStatus.ONGOING:
         raise EngineError("La partida ya ha terminado.")
 
@@ -387,23 +402,20 @@ def end_turn(match: MatchState) -> MatchState:
     b.hp = max(0, min(b.max_hp, b.hp - damage_to_b - counter_to_b + heal_to_b))
     a.hp = max(0, min(a.max_hp, a.hp - damage_to_a - counter_to_a + heal_to_a))
 
-    # Regla de inactividad: un turno sin NINGUNA carta jugada (p.ej. se agotó
-    # el temporizador sin elegir nada) suma 1; jugar cualquier carta lo
-    # reinicia a 0. Excepción: si NO podía pagar ninguna carta de su mano
-    # (pase forzado por falta de energía), el turno no cuenta — nadie pierde
-    # por no tener energía. Se calcula ANTES de vaciar staged_plays/hand.
+    # Regla de inactividad: SOLO cuenta el turno en que se agota el
+    # temporizador sin que el jugador haya hecho nada. Jugar cartas, pulsar
+    # PASAR TURNO o interactuar es actividad y reinicia el contador a 0.
     for player in (a, b):
-        if player.staged_plays:
+        if player.acted_this_turn or player.staged_plays:
             player.inactive_turns = 0
-        elif not can_afford_any(player):
-            match.log.append(f"⏭️ {player.name} pasa turno sin energía para sus cartas.")
-        else:
+        elif timed_out:
             player.inactive_turns += 1
             if player.inactive_turns < INACTIVITY_LIMIT:
                 match.log.append(
-                    f"⚠️ {player.name} no ha jugado este turno: inactividad "
+                    f"⚠️ A {player.name} se le agotó el tiempo sin actuar: inactividad "
                     f"{player.inactive_turns}/{INACTIVITY_LIMIT}."
                 )
+        player.acted_this_turn = False
 
     # Fin de turno: las cartas jugadas y las que quedaron en mano van a descarte.
     # Energía: se DESCUENTA lo gastado este turno y luego se recupera
@@ -437,20 +449,20 @@ def end_turn(match: MatchState) -> MatchState:
         match.status = MatchStatus.DRAW
         match.end_reason = "inactivity"
         match.log.append(
-            f"⛔ Empate por inactividad: ambos jugadores llevan {INACTIVITY_LIMIT} turnos seguidos sin jugar."
+            f"⛔ Empate por inactividad: a ambos se les agotó el tiempo {INACTIVITY_LIMIT} turnos seguidos."
         )
     elif a_idle:
         match.status = MatchStatus.PLAYER_B_WINS
         match.end_reason = "inactivity"
         match.log.append(
-            f"⛔ {a.name} pierde por inactividad ({INACTIVITY_LIMIT} turnos seguidos sin jugar). "
+            f"⛔ {a.name} pierde por inactividad ({INACTIVITY_LIMIT} turnos seguidos sin actuar). "
             f"{b.name} gana la partida."
         )
     elif b_idle:
         match.status = MatchStatus.PLAYER_A_WINS
         match.end_reason = "inactivity"
         match.log.append(
-            f"⛔ {b.name} pierde por inactividad ({INACTIVITY_LIMIT} turnos seguidos sin jugar). "
+            f"⛔ {b.name} pierde por inactividad ({INACTIVITY_LIMIT} turnos seguidos sin actuar). "
             f"{a.name} gana la partida."
         )
     else:
@@ -471,6 +483,7 @@ def bot_choose_plays(match: MatchState, player: str) -> None:
     """IA mínima para el modo Vs. Bot: juega cartas aleatorias asequibles en
     zonas aleatorias hasta agotar el presupuesto de energía del turno."""
     p = _get_player(match, player)
+    p.acted_this_turn = True  # el Bot siempre decide (jugar o pasar): nunca es inactividad
     rng = match.rng
     hand = list(p.hand)
     rng.shuffle(hand)
