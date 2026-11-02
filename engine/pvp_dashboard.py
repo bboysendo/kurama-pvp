@@ -68,7 +68,6 @@ from card_schema import (
     TRIPARTITE_COMBO_BONUS,
     TURN_TIMER_SECONDS,
     Card,
-    CardCategory,
     NFTRarity,
 )
 from pvp_engine import (
@@ -315,9 +314,8 @@ def card_effect_text(card_dict: dict) -> str:
 def render_gallery(catalog_dicts: list[dict]) -> None:
     st.header("📖 Catálogo de Cartas")
     st.caption(
-        f"Las {len(catalog_dicts)} cartas del juego: las cartas base son únicas (una de cada "
-        "combinación ATK/DEF) y las especiales, con arte NFT, son las únicas que pueden repetirse "
-        "en un mazo."
+        f"Las {len(catalog_dicts)} cartas del juego: una por cada combinación ATK/DEF posible, "
+        "sin ninguna repetida. Tu mazo de cada partida es este set completo, barajado."
     )
 
     all_types = sorted({card_type_label(c) for c in catalog_dicts})
@@ -325,15 +323,16 @@ def render_gallery(catalog_dicts: list[dict]) -> None:
     f1, f2 = st.columns([1, 2])
     with f1:
         rarity_filter = st.radio(
-            "Tipo de carta", ["Todas", "Base", "Especial"], key="gallery_rarity_filter"
+            "Grupo", ["Todas", "Ataque (ATK ≥ DEF)", "Defensa (DEF > ATK)"], key="gallery_rarity_filter"
         )
     with f2:
         type_filter = st.multiselect("Tipo", all_types, default=all_types, key="gallery_type_filter")
 
     filtered = catalog_dicts
-    if rarity_filter != "Todas":
-        wanted_category = next(k for k, v in CATEGORY_LABELS.items() if v == rarity_filter)
-        filtered = [c for c in filtered if c["category"] == wanted_category]
+    if rarity_filter.startswith("Ataque"):
+        filtered = [c for c in filtered if c["atk"] >= c["defense"]]
+    elif rarity_filter.startswith("Defensa"):
+        filtered = [c for c in filtered if c["defense"] > c["atk"]]
     filtered = [c for c in filtered if card_type_label(c) in type_filter]
 
     st.caption(f"Mostrando {len(filtered)} de {len(catalog_dicts)} cartas.")
@@ -356,10 +355,10 @@ def render_gallery(catalog_dicts: list[dict]) -> None:
                 st.caption(f"🏷️ {CATEGORY_LABELS.get(card_dict['category'], card_dict['category'])} · {card_type_label(card_dict)}")
                 ability_note = ""
                 if card_dict.get("ability") == "lifesteal":
-                    ability_note = f"🩸 Roba hasta {card_dict.get('heal_amount') or 0} HP · repetible"
+                    ability_note = f"🩸 Roba hasta {card_dict.get('heal_amount') or 0} HP"
                 elif card_dict.get("ability") == "combo_strike":
                     ability_note = (
-                        f"⚡ +{SIMULTANEOUS_COMBO_BONUS[2]} / +{SIMULTANEOUS_COMBO_BONUS[3]} en combo · repetible"
+                        f"⚡ +{SIMULTANEOUS_COMBO_BONUS[2]} / +{SIMULTANEOUS_COMBO_BONUS[3]} en combo"
                     )
                 elif card_dict.get("ability") == "heal_potion" and card_dict.get("heal_amount"):
                     ability_note = f"💚 Cura mínimo {card_dict['heal_amount']} HP"
@@ -437,35 +436,31 @@ TUTORIAL_STEPS = [
         "badge": "🛡️ Defensa / Escudo",
     },
     {
-        "title": "Turno 4 — Robo de Vida",
+        "title": "Turno 4 — Carta híbrida",
         "actor": "tú",
-        "card_id": "sp_lifesteal_fox_888",
+        "card_id": "nft_fox_11_2x1",
         "zone": "Piernas",
         "text": (
-            "Juegas la especial **Fox #888 · Blood Moon** (2 ATK, Robo de Vida) contra las "
-            "**Piernas**, desprotegidas: haces **2 de daño** y **recuperas esos 2 HP** "
-            "(esta carta roba hasta 3 por turno). Las especiales son las únicas cartas que "
-            "pueden venir repetidas en tu mazo."
+            "Juegas **Fox #11 · Goggle Raider** (2 ATK / 1 DEF): ataca las **Piernas**, que el rival "
+            "dejó sin proteger (**2 de daño**), y a la vez su 1 DEF cubre una de tus zonas. "
+            "Cada combinación ATK/DEF existe una sola vez en el juego: esta es la única 2/1."
         ),
-        "hp_a": 49, "hp_b": 45,
-        "badge": "🩸 Robo de Vida",
+        "hp_a": 47, "hp_b": 45,
+        "badge": "⚔️🛡️ Híbrida",
     },
     {
-        "title": "Turno 5 — Combo Simultáneo + Combo Tripartito",
+        "title": "Turno 5 — ¡Combo Tripartito!",
         "actor": "tú",
-        "card_id": "sp_combo_fox_999",
-        "zone": "Cabeza",
+        "card_id": "kr_cyber_operative_2x0",
+        "zone": "Tronco",
         "text": (
-            f"Gastas tu energía en dos cartas a la vez: **Fox #999 · Twin Storm** (1 ATK, Combo "
-            f"Simultáneo) en la **Cabeza** y **Fox #666 · Swift Jab** (1 ATK) en el **Tronco**. "
-            f"Dañas 2 zonas el mismo turno: **+{SIMULTANEOUS_COMBO_BONUS[2]}** de Combo Simultáneo. "
-            f"Y como el Tronco era la única zona que aún no habías dañado, completas además el "
-            f"**Combo Tripartito**: **+{TRIPARTITE_COMBO_BONUS}**. "
-            f"**Daño total = 1 + 1 + {SIMULTANEOUS_COMBO_BONUS[2]} + {TRIPARTITE_COMBO_BONUS} = "
-            f"{2 + SIMULTANEOUS_COMBO_BONUS[2] + TRIPARTITE_COMBO_BONUS}**."
+            f"Atacas el **Tronco** con **Cyber-Kitsune Operative** (2 ATK) y esta vez entra: 2 de daño. "
+            f"Ya habías dañado la Cabeza (turno 1) y las Piernas (turno 4), así que completas las 3 "
+            f"zonas y se activa el **Combo Tripartito**: **+{TRIPARTITE_COMBO_BONUS}**. "
+            f"**Daño total = 2 + {TRIPARTITE_COMBO_BONUS} = {2 + TRIPARTITE_COMBO_BONUS}**."
         ),
-        "hp_a": 49, "hp_b": 45 - (2 + SIMULTANEOUS_COMBO_BONUS[2] + TRIPARTITE_COMBO_BONUS),
-        "badge": "⚡ Combo Simultáneo · 🔥 Combo Tripartito",
+        "hp_a": 47, "hp_b": 45 - (2 + TRIPARTITE_COMBO_BONUS),
+        "badge": "🔥 Combo Tripartito",
     },
     {
         "title": "Turno 6 — ¡Combo Crítico!",
@@ -477,8 +472,8 @@ TUTORIAL_STEPS = [
             f"ya activo, tu carta de **Ataque Puro (3 ATK / 0 DEF)** se convierte en un golpe "
             f"crítico: **{CRITICAL_COMBO_DAMAGE} de daño fijo, ignorando cualquier escudo**."
         ),
-        "hp_a": 49,
-        "hp_b": 45 - (2 + SIMULTANEOUS_COMBO_BONUS[2] + TRIPARTITE_COMBO_BONUS) - CRITICAL_COMBO_DAMAGE,
+        "hp_a": 47,
+        "hp_b": 45 - (2 + TRIPARTITE_COMBO_BONUS) - CRITICAL_COMBO_DAMAGE,
         "badge": "💥 Combo Crítico",
     },
     {
@@ -491,8 +486,8 @@ TUTORIAL_STEPS = [
             "antes a 0, pierdes. Y cuidado: si pasas **3 turnos seguidos sin jugar ninguna carta**, "
             "pierdes por inactividad."
         ),
-        "hp_a": 49,
-        "hp_b": 45 - (2 + SIMULTANEOUS_COMBO_BONUS[2] + TRIPARTITE_COMBO_BONUS) - CRITICAL_COMBO_DAMAGE,
+        "hp_a": 47,
+        "hp_b": 45 - (2 + TRIPARTITE_COMBO_BONUS) - CRITICAL_COMBO_DAMAGE,
         "badge": "🏆 Victoria",
     },
 ]
@@ -577,10 +572,11 @@ def render_tutorial(catalog_dicts: list[dict]) -> None:
                 if note:
                     st.caption(note)
 
-        st.markdown("#### 🃏 Cartas base: una de cada combinación")
+        st.markdown("#### 🃏 16 cartas, una de cada combinación")
         st.caption(
-            "Hay 16 cartas base y ninguna se repite: todas las combinaciones de ataque (3/3, 3/2, 3/1, "
-            "3/0, 2/2, 2/1, 2/0, 1/1, 1/0, 0/0) y su inverso defensivo (2/3, 1/3, 0/3, 1/2, 0/2, 0/1)."
+            "No hay ninguna carta repetida ni dos cartas con las mismas stats: están todas las "
+            "combinaciones de ataque (3/3, 3/2, 3/1, 3/0, 2/2, 2/1, 2/0, 1/1, 1/0, 0/0) y su inverso "
+            f"defensivo (2/3, 1/3, 0/3, 1/2, 0/2, 0/1). Tu mazo de {DECK_SIZE} cartas es el set completo."
         )
         st.markdown("##### ⚔️ Ataque")
         c1, c2, c3 = st.columns(3)
@@ -595,18 +591,11 @@ def render_tutorial(catalog_dicts: list[dict]) -> None:
         show_card(c5, "kr_celestial_flux_1x3", "Escudo grande con un toque de ataque (1/3).")
         show_card(c6, "kr_cyber_guardian_0x2", "Escudo ligero (0/2): mitiga menos, pero cuesta 1.")
 
-        st.markdown("#### ✨ Cartas Especiales (arte NFT, pueden repetirse)")
-        st.caption(
-            "Son las únicas cartas que pueden aparecer varias veces en tu mazo de "
-            f"{DECK_SIZE} cartas."
-        )
-        c7, c8 = st.columns(2)
-        show_card(c7, "sp_lifesteal_fox_888", "🩸 Robo de Vida: recuperas los HP del daño que hace en su zona.")
-        show_card(
-            c8, "sp_combo_fox_999",
-            f"⚡ Combo Simultáneo: +{SIMULTANEOUS_COMBO_BONUS[2]} si dañas 2 zonas el mismo turno, "
-            f"+{SIMULTANEOUS_COMBO_BONUS[3]} si dañas las 3.",
-        )
+        st.markdown("##### ⚔️🛡️ Híbridas")
+        c7, c8, c9 = st.columns(3)
+        show_card(c7, "kr_celestial_operative_3x3", "Potencia simétrica máxima (3/3).")
+        show_card(c8, "tz_raging_earthquake_1x2", "Se cubre con púas y pincha (1/2).")
+        show_card(c9, "nft_fox_27_0x0", "Finta (0/0): ni ataca ni defiende, pero cuenta como jugada.")
 
     with tab_combos:
         st.subheader("Mecánicas especiales que deciden las partidas")
@@ -626,23 +615,6 @@ def render_tutorial(catalog_dicts: list[dict]) -> None:
                 f"(3 ATK / 0 DEF)** que juegues después inflige **{CRITICAL_COMBO_DAMAGE} de daño "
                 f"directo y fijo**, ignorando escudos, perforación o cualquier otra defensa. "
                 f"Es el mejor momento para usar tus cartas más fuertes."
-            )
-
-        with st.expander(
-            f"⚡ Combo Simultáneo (+{SIMULTANEOUS_COMBO_BONUS[2]} / +{SIMULTANEOUS_COMBO_BONUS[3]})"
-        ):
-            st.markdown(
-                f"Si juegas una carta especial de **Combo Simultáneo** y ese MISMO turno consigues "
-                f"dañar **2 zonas distintas** del rival, sumas **+{SIMULTANEOUS_COMBO_BONUS[2]}** de "
-                f"daño; si dañas **las 3**, **+{SIMULTANEOUS_COMBO_BONUS[3]}**. Se aplica una vez por "
-                f"turno. Con {MAX_ENERGY_SPEND_PER_TURN} de energía puedes jugar hasta 3 cartas de coste 1."
-            )
-
-        with st.expander("🩸 Robo de Vida"):
-            st.markdown(
-                "Las especiales de **Robo de Vida** atacan como una carta normal y, si su zona "
-                "recibe daño, **recuperas esos mismos HP** (hasta el máximo de la carta). Si el "
-                "rival bloquea esa zona, no robas nada."
             )
 
     with tab_demo:
@@ -1428,9 +1400,10 @@ st.set_page_config(
 init_state()
 catalog_dicts = load_catalog()
 catalog = [Card.from_dict(d) for d in catalog_dicts]
-# Pool de combate: 16 cartas base únicas + especiales (las únicas repetibles,
-# ver pvp_engine.build_deck_from_pool).
-card_pool = [c for c in catalog if c.category in (CardCategory.STANDARD, CardCategory.SPECIAL)]
+# Pool de combate: las 16 cartas únicas (una por combinación ATK/DEF); el
+# mazo de cada partida es el set completo barajado, sin repeticiones (ver
+# pvp_engine.build_deck_from_pool).
+card_pool = list(catalog)
 cards_by_id = {c.id: c for c in catalog}
 
 # Disponibles pronto, antes de renderizar nada, para que la barra de
@@ -3795,11 +3768,11 @@ with st.expander("📜 Registro completo de la partida", expanded=False):
     )
     st.markdown(log_html, unsafe_allow_html=True)
 
-_base_cards = [c for c in catalog_dicts if c["category"] == "standard"]
-_special_cards = [c for c in catalog_dicts if c["category"] == "special"]
-with st.expander(f"🗂️ Catálogo de cartas ({len(_base_cards)} base únicas + {len(_special_cards)} especiales)"):
-    tabs = st.tabs([f"Base únicas ({len(_base_cards)})", f"Especiales · repetibles ({len(_special_cards)})"])
-    buckets = {0: _base_cards, 1: _special_cards}
+_atk_cards = [c for c in catalog_dicts if c["atk"] >= c["defense"]]
+_def_cards = [c for c in catalog_dicts if c["defense"] > c["atk"]]
+with st.expander(f"🗂️ Catálogo de cartas ({len(catalog_dicts)} únicas, una por combinación)"):
+    tabs = st.tabs([f"Ataque ({len(_atk_cards)})", f"Defensa ({len(_def_cards)})"])
+    buckets = {0: _atk_cards, 1: _def_cards}
     for idx, tab in enumerate(tabs):
         with tab:
             bucket = buckets[idx]

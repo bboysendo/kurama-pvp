@@ -2,10 +2,9 @@
 Esquema de datos estándar para las cartas de combate PVP de Kurama Run.
 
 Basado en PVP_Rules/PVP KURAMARUN....md, con la revisión del creador del
-02/11/2026: el pool base son 16 cartas ÚNICAS (todas las combinaciones
-ATK/DEF de 0 a 3 — ataque 3/3..0/0 y su inverso defensivo), más las cartas
-ESPECIALES (Robo de Vida y Combo Simultáneo, arte NFT) que son las únicas que
-pueden repetirse en un mazo. Coste de energía 1-2, zonas de impacto
+02/11/2026: unicidad total — el juego tiene exactamente 16 cartas, una por
+cada combinación ATK/DEF de 0 a 3 (ataque 3/3..0/0 y su inverso defensivo),
+sin repeticiones de ningún tipo. Coste de energía 1-2, zonas de impacto
 Cabeza/Tronco/Piernas, daño real = max(0, ATK atacante - DEF rival). Ver ese documento para la justificación completa de cada regla; este
 módulo solo modela la ESTRUCTURA de una carta, no la lógica de combate (eso
 vive en pvp_engine.py).
@@ -53,11 +52,9 @@ class Element(str, Enum):
 class CardCategory(str, Enum):
     """Bloque del pool al que pertenece la carta.
 
-    - STANDARD: carta base de stats, ÚNICA (una sola copia por mazo).
-    - SPECIAL: carta especial con habilidad (Robo de Vida / Combo
-      Simultáneo); son las únicas que pueden repetirse en un mazo.
-    - RARE / LEGENDARY: se conservan solo para poder leer catálogos antiguos;
-      el catálogo actual no las usa."""
+    - STANDARD: las 16 cartas del juego (una por combinación ATK/DEF).
+    - SPECIAL / RARE / LEGENDARY: se conservan solo para poder leer
+      catálogos antiguos; el catálogo actual no las usa."""
 
     STANDARD = "standard"
     SPECIAL = "special"
@@ -66,11 +63,9 @@ class CardCategory(str, Enum):
 
 
 class Ability(str, Enum):
-    """Habilidad especial. Las cartas base (STANDARD) no tienen habilidad,
-    solo stats. LIFESTEAL y COMBO_STRIKE son las de las cartas especiales
-    actuales; HEAL_POTION/PIERCING/COUNTER siguen soportadas por el motor
-    pero ya no hay ninguna carta del catálogo que las use (su arte se
-    retiró de CARDS/)."""
+    """Habilidad especial. Las 16 cartas actuales no llevan ninguna (solo
+    stats); el motor sigue soportando todas estas por si se asignan a
+    alguna carta más adelante."""
 
     NONE = "none"
     LIFESTEAL = "lifesteal"       # Cura al atacante según el daño que hace en su zona
@@ -114,9 +109,6 @@ class Card:
     cost_energy: int = field(default=0)  # se recalcula siempre en __post_init__
     # Token del NFT (GAMENFT/fox_<id>.png) usado como ilustración, si aplica.
     nft_token_id: Optional[int] = None
-    # Id de la carta de catálogo de la que es copia (solo especiales repetidas
-    # dentro de un mazo: "sp_x__c2" -> base_id "sp_x"). None = es la original.
-    base_id: Optional[str] = None
 
     def __post_init__(self) -> None:
         self.cost_energy = compute_energy_cost(self.atk, self.defense, self.ability)
@@ -147,13 +139,7 @@ class Card:
             heal_amount=d.get("heal_amount", 0),
             counter_damage=d.get("counter_damage", 0),
             nft_token_id=d.get("nft_token_id"),
-            base_id=d.get("base_id"),
         )
-
-    @property
-    def catalog_id(self) -> str:
-        """Id de catálogo (el de la carta original aunque esto sea una copia)."""
-        return self.base_id or self.id
 
 
 # HP base en combate según posesión/rareza de NFT (sección 2.1).
@@ -173,8 +159,9 @@ BASE_HP_BY_RARITY: dict[NFTRarity, int] = {
     NFTRarity.LEGENDARY: 100,
 }
 
-DECK_SIZE = 15          # Tamaño del mazo de combate por jugador (sección 5.1)
-SPECIALS_PER_DECK = 3   # Huecos del mazo para cartas especiales (pueden repetirse)
+# Tamaño del mazo: las 16 combinaciones ATK/DEF únicas, una de cada (antes 15
+# en la sección 5.1; con 15 faltaría siempre una combinación por partida).
+DECK_SIZE = 16
 HAND_SIZE = 3            # Cartas robadas por turno
 STARTING_ENERGY = 3      # Energía inicial (sección 2.2)
 MAX_ENERGY = 3           # Tope ABSOLUTO del acumulador de energía: nunca puede superar 3

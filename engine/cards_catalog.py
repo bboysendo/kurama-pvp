@@ -1,35 +1,31 @@
 """
 Generador del catálogo de cartas del PVP de Kurama Run.
 
-Revisión del creador (02/11/2026):
+Regla del creador (02/11/2026): UNICIDAD TOTAL. El juego tiene exactamente
+16 cartas, una por cada combinación ATK/DEF de 0 a 3 — ataque 3/3, 3/2, 3/1,
+3/0, 2/2, 2/1, 2/0, 1/1, 1/0, 0/0 y su inverso defensivo 2/3, 1/3, 0/3, 1/2,
+0/2, 0/1 — sin ninguna carta repetida ni dos cartas con la misma
+combinación, ni en el catálogo ni en un mazo ni en una mano.
 
-1. Arte: solo se usan los artes que hay DIRECTAMENTE en ../CARDS (nunca
-   ../CARDS/CARDS_NO_USE) y, para los huecos sin arte, los zorros NFT
-   originales de ../GAMENFT. Cada arte de CARDS lleva pintados nombre y
-   ATK/DEF, así que cada uno ocupa el hueco cuyas stats coinciden con lo
-   pintado. Excepción: había dos artes 0/2 (KURAMARUN3 y ENEMIGOS1) — se
-   queda Cyber-Kitsune (KURAMARUN3) como 0/2 y Raging Earthquake (ENEMIGOS1)
-   pasa al hueco libre 3/2; para que el arte no contradiga a la carta, se
-   genera una copia con los números repintados en
-   engine/assets/cards/tz_raging_earthquake_3x2.png (el original de CARDS no
-   se toca).
+Arte: solo los artes que hay DIRECTAMENTE en ../CARDS (nunca
+../CARDS/CARDS_NO_USE), cada uno en el hueco de las stats que lleva
+pintadas; los 6 huecos sin arte usan zorros NFT originales de ../GAMENFT.
+- Raging Earthquake (ENEMIGOS1) viene ya repintado por el creador como 1/2;
+  como el archivo trae fondo negro opaco y 1254x1254, se usa una copia
+  normalizada (fondo transparente, 500x500 como el resto) en
+  engine/assets/cards/tz_raging_earthquake_1x2.png. El original no se toca.
+- El zorro NFT #404, que antes ocupaba 1/2, pasa al hueco libre 3/2.
+- Las antiguas especiales con arte NFT (Robo de Vida / Combo Simultáneo, 1/0
+  y 2/0) duplicaban combinaciones ya cubiertas y no quedaba ninguna libre,
+  así que se retiran del catálogo (el motor conserva esas habilidades por si
+  se asignan a alguna de las 16 cartas más adelante).
 
-2. Pool base: 16 cartas ÚNICAS = todas las combinaciones de ataque
-   3/3, 3/2, 3/1, 3/0, 2/2, 2/1, 2/0, 1/1, 1/0, 0/0 (ATK/DEF) y su inverso
-   defensivo 2/3, 1/3, 0/3, 1/2, 0/2, 0/1 (las simétricas 3/3, 2/2, 1/1, 0/0
-   son su propio inverso, no se duplican). Ninguna se repite en un mazo.
-
-3. Especiales (las únicas que pueden repetirse en un mazo), con arte NFT:
-   - Robo de Vida (LIFESTEAL): curan al atacante según el daño que hacen.
-   - Combo Simultáneo (COMBO_STRIKE): +daño si ese turno se dañan 2 o 3
-     zonas del rival a la vez.
-
-Las cartas cuyo arte es un zorro NFT no traen marco ni números pintados, así
-que este módulo genera su imagen de carta (marco + ilustración NFT + ATK/DEF)
-en engine/assets/cards/<id>.png.
+Las cartas con zorro NFT no traen marco ni números pintados: este módulo
+genera su imagen (marco + ilustración NFT + ATK/DEF) en
+engine/assets/cards/<id>.png.
 
 Ejecutar directamente (`python cards_catalog.py`) regenera:
-- engine/assets/cards/*.png (cartas con arte NFT + la 3/2 repintada)
+- engine/assets/cards/*.png (cartas con arte NFT + la copia normalizada de Raging Earthquake)
 - cards_database.json
 """
 
@@ -53,9 +49,9 @@ ATTACK_COMBOS = [(3, 3), (3, 2), (3, 1), (3, 0), (2, 2), (2, 1), (2, 0), (1, 1),
 DEFENSE_COMBOS = [(d, a) for a, d in ATTACK_COMBOS if a != d]  # inverso, sin duplicar simétricas
 REQUIRED_BASE_COMBOS = ATTACK_COMBOS + DEFENSE_COMBOS  # 16 únicas
 
-# Copia repintada del arte ENEMIGOS1 (0/2 pintado -> 3/2), ver repaint_raging_earthquake().
+# Copia normalizada del arte ENEMIGOS1 (1/2), ver normalize_card_art().
 RAGING_EARTHQUAKE_SRC = "CARDS/ENEMIGOS1-removebg-preview.png"
-RAGING_EARTHQUAKE_IMG = f"{GENERATED_REL}/tz_raging_earthquake_3x2.png"
+RAGING_EARTHQUAKE_IMG = f"{GENERATED_REL}/tz_raging_earthquake_1x2.png"
 
 
 def _nft_card(card_id: str, name: str, atk: int, defense: int, token_id: int, description: str,
@@ -70,7 +66,7 @@ def _nft_card(card_id: str, name: str, atk: int, defense: int, token_id: int, de
 
 
 # --------------------------------------------------------------------------- #
-# 1. Pool base: 16 cartas únicas
+# Las 16 cartas del juego (una por combinación ATK/DEF)
 # --------------------------------------------------------------------------- #
 BASE_CARDS: list[Card] = [
     # --- Ataque (ATK >= DEF) ------------------------------------------------
@@ -80,13 +76,8 @@ BASE_CARDS: list[Card] = [
         element=Element.ARCANE, description="Potencia simétrica máxima: espada y escudo a la vez.",
         image_path="CARDS/KURAMARUN2-removebg-preview.png",
     ),
-    Card(
-        id="tz_raging_earthquake_3x2", name="Raging Earthquake",
-        faction=Faction.TALON_ZHEN, category=CardCategory.STANDARD, atk=3, defense=2,
-        element=Element.EARTH, subtitle="(Talon Zhen)",
-        description="Erizo de tierra furioso: embiste con púas y aguanta el golpe.",
-        image_path=RAGING_EARTHQUAKE_IMG,
-    ),
+    _nft_card("nft_fox_404_3x2", "Fox #404 · Ribbon Blade", 3, 2, 404,
+              "Ataque pesado con guardia — zorro NFT #404, golpea fuerte sin descuidarse."),
     Card(
         id="kr_pyre_cosmos_3x1", name="Pyre & Cosmos: Kitsune Celestial",
         faction=Faction.KURAMARUN, category=CardCategory.STANDARD, atk=3, defense=1,
@@ -136,8 +127,13 @@ BASE_CARDS: list[Card] = [
         description="Defensa Pura / Escudo — coraza volcánica.",
         image_path="CARDS/ENEMIGOS4-removebg-preview.png",
     ),
-    _nft_card("nft_fox_404_1x2", "Fox #404 · Ribbon Guard", 1, 2, 404,
-              "Híbrida defensiva — zorro NFT #404, guardia con contragolpe ligero."),
+    Card(
+        id="tz_raging_earthquake_1x2", name="Raging Earthquake",
+        faction=Faction.TALON_ZHEN, category=CardCategory.STANDARD, atk=1, defense=2,
+        element=Element.EARTH, subtitle="(Talon Zhen)",
+        description="Híbrida defensiva — erizo de tierra furioso: se cubre con púas y pincha.",
+        image_path=RAGING_EARTHQUAKE_IMG,
+    ),
     Card(
         id="kr_cyber_guardian_0x2", name="Cyber-Kitsune Operative (Guardian)",
         faction=Faction.KURAMARUN, category=CardCategory.STANDARD, atk=0, defense=2,
@@ -153,47 +149,26 @@ BASE_CARDS: list[Card] = [
     ),
 ]
 
-# --------------------------------------------------------------------------- #
-# 2. Especiales (pueden repetirse en un mazo) — arte NFT original
-# --------------------------------------------------------------------------- #
-SPECIAL_CARDS: list[Card] = [
-    _nft_card("sp_lifesteal_fox_512", "Fox #512 · Vampiric Fang", 1, 0, 512,
-              "Robo de Vida: recupera tantos HP como daño haga en su zona (máx. 2).",
-              category=CardCategory.SPECIAL, ability=Ability.LIFESTEAL, element=Element.SHADOW,
-              heal_amount=2),
-    _nft_card("sp_lifesteal_fox_888", "Fox #888 · Blood Moon", 2, 0, 888,
-              "Robo de Vida: recupera tantos HP como daño haga en su zona (máx. 3).",
-              category=CardCategory.SPECIAL, ability=Ability.LIFESTEAL, element=Element.SHADOW,
-              heal_amount=3),
-    _nft_card("sp_combo_fox_999", "Fox #999 · Twin Storm", 1, 0, 999,
-              "Combo Simultáneo: si este turno dañas 2 zonas a la vez, +2 de daño; si dañas las 3, +4.",
-              category=CardCategory.SPECIAL, ability=Ability.COMBO_STRIKE, element=Element.NATURE),
-    _nft_card("sp_combo_fox_1234", "Fox #1234 · Triple Tempest", 2, 0, 1234,
-              "Combo Simultáneo: si este turno dañas 2 zonas a la vez, +2 de daño; si dañas las 3, +4.",
-              category=CardCategory.SPECIAL, ability=Ability.COMBO_STRIKE, element=Element.NATURE),
-]
-
-
 def build_catalog() -> list[Card]:
-    return list(BASE_CARDS) + list(SPECIAL_CARDS)
+    return list(BASE_CARDS)
 
 
 def validate_catalog(cards: list[Card], check_files: bool = True) -> None:
-    """Reglas del creador — falla en voz alta si alguien rompe el catálogo."""
-    base = [c for c in cards if c.category == CardCategory.STANDARD]
-    specials = [c for c in cards if c.category == CardCategory.SPECIAL]
-    combos = [(c.atk, c.defense) for c in base]
-    assert len(combos) == len(set(combos)), f"Cartas base repetidas: {combos}"
+    """Unicidad total — falla en voz alta si alguien rompe el catálogo."""
+    combos = [(c.atk, c.defense) for c in cards]
+    assert len(combos) == len(set(combos)), f"Combinaciones ATK/DEF repetidas: {sorted(combos)}"
     assert sorted(combos) == sorted(REQUIRED_BASE_COMBOS), (
-        f"Combinaciones base incorrectas: faltan {set(REQUIRED_BASE_COMBOS) - set(combos)}, "
+        f"Combinaciones incorrectas: faltan {set(REQUIRED_BASE_COMBOS) - set(combos)}, "
         f"sobran {set(combos) - set(REQUIRED_BASE_COMBOS)}"
     )
-    assert all(c.ability == Ability.NONE for c in base), "Las cartas base no llevan habilidad"
-    assert specials and all(c.ability in (Ability.LIFESTEAL, Ability.COMBO_STRIKE) for c in specials)
-    assert all(c.nft_token_id is not None for c in specials), "Las especiales usan arte NFT"
     ids = [c.id for c in cards]
     assert len(ids) == len(set(ids)), "Ids de carta repetidos"
+    images = [c.image_path for c in cards]
+    assert len(images) == len(set(images)), "Dos cartas comparten imagen"
+    nft_ids = [c.nft_token_id for c in cards if c.nft_token_id is not None]
+    assert len(nft_ids) == len(set(nft_ids)), "Dos cartas usan el mismo zorro NFT"
     for c in cards:
+        assert c.category == CardCategory.STANDARD and c.ability == Ability.NONE, f"{c.id}: sin especiales"
         assert c.image_path, f"{c.id} sin imagen"
         assert "CARDS_NO_USE" not in c.image_path, f"{c.id} usa arte descartado"
         if c.image_path.startswith("CARDS/"):
@@ -323,40 +298,34 @@ def generate_nft_card_image(card: Card, out_path: Path) -> None:
     img.save(out_path)
 
 
-def repaint_raging_earthquake(out_path: Path) -> None:
-    """Copia de ENEMIGOS1 con el ATK pintado cambiado de 0 a 3 (hexágono
-    izquierdo y óvalo central "0/2" -> "3/2"). Se tapa solo el dígito con el
-    color de su propia placa y se vuelve a escribir encima."""
-    from PIL import Image, ImageDraw, ImageFilter
+def normalize_card_art(src: Path, out_path: Path, size: int = 500) -> None:
+    """Copia de un arte de CARDS con el fondo negro opaco convertido en
+    transparente (relleno desde las 4 esquinas, así no se tocan los negros
+    de dentro del dibujo) y escalada a size x size como el resto de artes."""
+    from PIL import Image, ImageDraw
 
-    img = Image.open(PVP_ROOT / RAGING_EARTHQUAKE_SRC).convert("RGBA")
-
-    def patch(box, sample_xy, text, center, size, fill, stroke):
-        color = img.getpixel(sample_xy)[:3]
-        layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        ImageDraw.Draw(layer).ellipse(box, fill=color + (255,))
-        img.alpha_composite(layer.filter(ImageFilter.GaussianBlur(2)))
-        ImageDraw.Draw(img).text(center, text, font=_font(size), fill=fill, anchor="mm",
-                                 stroke_width=3, stroke_fill=stroke)
-
-    patch(*RAGING_EARTHQUAKE_PATCHES[0])
-    patch(*RAGING_EARTHQUAKE_PATCHES[1])
+    img = Image.open(src).convert("RGBA")
+    w, h = img.size
+    if img.getpixel((0, 0))[3] != 0:  # fondo opaco: vaciarlo desde las esquinas
+        marker = (255, 0, 255, 0)
+        for corner in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
+            if img.getpixel(corner)[3] != 0 and sum(img.getpixel(corner)[:3]) < 90:
+                ImageDraw.floodfill(img, corner, marker, thresh=60)
+        px = img.load()
+        for y in range(h):
+            for x in range(w):
+                if px[x, y] == marker:
+                    px[x, y] = (0, 0, 0, 0)
+    img = img.resize((size, size), Image.LANCZOS)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     img.save(out_path)
-
-
-# (caja a tapar, píxel de muestra del fondo, texto, centro, tamaño, color, contorno)
-RAGING_EARTHQUAKE_PATCHES = [
-    ((98, 384, 138, 428), (104, 392), "3", (118, 406), 40, (255, 236, 170), (30, 50, 20)),  # hexágono ATK
-    ((207, 390, 238, 431), (285, 400), "3", (222, 410), 38, (255, 238, 190), (40, 26, 10)),  # óvalo "0/2"
-]
 
 
 def generate_images(cards: list[Card]) -> None:
     for card in cards:
         if card.nft_token_id is not None:
             generate_nft_card_image(card, GENERATED_DIR / f"{card.id}.png")
-    repaint_raging_earthquake(PVP_ROOT / RAGING_EARTHQUAKE_IMG)
+    normalize_card_art(PVP_ROOT / RAGING_EARTHQUAKE_SRC, PVP_ROOT / RAGING_EARTHQUAKE_IMG)
 
 
 def main() -> None:
@@ -365,10 +334,7 @@ def main() -> None:
     generate_images(cards)
     validate_catalog(cards, check_files=True)
 
-    base = [c for c in cards if c.category == CardCategory.STANDARD]
-    specials = [c for c in cards if c.category == CardCategory.SPECIAL]
-    print(f"Base únicas: {len(base)} (esperado {len(REQUIRED_BASE_COMBOS)})")
-    print(f"Especiales (repetibles): {len(specials)}")
+    print(f"Cartas únicas: {len(cards)} (esperado {len(REQUIRED_BASE_COMBOS)})")
 
     with open(DATABASE_PATH, "w", encoding="utf-8") as f:
         json.dump([c.to_dict() for c in cards], f, indent=2, ensure_ascii=False)

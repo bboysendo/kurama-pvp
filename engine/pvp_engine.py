@@ -23,7 +23,10 @@ Reglas modeladas (ver PVP_Rules/PVP KURAMARUN....md para el texto original):
 - Combo Crítico: una vez completado el combo tripartito, cualquier carta de
   Ataque Puro (3 ATK/0 DEF) jugada después inflige 20 de daño directo fijo en
   vez del cálculo normal (ignora escudo/perforante/etc. de esa zona).
-- Cartas especiales (las únicas repetibles en un mazo):
+- Mazo y mano: unicidad total — nunca dos cartas iguales ni dos con la
+  misma combinación ATK/DEF (build_deck_from_pool / _draw).
+- Habilidades soportadas por el motor (hoy ninguna carta del catálogo las
+  lleva, se conservan por si se asignan a alguna de las 16):
     * Robo de Vida (LIFESTEAL): si la zona que ataca recibe daño (>0), el
       atacante recupera ese daño en HP, hasta `heal_amount` por carta.
     * Combo Simultáneo (COMBO_STRIKE): si ese MISMO turno el jugador daña 2
@@ -56,12 +59,10 @@ from card_schema import (
     MAX_ENERGY,
     MAX_ENERGY_SPEND_PER_TURN,
     SIMULTANEOUS_COMBO_BONUS,
-    SPECIALS_PER_DECK,
     STARTING_ENERGY,
     TRIPARTITE_COMBO_BONUS,
     Ability,
     Card,
-    CardCategory,
 )
 
 
@@ -121,47 +122,26 @@ class MatchState:
     end_reason: Optional[str] = None  # "ko" | "inactivity" cuando la partida termina
 
 
-def _special_copy(card: Card, n: int) -> Card:
-    """Copia n-ésima (n >= 2) de una carta especial dentro de un mismo mazo,
-    con id propio (`<id>__c<n>`) para que dos copias en la misma mano se
-    puedan elegir por separado; `base_id` apunta a la carta del catálogo."""
-    import copy
-
-    c = copy.deepcopy(card)
-    c.base_id = card.catalog_id
-    c.id = f"{card.catalog_id}__c{n}"
-    return c
-
-
-def build_deck_from_pool(pool: list[Card], size: int = DECK_SIZE, rng: Optional[random.Random] = None,
-                         specials: int = SPECIALS_PER_DECK) -> list[Card]:
-    """Mazo de `size` cartas: las cartas base (STANDARD) van SIN repetir
-    (cada una como mucho una vez) y los huecos restantes —`specials` como
-    mínimo si hay especiales en el pool— se llenan con cartas ESPECIALES,
-    que sí pueden repetirse. Si no hay especiales, el mazo nunca repite una
-    carta base aunque quede más corto que `size`."""
+def build_deck_from_pool(pool: list[Card], size: int = DECK_SIZE, rng: Optional[random.Random] = None) -> list[Card]:
+    """Mazo de hasta `size` cartas SIN NINGUNA repetición: ni la misma carta
+    dos veces ni dos cartas con la misma combinación ATK/DEF (si el pool
+    trajera dos con las mismas stats, solo entra una). Con el catálogo de 16
+    cartas únicas y DECK_SIZE = 16, cada mazo es exactamente el set completo
+    de combinaciones, barajado."""
     rng = rng or random
-    base = [c for c in pool if c.category != CardCategory.SPECIAL]
-    special_pool = [c for c in pool if c.category == CardCategory.SPECIAL]
-    n_special = min(specials, size) if special_pool else 0
-    n_base = min(len(base), size - n_special)
-    deck = rng.sample(base, n_base)
-    if special_pool:
-        n_special = size - n_base  # las especiales completan lo que falte
-        copies: dict[str, int] = {}
-        for _ in range(n_special):
-            card = rng.choice(special_pool)
-            copies[card.id] = copies.get(card.id, 0) + 1
-            deck.append(card if copies[card.id] == 1 else _special_copy(card, copies[card.id]))
-    return deck
+    unique: dict[tuple[int, int], Card] = {}
+    for card in pool:
+        unique.setdefault((card.atk, card.defense), card)
+    cards = list(unique.values())
+    return rng.sample(cards, min(size, len(cards)))
 
 
 def _conflicts_with_hand(card: Card, hand: list[Card]) -> bool:
-    """Una mano nunca lleva dos cartas iguales: ni dos copias de la misma
-    carta (p.ej. dos copias de una especial) ni dos cartas con la misma
-    combinación ATK/DEF (p.ej. una especial 2/0 junto a la base 2/0)."""
+    """Salvaguarda: una mano nunca lleva dos cartas iguales ni dos con la
+    misma combinación ATK/DEF (con el catálogo actual ya no puede pasar,
+    pero protege ante mazos de prueba o catálogos futuros)."""
     return any(
-        c.catalog_id == card.catalog_id or (c.atk, c.defense) == (card.atk, card.defense)
+        c.id == card.id or (c.atk, c.defense) == (card.atk, card.defense)
         for c in hand
     )
 
