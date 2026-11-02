@@ -407,9 +407,10 @@ def end_turn(match: MatchState, timed_out: bool = False) -> MatchState:
     b.hp = max(0, min(b.max_hp, b.hp - damage_to_b - counter_to_b + heal_to_b))
     a.hp = max(0, min(a.max_hp, a.hp - damage_to_a - counter_to_a + heal_to_a))
 
-    # Regla de inactividad: SOLO cuenta el turno en que se agota el
-    # temporizador sin que el jugador haya hecho nada. Jugar cartas, pulsar
-    # PASAR TURNO o interactuar es actividad y reinicia el contador a 0.
+    # Regla ESTRICTA de inactividad: solo cuenta el turno en que se agota el
+    # temporizador sin una acción limpia. Solo jugar cartas (play_card) o
+    # pulsar PASAR TURNO (pass_turn) es actividad y reinicia el contador a 0;
+    # dejar una carta elegida a medias NO lo es (el panel no la juega).
     for player in (a, b):
         if player.acted_this_turn or player.staged_plays:
             player.inactive_turns = 0
