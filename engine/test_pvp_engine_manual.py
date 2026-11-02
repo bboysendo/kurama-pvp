@@ -238,6 +238,23 @@ end_turn_no_idle(m); end_turn_no_idle(m)
 assert m.player_a.energy == 3, m.player_a.energy   # nunca pasa de 3
 print("energy spend/regen OK")
 
+# --- Pasar turno sin energía: recarga +1 y NO cuenta como inactividad ---
+m = start_match([mk("p1", 1, 0)] * 16, [mk("q1", 1, 0)] * 16, hp_a=50, hp_b=50, seed=40)
+m.player_a.energy = 1
+m.player_a.hand = [mk("big1", 3, 0), mk("big2", 2, 1), mk("big3", 0, 3)]  # todas coste 2
+end_turn(m)  # A pasa forzado; B también pasa pero SÍ podía pagar
+assert m.player_a.energy == 2, m.player_a.energy
+assert m.player_a.inactive_turns == 0, m.player_a.inactive_turns
+assert m.player_b.inactive_turns == 1, m.player_b.inactive_turns
+print("forced pass OK: energía", m.player_a.energy, "inactividad", m.player_a.inactive_turns)
+
+# Pasar voluntariamente (pudiendo pagar) sí suma inactividad.
+m = start_match([mk("p1", 1, 0)] * 16, [mk("q1", 1, 0)] * 16, hp_a=50, hp_b=50, seed=41)
+play_card(m, "b", "q1", Zone.HEAD)
+end_turn(m)
+assert m.player_a.inactive_turns == 1 and m.player_a.energy == 3
+print("voluntary pass counts as inactivity OK")
+
 # --- Robo de Vida: cura al atacante el daño hecho en su zona (hasta heal_amount) ---
 deckA = [mk("a_vamp", 2, 0, ability=Ability.LIFESTEAL, heal=3)] * 15
 deckB = [mk("b_hit", 3, 0)] * 15

@@ -363,6 +363,12 @@ def _collect_counter_hits(attacker: PlayerState, defender: PlayerState, maps_atk
     return total
 
 
+def can_afford_any(player: PlayerState) -> bool:
+    """¿Puede pagar este turno al menos una carta de las que tiene en mano?"""
+    budget = min(MAX_ENERGY_SPEND_PER_TURN, player.energy) - player.energy_spent_this_turn
+    return any(c.cost_energy <= budget for c in player.hand)
+
+
 def end_turn(match: MatchState) -> MatchState:
     if match.status != MatchStatus.ONGOING:
         raise EngineError("La partida ya ha terminado.")
@@ -383,10 +389,14 @@ def end_turn(match: MatchState) -> MatchState:
 
     # Regla de inactividad: un turno sin NINGUNA carta jugada (p.ej. se agotó
     # el temporizador sin elegir nada) suma 1; jugar cualquier carta lo
-    # reinicia a 0. Se calcula ANTES de vaciar staged_plays.
+    # reinicia a 0. Excepción: si NO podía pagar ninguna carta de su mano
+    # (pase forzado por falta de energía), el turno no cuenta — nadie pierde
+    # por no tener energía. Se calcula ANTES de vaciar staged_plays/hand.
     for player in (a, b):
         if player.staged_plays:
             player.inactive_turns = 0
+        elif not can_afford_any(player):
+            match.log.append(f"⏭️ {player.name} pasa turno sin energía para sus cartas.")
         else:
             player.inactive_turns += 1
             if player.inactive_turns < INACTIVITY_LIMIT:

@@ -3738,16 +3738,30 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
             render_tactical_points(player_key)
 
         selected_cards = _selected_cards(player_key)
-        ready = bool(selected_cards) and all(_card_ready(player_key, c) for c in selected_cards)
-        n_sel = len(selected_cards)
-        confirm_label = "✅ Pasar Turno" + (f" ({n_sel} cartas · ⚡{committed_energy})" if n_sel > 1 else "")
+        # PASAR TURNO siempre activo: juega las cartas elegidas que tengan sus
+        # zonas completas y, si no hay ninguna (o no puedes pagar ninguna),
+        # cede el turno igualmente. La energía se recarga +1 en end_turn.
+        ready_cards = [c for c in selected_cards if _card_ready(player_key, c)]
+        ready_energy = sum(c["cost_energy"] for c in ready_cards)
+        if ready_cards:
+            confirm_label = "✅ Pasar Turno" + (
+                f" ({len(ready_cards)} cartas · ⚡{ready_energy})" if len(ready_cards) > 1 else ""
+            )
+        else:
+            confirm_label = "⏭️ Pasar Turno"
+        hand_cost_min = min((c["cost_energy"] for c in p["hand"]), default=0)
+        if p["hand"] and hand_cost_min > remaining_energy:
+            st.caption(
+                f"⚡ No te llega la energía para ninguna carta: pasa turno y recargarás "
+                f"+{ENERGY_PER_TURN} ⚡ (no cuenta como inactividad)."
+            )
         if st.button(
             confirm_label, key=f"confirm_turn_{player_key}",
-            type="primary", width="stretch", disabled=not ready,
+            type="primary", width="stretch",
         ):
             try:
                 attack_zones: list[Zone] = []
-                for card_dict in selected_cards:
+                for card_dict in ready_cards:
                     zc = _card_zones(player_key, card_dict["id"])
                     # La carta puede no necesitar una de las 2 zonas (p.ej. 0
                     # ATK no ataca nada): play_card exige igualmente un Zone
