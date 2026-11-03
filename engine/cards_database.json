@@ -14,9 +14,9 @@
     "is_placeholder": false,
     "heal_amount": 0,
     "counter_damage": 0,
-    "cost_energy": 2,
-    "nft_token_id": null,
-    "base_id": null
+    "energy_bonus": 0,
+    "cost_energy": 1,
+    "nft_token_id": null
   },
   {
     "id": "nft_fox_404_3x2",
@@ -33,9 +33,9 @@
     "is_placeholder": false,
     "heal_amount": 0,
     "counter_damage": 0,
-    "cost_energy": 2,
-    "nft_token_id": 404,
-    "base_id": null
+    "energy_bonus": 0,
+    "cost_energy": 1,
+    "nft_token_id": 404
   },
   {
     "id": "kr_pyre_cosmos_3x1",
@@ -52,9 +52,9 @@
     "is_placeholder": false,
     "heal_amount": 0,
     "counter_damage": 0,
-    "cost_energy": 2,
-    "nft_token_id": null,
-    "base_id": null
+    "energy_bonus": 0,
+    "cost_energy": 1,
+    "nft_token_id": null
   },
   {
     "id": "tz_shadow_claw_3x0",
@@ -71,9 +71,9 @@
     "is_placeholder": false,
     "heal_amount": 0,
     "counter_damage": 0,
-    "cost_energy": 2,
-    "nft_token_id": null,
-    "base_id": null
+    "energy_bonus": 0,
+    "cost_energy": 1,
+    "nft_token_id": null
   },
   {
     "id": "kr_celestial_duelist_2x2",
@@ -90,9 +90,9 @@
     "is_placeholder": false,
     "heal_amount": 0,
     "counter_damage": 0,
-    "cost_energy": 2,
-    "nft_token_id": null,
-    "base_id": null
+    "energy_bonus": 0,
+    "cost_energy": 1,
+    "nft_token_id": null
   },
   {
     "id": "nft_fox_11_2x1",
@@ -109,9 +109,9 @@
     "is_placeholder": false,
     "heal_amount": 0,
     "counter_damage": 0,
-    "cost_energy": 2,
-    "nft_token_id": 11,
-    "base_id": null
+    "energy_bonus": 0,
+    "cost_energy": 1,
+    "nft_token_id": 11
   },
   {
     "id": "kr_cyber_operative_2x0",
@@ -128,9 +128,9 @@
     "is_placeholder": false,
     "heal_amount": 0,
     "counter_damage": 0,
+    "energy_bonus": 0,
     "cost_energy": 1,
-    "nft_token_id": null,
-    "base_id": null
+    "nft_token_id": null
   },
   {
     "id": "nft_fox_150_1x1",
@@ -147,9 +147,9 @@
     "is_placeholder": false,
     "heal_amount": 0,
     "counter_damage": 0,
+    "energy_bonus": 0,
     "cost_energy": 1,
-    "nft_token_id": 150,
-    "base_id": null
+    "nft_token_id": 150
   },
   {
     "id": "nft_fox_666_1x0",
@@ -166,9 +166,9 @@
     "is_placeholder": false,
     "heal_amount": 0,
     "counter_damage": 0,
+    "energy_bonus": 0,
     "cost_energy": 1,
-    "nft_token_id": 666,
-    "base_id": null
+    "nft_token_id": 666
   },
   {
     "id": "nft_fox_27_0x0",
@@ -185,9 +185,9 @@
     "is_placeholder": false,
     "heal_amount": 0,
     "counter_damage": 0,
+    "energy_bonus": 0,
     "cost_energy": 1,
-    "nft_token_id": 27,
-    "base_id": null
+    "nft_token_id": 27
   },
   {
     "id": "nft_fox_233_2x3",
@@ -204,9 +204,9 @@
     "is_placeholder": false,
     "heal_amount": 0,
     "counter_damage": 0,
-    "cost_energy": 2,
-    "nft_token_id": 233,
-    "base_id": null
+    "energy_bonus": 0,
+    "cost_energy": 1,
+    "nft_token_id": 233
   },
   {
     "id": "kr_celestial_flux_1x3",
@@ -223,9 +223,9 @@
     "is_placeholder": false,
     "heal_amount": 0,
     "counter_damage": 0,
-    "cost_energy": 2,
-    "nft_token_id": null,
-    "base_id": null
+    "energy_bonus": 0,
+    "cost_energy": 1,
+    "nft_token_id": null
   },
   {
     "id": "tz_lava_rage_0x3",
@@ -242,9 +242,9 @@
     "is_placeholder": false,
     "heal_amount": 0,
     "counter_damage": 0,
-    "cost_energy": 2,
-    "nft_token_id": null,
-    "base_id": null
+    "energy_bonus": 0,
+    "cost_energy": 1,
+    "nft_token_id": null
   },
   {
     "id": "tz_raging_earthquake_1x2",
@@ -261,9 +261,9 @@
     "is_placeholder": false,
     "heal_amount": 0,
     "counter_damage": 0,
-    "cost_energy": 2,
-    "nft_token_id": null,
-    "base_id": null
+    "energy_bonus": 0,
+    "cost_energy": 1,
+    "nft_token_id": null
   },
   {
     "id": "kr_cyber_guardian_0x2",
@@ -280,9 +280,9 @@
     "is_placeholder": false,
     "heal_amount": 0,
     "counter_damage": 0,
+    "energy_bonus": 0,
     "cost_energy": 1,
-    "nft_token_id": null,
-    "base_id": null
+    "nft_token_id": null
   },
   {
     "id": "tz_flora_fury_0x1",
@@ -299,8 +299,141 @@
     "is_placeholder": false,
     "heal_amount": 0,
     "counter_damage": 0,
+    "energy_bonus": 0,
     "cost_energy": 1,
-    "nft_token_id": null,
-    "base_id": null
+    "nft_token_id": null
+  },
+  {
+    "id": "sp_fox_1468_3x0",
+    "name": "Fox #1468 · Ronin Executioner",
+    "faction": "kuramarun",
+    "category": "special",
+    "atk": 3,
+    "defense": 0,
+    "ability": "clean_strike",
+    "element": "fire",
+    "subtitle": null,
+    "description": "Especial de ataque — samurái ronin que remata sin piedad. Golpe Limpio: si el rival no tiene defensa en la zona, hace 10 + 3 = 13 de daño. Si la bloquean, el combo se anula y pega su ATK normal.",
+    "image_path": "engine/assets/cards/sp_fox_1468_3x0.png",
+    "is_placeholder": false,
+    "heal_amount": 0,
+    "counter_damage": 0,
+    "energy_bonus": 0,
+    "cost_energy": 2,
+    "nft_token_id": 1468
+  },
+  {
+    "id": "sp_fox_87_2x0",
+    "name": "Fox #87 · Crimson Goggles",
+    "faction": "kuramarun",
+    "category": "special",
+    "atk": 2,
+    "defense": 0,
+    "ability": "clean_strike",
+    "element": "fire",
+    "subtitle": null,
+    "description": "Especial de ataque — piloto carmesí que busca el hueco en la guardia. Golpe Limpio: si el rival no tiene defensa en la zona, hace 10 + 3 = 13 de daño. Si la bloquean, el combo se anula y pega su ATK normal.",
+    "image_path": "engine/assets/cards/sp_fox_87_2x0.png",
+    "is_placeholder": false,
+    "heal_amount": 0,
+    "counter_damage": 0,
+    "energy_bonus": 0,
+    "cost_energy": 2,
+    "nft_token_id": 87
+  },
+  {
+    "id": "sp_fox_1597_2x2",
+    "name": "Fox #1597 · Shadow Hat Duelist",
+    "faction": "kuramarun",
+    "category": "special",
+    "atk": 2,
+    "defense": 2,
+    "ability": "clean_strike",
+    "element": "shadow",
+    "subtitle": null,
+    "description": "Especial de ataque — duelista de las sombras, golpea y se cubre. Golpe Limpio: si el rival no tiene defensa en la zona, hace 10 + 3 = 13 de daño. Si la bloquean, el combo se anula y pega su ATK normal.",
+    "image_path": "engine/assets/cards/sp_fox_1597_2x2.png",
+    "is_placeholder": false,
+    "heal_amount": 0,
+    "counter_damage": 0,
+    "energy_bonus": 0,
+    "cost_energy": 2,
+    "nft_token_id": 1597
+  },
+  {
+    "id": "sp_fox_487_1x0",
+    "name": "Fox #487 · Neon Pounce",
+    "faction": "kuramarun",
+    "category": "special",
+    "atk": 1,
+    "defense": 0,
+    "ability": "clean_strike",
+    "element": "air",
+    "subtitle": null,
+    "description": "Especial de ataque — salto de neón tan rápido que nadie lo ve venir. Golpe Limpio: si el rival no tiene defensa en la zona, hace 10 + 3 = 13 de daño. Si la bloquean, el combo se anula y pega su ATK normal.",
+    "image_path": "engine/assets/cards/sp_fox_487_1x0.png",
+    "is_placeholder": false,
+    "heal_amount": 0,
+    "counter_damage": 0,
+    "energy_bonus": 0,
+    "cost_energy": 2,
+    "nft_token_id": 487
+  },
+  {
+    "id": "sp_fox_1281_0x3",
+    "name": "Fox #1281 · Moonshrine Guardian",
+    "faction": "kuramarun",
+    "category": "special",
+    "atk": 0,
+    "defense": 3,
+    "ability": "guard_energy",
+    "element": "water",
+    "subtitle": null,
+    "description": "Especial de vida — guardiana del santuario lunar. Guardia Vital: si bloqueas del todo el ataque rival en su zona, recuperas +2 de energía.",
+    "image_path": "engine/assets/cards/sp_fox_1281_0x3.png",
+    "is_placeholder": false,
+    "heal_amount": 0,
+    "counter_damage": 0,
+    "energy_bonus": 2,
+    "cost_energy": 2,
+    "nft_token_id": 1281
+  },
+  {
+    "id": "sp_fox_963_0x2",
+    "name": "Fox #963 · Blossom Ward",
+    "faction": "kuramarun",
+    "category": "special",
+    "atk": 0,
+    "defense": 2,
+    "ability": "guard_energy",
+    "element": "nature",
+    "subtitle": null,
+    "description": "Especial de vida — protectora de los cerezos. Guardia Vital: si bloqueas del todo el ataque rival en su zona, recuperas +1 de energía.",
+    "image_path": "engine/assets/cards/sp_fox_963_0x2.png",
+    "is_placeholder": false,
+    "heal_amount": 0,
+    "counter_damage": 0,
+    "energy_bonus": 1,
+    "cost_energy": 2,
+    "nft_token_id": 963
+  },
+  {
+    "id": "sp_fox_444_1x1",
+    "name": "Fox #444 · Sakura Medic",
+    "faction": "kuramarun",
+    "category": "special",
+    "atk": 1,
+    "defense": 1,
+    "ability": "guard_energy",
+    "element": "nature",
+    "subtitle": null,
+    "description": "Especial de vida — sanadora sakura que pica y protege. Guardia Vital: si bloqueas del todo el ataque rival en su zona, recuperas +1 de energía.",
+    "image_path": "engine/assets/cards/sp_fox_444_1x1.png",
+    "is_placeholder": false,
+    "heal_amount": 0,
+    "counter_damage": 0,
+    "energy_bonus": 1,
+    "cost_energy": 2,
+    "nft_token_id": 444
   }
 ]

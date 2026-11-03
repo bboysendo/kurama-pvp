@@ -34,7 +34,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from card_schema import Ability, Card, CardCategory, Element, Faction
+from card_schema import CLEAN_STRIKE_BASE_DAMAGE, CLEAN_STRIKE_BONUS, Ability, Card, CardCategory, Element, Faction
 
 ENGINE_DIR = Path(__file__).resolve().parent
 PVP_ROOT = ENGINE_DIR.parent
@@ -56,11 +56,11 @@ RAGING_EARTHQUAKE_IMG = f"{GENERATED_REL}/tz_raging_earthquake_1x2.png"
 
 def _nft_card(card_id: str, name: str, atk: int, defense: int, token_id: int, description: str,
               category: CardCategory = CardCategory.STANDARD, ability: Ability = Ability.NONE,
-              element: Element = Element.ARCANE, heal_amount: int = 0) -> Card:
+              element: Element = Element.ARCANE, heal_amount: int = 0, energy_bonus: int = 0) -> Card:
     return Card(
         id=card_id, name=name, faction=Faction.KURAMARUN, category=category,
         atk=atk, defense=defense, ability=ability, element=element,
-        description=description, heal_amount=heal_amount,
+        description=description, heal_amount=heal_amount, energy_bonus=energy_bonus,
         image_path=f"{GENERATED_REL}/{card_id}.png", nft_token_id=token_id,
     )
 
@@ -149,12 +149,74 @@ BASE_CARDS: list[Card] = [
     ),
 ]
 
+# --------------------------------------------------------------------------- #
+# Las 7 cartas ESPECIALES (coste 2) — revisión del creador del 03/11/2026
+# --------------------------------------------------------------------------- #
+# Stats fijadas por el creador. Ataque: 3/0, 2/0, 2/2, 1/0. Vida (femeninas): 0/3, 0/2, 1/1.
+SPECIAL_ATTACK_COMBOS = [(3, 0), (2, 0), (2, 2), (1, 0)]
+SPECIAL_GUARD_COMBOS = [(0, 3), (0, 2), (1, 1)]
+_CLEAN_TXT = (f"Golpe Limpio: si el rival no tiene defensa en la zona, hace {CLEAN_STRIKE_BASE_DAMAGE} + "
+              f"{CLEAN_STRIKE_BONUS} = {CLEAN_STRIKE_BASE_DAMAGE + CLEAN_STRIKE_BONUS} de daño. Si la bloquean, "
+              "el combo se anula y pega su ATK normal.")
+
+
+def _guard_txt(bonus: int) -> str:
+    return (f"Guardia Vital: si bloqueas del todo el ataque rival en su zona, recuperas +{bonus} de energía.")
+
+
+SPECIAL_CARDS: list[Card] = [
+    # --- Ataque con plus de daño (Golpe Limpio) ----------------------------
+    _nft_card("sp_fox_1468_3x0", "Fox #1468 · Ronin Executioner", 3, 0, 1468,
+              "Especial de ataque — samurái ronin que remata sin piedad. " + _CLEAN_TXT,
+              category=CardCategory.SPECIAL, ability=Ability.CLEAN_STRIKE, element=Element.FIRE),
+    _nft_card("sp_fox_87_2x0", "Fox #87 · Crimson Goggles", 2, 0, 87,
+              "Especial de ataque — piloto carmesí que busca el hueco en la guardia. " + _CLEAN_TXT,
+              category=CardCategory.SPECIAL, ability=Ability.CLEAN_STRIKE, element=Element.FIRE),
+    _nft_card("sp_fox_1597_2x2", "Fox #1597 · Shadow Hat Duelist", 2, 2, 1597,
+              "Especial de ataque — duelista de las sombras, golpea y se cubre. " + _CLEAN_TXT,
+              category=CardCategory.SPECIAL, ability=Ability.CLEAN_STRIKE, element=Element.SHADOW),
+    _nft_card("sp_fox_487_1x0", "Fox #487 · Neon Pounce", 1, 0, 487,
+              "Especial de ataque — salto de neón tan rápido que nadie lo ve venir. " + _CLEAN_TXT,
+              category=CardCategory.SPECIAL, ability=Ability.CLEAN_STRIKE, element=Element.AIR),
+    # --- Femeninas de Defensa / Vida (Guardia Vital) -----------------------
+    _nft_card("sp_fox_1281_0x3", "Fox #1281 · Moonshrine Guardian", 0, 3, 1281,
+              "Especial de vida — guardiana del santuario lunar. " + _guard_txt(2),
+              category=CardCategory.SPECIAL, ability=Ability.GUARD_ENERGY, element=Element.WATER, energy_bonus=2),
+    _nft_card("sp_fox_963_0x2", "Fox #963 · Blossom Ward", 0, 2, 963,
+              "Especial de vida — protectora de los cerezos. " + _guard_txt(1),
+              category=CardCategory.SPECIAL, ability=Ability.GUARD_ENERGY, element=Element.NATURE, energy_bonus=1),
+    _nft_card("sp_fox_444_1x1", "Fox #444 · Sakura Medic", 1, 1, 444,
+              "Especial de vida — sanadora sakura que pica y protege. " + _guard_txt(1),
+              category=CardCategory.SPECIAL, ability=Ability.GUARD_ENERGY, element=Element.NATURE, energy_bonus=1),
+]
+
+
 def build_catalog() -> list[Card]:
-    return list(BASE_CARDS)
+    return list(BASE_CARDS) + list(SPECIAL_CARDS)
 
 
 def validate_catalog(cards: list[Card], check_files: bool = True) -> None:
-    """Unicidad total — falla en voz alta si alguien rompe el catálogo."""
+    """Unicidad total — falla en voz alta si alguien rompe el catálogo: 16 base (coste 1, una por
+    combinación ATK/DEF) + 7 especiales (coste 2, con sus stats y habilidades fijadas)."""
+    specials = [c for c in cards if c.category == CardCategory.SPECIAL]
+    cards = [c for c in cards if c.category != CardCategory.SPECIAL]
+    assert sorted((c.atk, c.defense) for c in specials if c.ability == Ability.CLEAN_STRIKE) == sorted(
+        SPECIAL_ATTACK_COMBOS), "Especiales de ataque incorrectas"
+    assert sorted((c.atk, c.defense) for c in specials if c.ability == Ability.GUARD_ENERGY) == sorted(
+        SPECIAL_GUARD_COMBOS), "Especiales de vida incorrectas"
+    assert len(specials) == len(SPECIAL_ATTACK_COMBOS) + len(SPECIAL_GUARD_COMBOS)
+    assert sorted(c.energy_bonus for c in specials if c.ability == Ability.GUARD_ENERGY) == [1, 1, 2]
+    for c in specials:
+        assert c.cost_energy == 2, f"{c.id}: las especiales cuestan 2"
+    for c in cards:
+        assert c.cost_energy == 1, f"{c.id}: las cartas base cuestan 1"
+    all_cards = cards + specials
+    assert len({c.id for c in all_cards}) == len(all_cards), "Ids de carta repetidos (base/especial)"
+    assert len({c.image_path for c in all_cards}) == len(all_cards), "Dos cartas comparten imagen"
+    assert len({c.nft_token_id for c in all_cards if c.nft_token_id is not None}) == len(
+        [c for c in all_cards if c.nft_token_id is not None]), "Dos cartas usan el mismo zorro NFT"
+    for c in specials:
+        assert c.image_path and (not check_files or (PVP_ROOT / c.image_path).exists()), f"{c.id}: sin imagen"
     combos = [(c.atk, c.defense) for c in cards]
     assert len(combos) == len(set(combos)), f"Combinaciones ATK/DEF repetidas: {sorted(combos)}"
     assert sorted(combos) == sorted(REQUIRED_BASE_COMBOS), (
@@ -217,6 +279,8 @@ _PALETTES = {
     "balanced": ((40, 30, 100), (120, 100, 230)),
     Ability.LIFESTEAL: ((80, 0, 30), (220, 30, 80)),
     Ability.COMBO_STRIKE: ((70, 40, 0), (255, 170, 30)),
+    Ability.CLEAN_STRIKE: ((90, 10, 10), (255, 90, 40)),
+    Ability.GUARD_ENERGY: ((90, 20, 80), (255, 130, 210)),
 }
 
 
@@ -276,9 +340,11 @@ def generate_nft_card_image(card: Card, out_path: Path) -> None:
     _fit_text(d, (W // 2, 38), card.name.upper(), (x1 - x0) - 70, 22)
 
     if card.ability != Ability.NONE:
-        label = {Ability.LIFESTEAL: "ROBO DE VIDA", Ability.COMBO_STRIKE: "COMBO SIMULTÁNEO"}.get(
-            card.ability, "ESPECIAL"
-        )
+        label = {
+            Ability.LIFESTEAL: "ROBO DE VIDA", Ability.COMBO_STRIKE: "COMBO SIMULTÁNEO",
+            Ability.CLEAN_STRIKE: f"GOLPE LIMPIO {CLEAN_STRIKE_BASE_DAMAGE}+{CLEAN_STRIKE_BONUS}",
+            Ability.GUARD_ENERGY: f"GUARDIA +{card.energy_bonus} ENERGÍA",
+        }.get(card.ability, "ESPECIAL")
         d.rounded_rectangle([x0 + 70, 352, x1 - 70, 380], radius=10, fill=dark + (235,), outline=gold, width=2)
         _text_center(d, (W // 2, 366), label, 16, stroke_w=2)
 
@@ -293,6 +359,10 @@ def generate_nft_card_image(card: Card, out_path: Path) -> None:
 
     d.rounded_rectangle([160, 458, 340, 484], radius=8, fill=(150, 110, 60), outline=gold_dark, width=2)
     _text_center(d, (250, 471), "KURAMARUN PVP", 14, stroke_w=2)
+    # Coste de energía (especiales: 2) en una gema azul arriba a la izquierda.
+    if card.category == CardCategory.SPECIAL:
+        d.ellipse([x0 + 6, 66, x0 + 62, 122], fill=(20, 60, 160), outline=gold, width=4)
+        _text_center(d, (x0 + 34, 94), str(card.cost_energy), 30, fill=(220, 240, 255))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     img.save(out_path)
@@ -334,7 +404,7 @@ def main() -> None:
     generate_images(cards)
     validate_catalog(cards, check_files=True)
 
-    print(f"Cartas únicas: {len(cards)} (esperado {len(REQUIRED_BASE_COMBOS)})")
+    print(f"Cartas: {len(cards)} (esperado {len(REQUIRED_BASE_COMBOS)} base + {len(SPECIAL_CARDS)} especiales)")
 
     with open(DATABASE_PATH, "w", encoding="utf-8") as f:
         json.dump([c.to_dict() for c in cards], f, indent=2, ensure_ascii=False)

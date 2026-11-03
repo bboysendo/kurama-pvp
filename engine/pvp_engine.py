@@ -24,7 +24,16 @@ Reglas modeladas (ver PVP_Rules/PVP KURAMARUN....md para el texto original):
   Ataque Puro (3 ATK/0 DEF) jugada después inflige 20 de daño directo fijo en
   vez del cálculo normal (ignora escudo/perforante/etc. de esa zona).
 - Mazo y mano: unicidad total — nunca dos cartas iguales ni dos con la
-  misma combinación ATK/DEF (build_deck_from_pool / _draw).
+  misma combinación (ATK, DEF, habilidad) (build_deck_from_pool / _draw).
+  Una especial puede convivir con la base de sus mismas stats.
+- Costes: las 16 base cuestan 1; las 7 especiales cuestan 2.
+- Golpe Limpio (CLEAN_STRIKE, 4 especiales de ataque): si el rival no tiene
+  NINGUNA defensa en la zona atacada, la carta hace 10 + 3 = 13 de daño en
+  vez de su ATK. Si el rival la bloquea (DEF > 0 ahí), el combo se anula y
+  cuenta su daño normal ATK − DEF. El Combo Crítico (20) tiene prioridad.
+- Guardia Vital (GUARD_ENERGY, 3 especiales femeninas): si el rival ataca
+  su zona de defensa y el bloqueo es total (0 daño en esa zona), el jugador
+  gana `energy_bonus` de energía al cerrar el turno (tope MAX_ENERGY).
 - Habilidades soportadas por el motor (hoy ninguna carta del catálogo las
   lleva, se conservan por si se asignan a alguna de las 16):
     * Robo de Vida (LIFESTEAL): si la zona que ataca recibe daño (>0), el
@@ -37,8 +46,13 @@ Reglas modeladas (ver PVP_Rules/PVP KURAMARUN....md para el texto original):
   recupera +ENERGY_PER_TURN, sin superar nunca MAX_ENERGY (3). Ej.: 3 ->
   gastas 3 -> 0 + 1 = 1 al turno siguiente; gastas 1 -> 0 + 1 = 1; pasas
   sin gastar -> 2; y así hasta volver a 3.
-- Mano: se renueva por completo cada turno (se descartan las cartas no
-  jugadas y se roban HAND_SIZE nuevas) — el mazo de descarte se reباraja
+- Mano PERSISTENTE: las cartas que no juegas se quedan en la mano para los
+  turnos siguientes. Al cerrar el turno solo van a descarte las cartas
+  JUGADAS y se roba lo justo para volver a HAND_SIZE.
+- Rotación por inactividad: si un jugador cierra el turno SIN jugar ninguna
+  carta (pasa turno o se le agota el tiempo), se descarta UNA carta al azar
+  de su mano y se roba una nueva en su lugar (_rotate_one_card), en vez de
+  renovar la mano entera. El mazo de descarte se rebaraja
   automáticamente en cuanto el mazo de robo se queda sin cartas.
 
 Ambigüedades del documento resueltas con un criterio explícito (y señaladas
@@ -54,6 +68,9 @@ from enum import Enum
 from typing import Optional
 
 from card_schema import (
+    CLEAN_STRIKE_BASE_DAMAGE,
+    CLEAN_STRIKE_BONUS,
+    CRITICAL_COMBO_DAMAGE,
     DECK_SIZE,
     ENERGY_PER_TURN,
     HAND_SIZE,
@@ -128,15 +145,21 @@ class MatchState:
 def build_deck_from_pool(pool: list[Card], size: int = DECK_SIZE, rng: Optional[random.Random] = None) -> list[Card]:
     """Mazo de hasta `size` cartas SIN NINGUNA repetición: ni la misma carta
     dos veces ni dos cartas con la misma combinación ATK/DEF (si el pool
-    trajera dos con las mismas stats, solo entra una). Con el catálogo de 16
+    trajera dos con las mismas stats Y la misma habilidad, solo entra una: una especial sí convive
+    con la base de sus mismas stats). Con el catálogo de 16
     cartas únicas y DECK_SIZE = 16, cada mazo es exactamente el set completo
     de combinaciones, barajado."""
     rng = rng or random
-    unique: dict[tuple[int, int], Card] = {}
+    unique: dict[tuple, Card] = {}
     for card in pool:
-        unique.setdefault((card.atk, card.defense), card)
+        unique.setdefault(_uniqueness_key(card), card)
     cards = list(unique.values())
     return rng.sample(cards, min(size, len(cards)))
+
+
+def _uniqueness_key(card: Card) -> tuple:
+    """Identidad de juego de una carta: stats + habilidad (la base 3/0 y la especial 3/0 son distintas)."""
+    return card.atk, card.defense, card.ability
 
 
 def _conflicts_with_hand(card: Card, hand: list[Card]) -> bool:
@@ -144,7 +167,7 @@ def _conflicts_with_hand(card: Card, hand: list[Card]) -> bool:
     misma combinación ATK/DEF (con el catálogo actual ya no puede pasar,
     pero protege ante mazos de prueba o catálogos futuros)."""
     return any(
-        c.id == card.id or (c.atk, c.defense) == (card.atk, card.defense)
+        c.id == card.id or _uniqueness_key(c) == _uniqueness_key(card)
         for c in hand
     )
 
@@ -179,6 +202,32 @@ def _draw(player: PlayerState, rng: random.Random, n: int = HAND_SIZE) -> None:
         if idx is None:
             return
         player.hand.append(player.deck.pop(idx))
+
+
+def _refill_hand(player: PlayerState, rng: random.Random) -> None:
+    """Roba solo las cartas que falten para volver a HAND_SIZE (la mano persiste entre turnos)."""
+    missing = HAND_SIZE - len(player.hand)
+    if missing > 0:
+        _draw(player, rng, n=missing)
+
+
+def _rotate_one_card(player: PlayerState, match: MatchState) -> None:
+    """Regla de rotación por inactividad: el jugador cerró el turno sin jugar ninguna carta, así que
+    se descarta UNA carta al azar de su mano y se roba una nueva (no se resetea la mano entera).
+    La carta retirada se aparta mientras se roba la sustituta (va al descarte DESPUÉS), así nunca
+    vuelve a la mano en el mismo robo aunque el mazo se rebaraje. Si no hay ninguna carta que robar
+    (mazo y descarte vacíos), la carta se queda en la mano: rotar no tendría sentido."""
+    if not player.hand:
+        return
+    removed = player.hand.pop(match.rng.randrange(len(player.hand)))
+    before = len(player.hand)
+    _refill_hand(player, match.rng)
+    if len(player.hand) == before:
+        player.hand.append(removed)  # nada que robar: no se pierde la carta
+        return
+    player.discard.append(removed)
+    # El log es público: no revela qué carta tenía el jugador en la mano.
+    match.log.append(f"🔄 {player.name} no jugó cartas: descarta 1 carta al azar de su mano y roba una nueva.")
 
 
 def start_match(
@@ -255,6 +304,8 @@ class _ZoneMaps:
     heavy_attack_zones: set  # zonas donde se jugó una carta 3 ATK/0 DEF este turno
     lifesteal_cap: dict      # zona -> HP máximos que roba el atacante si daña esa zona
     combo_strike: bool       # jugó al menos una carta de Combo Simultáneo este turno
+    clean_strike: dict       # zona -> ATK de las cartas de Golpe Limpio que atacan ahí (lista)
+    guard_energy: dict       # zona -> energía que dan las Guardia Vital que defienden ahí si bloquean del todo
 
 
 def _build_zone_maps(player: PlayerState) -> _ZoneMaps:
@@ -265,6 +316,8 @@ def _build_zone_maps(player: PlayerState) -> _ZoneMaps:
     heavy_attack_zones = set()
     lifesteal_cap = {z: 0 for z in Zone}
     combo_strike = False
+    clean_strike = {z: [] for z in Zone}
+    guard_energy = {z: 0 for z in Zone}
     potion_zone, potion_card = None, None
 
     for staged in player.staged_plays:
@@ -282,26 +335,33 @@ def _build_zone_maps(player: PlayerState) -> _ZoneMaps:
             lifesteal_cap[zone] += card.heal_amount
         if card.ability == Ability.COMBO_STRIKE:
             combo_strike = True
+        if card.ability == Ability.CLEAN_STRIKE and card.atk > 0:
+            clean_strike[zone].append(card.atk)
+        if card.ability == Ability.GUARD_ENERGY:
+            guard_energy[def_zone] += card.energy_bonus
         if card.atk == 3 and card.defense == 0:
             heavy_attack_zones.add(zone)
 
     return _ZoneMaps(
         attack, shield, piercing_zones, counter_damage, potion_zone, potion_card, heavy_attack_zones,
-        lifesteal_cap, combo_strike,
+        lifesteal_cap, combo_strike, clean_strike, guard_energy,
     )
 
 
-def _resolve_direction(attacker: PlayerState, defender: PlayerState, maps_atk: _ZoneMaps, maps_def: _ZoneMaps, log: list[str]) -> tuple[int, int, int]:
+def _resolve_direction(attacker: PlayerState, defender: PlayerState, maps_atk: _ZoneMaps, maps_def: _ZoneMaps, log: list[str]) -> tuple[int, int, int, set]:
     """Daño total que `attacker` inflige a `defender`, curación que
     `defender` recibe (pociones) y HP que `attacker` roba (Robo de Vida),
     resolviendo las 3 zonas. Devuelve (daño_total, curacion_defensor,
-    robo_vida_atacante); no aplica los cambios de HP (eso lo hace el caller,
+    robo_vida_atacante, zonas_bloqueadas) — zonas_bloqueadas: zonas que
+    `attacker` atacó y en las que `defender` no recibió NADA de daño (bloqueo
+    total; las usa Guardia Vital). No aplica los cambios de HP (eso lo hace el caller,
     para que las dos direcciones se calculen sobre el MISMO estado
     "congelado" de inicio de turno, de verdad síncrono)."""
     total_damage = 0
     total_heal = 0
     total_steal = 0
     zones_hit = 0
+    blocked_zones: set = set()
 
     for z in Zone:
         raw_atk = maps_atk.attack[z]
@@ -316,14 +376,28 @@ def _resolve_direction(attacker: PlayerState, defender: PlayerState, maps_atk: _
         if raw_atk == 0:
             continue  # nada que resolver en esta zona para esta dirección
 
+        clean_atks = maps_atk.clean_strike[z]
         if attacker.tripartite_claimed and z in maps_atk.heavy_attack_zones:
-            damage = 20
-            log.append(f"¡Combo Crítico! {attacker.name} inflige 20 de daño directo en {z.value}.")
+            damage = CRITICAL_COMBO_DAMAGE
+            log.append(f"¡Combo Crítico! {attacker.name} inflige {CRITICAL_COMBO_DAMAGE} de daño directo en {z.value}.")
+        elif clean_atks and maps_def.shield[z] == 0:
+            # Golpe Limpio: el rival no tiene NINGUNA defensa aquí => cada carta especial pega 10 + 3
+            # en vez de su ATK (el resto de cartas de la zona suman su ATK normal).
+            per_card = CLEAN_STRIKE_BASE_DAMAGE + CLEAN_STRIKE_BONUS
+            damage = raw_atk - sum(clean_atks) + per_card * len(clean_atks)
+            log.append(
+                f"💥 ¡Golpe Limpio de {attacker.name} en {z.value}! Sin defensa rival: "
+                f"{CLEAN_STRIKE_BASE_DAMAGE} + {CLEAN_STRIKE_BONUS} de daño extra"
+                + (f" (x{len(clean_atks)})" if len(clean_atks) > 1 else "") + "."
+            )
         else:
             shield = 0 if z in maps_atk.piercing_zones else maps_def.shield[z]
             damage = max(0, raw_atk - shield)
+            if clean_atks:
+                log.append(f"🛡️ {defender.name} bloquea en {z.value}: el Golpe Limpio de {attacker.name} se anula.")
 
         if damage <= 0:
+            blocked_zones.add(z)
             continue
 
         if z not in attacker.zones_damaged:
@@ -349,7 +423,7 @@ def _resolve_direction(attacker: PlayerState, defender: PlayerState, maps_atk: _
             f"⚡ ¡Combo Simultáneo de {attacker.name}! {zones_hit} zonas dañadas a la vez: +{bonus} de daño."
         )
 
-    return total_damage, total_heal, total_steal
+    return total_damage, total_heal, total_steal, blocked_zones
 
 
 def _collect_counter_hits(attacker: PlayerState, defender: PlayerState, maps_atk: _ZoneMaps, maps_def: _ZoneMaps, log: list[str]) -> int:
@@ -397,8 +471,13 @@ def end_turn(match: MatchState, timed_out: bool = False) -> MatchState:
     maps_a = _build_zone_maps(a)
     maps_b = _build_zone_maps(b)
 
-    damage_to_b, heal_to_b, steal_to_a = _resolve_direction(a, b, maps_a, maps_b, match.log)
-    damage_to_a, heal_to_a, steal_to_b = _resolve_direction(b, a, maps_b, maps_a, match.log)
+    damage_to_b, heal_to_b, steal_to_a, b_blocked = _resolve_direction(a, b, maps_a, maps_b, match.log)
+    damage_to_a, heal_to_a, steal_to_b, a_blocked = _resolve_direction(b, a, maps_b, maps_a, match.log)
+    # Guardia Vital: energía extra por cada zona donde una femenina bloqueó del todo el ataque rival.
+    guard_bonus = {
+        "a": sum(maps_a.guard_energy[z] for z in a_blocked),
+        "b": sum(maps_b.guard_energy[z] for z in b_blocked),
+    }
     heal_to_a += steal_to_a
     heal_to_b += steal_to_b
     counter_to_a = _collect_counter_hits(a, b, maps_a, maps_b, match.log)  # contraataques de B que golpean a A
@@ -423,17 +502,27 @@ def end_turn(match: MatchState, timed_out: bool = False) -> MatchState:
                 )
         player.acted_this_turn = False
 
-    # Fin de turno: las cartas jugadas y las que quedaron en mano van a descarte.
+    # Fin de turno: SOLO las cartas jugadas van a descarte; las no jugadas siguen en la mano.
+    # Quien no jugó ninguna carta rota 1 carta al azar (_rotate_one_card). Después se roba lo que
+    # falte para volver a HAND_SIZE.
     # Energía: se DESCUENTA lo gastado este turno y luego se recupera
     # +ENERGY_PER_TURN, sin pasar nunca de MAX_ENERGY (3).
-    for player in (a, b):
+    for key, player in (("a", a), ("b", b)):
         spent = player.energy_spent_this_turn
         player.energy = min(MAX_ENERGY, max(0, player.energy - spent) + ENERGY_PER_TURN)
+        if guard_bonus[key] > 0:
+            gained = min(MAX_ENERGY, player.energy + guard_bonus[key]) - player.energy
+            player.energy += gained
+            match.log.append(
+                f"💖 Guardia Vital: {player.name} bloquea el ataque y recupera +{guard_bonus[key]} de energía"
+                + (f" (tope {MAX_ENERGY}: +{gained} efectiva)." if gained < guard_bonus[key] else ".")
+            )
+        played_any = bool(player.staged_plays)
         player.discard.extend(sp.card for sp in player.staged_plays)
-        player.discard.extend(player.hand)
-        player.hand = []
         player.staged_plays = []
-        _draw(player, match.rng)
+        if not played_any:
+            _rotate_one_card(player, match)
+        _refill_hand(player, match.rng)
 
     a_idle = a.inactive_turns >= INACTIVITY_LIMIT
     b_idle = b.inactive_turns >= INACTIVITY_LIMIT
@@ -480,8 +569,8 @@ def end_turn(match: MatchState, timed_out: bool = False) -> MatchState:
 
 def auto_skip_turn(match: MatchState, player: str) -> None:
     """El temporizador de turno (TURN_TIMER_SECONDS) expiró sin acción: no se stagea nada extra para
-    ese jugador (sus cartas no jugadas se descartan igualmente en
-    end_turn)."""
+    ese jugador. Sus cartas siguen en la mano; como no jugó ninguna, end_turn rota 1 carta al azar
+    (_rotate_one_card)."""
     match.log.append(f"{_get_player(match, player).name} no actuó a tiempo: turno pasa automáticamente.")
 
 

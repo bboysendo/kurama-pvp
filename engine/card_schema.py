@@ -2,9 +2,12 @@
 Esquema de datos estándar para las cartas de combate PVP de Kurama Run.
 
 Basado en PVP_Rules/PVP KURAMARUN....md, con la revisión del creador del
-02/11/2026: unicidad total — el juego tiene exactamente 16 cartas, una por
-cada combinación ATK/DEF de 0 a 3 (ataque 3/3..0/0 y su inverso defensivo),
-sin repeticiones de ningún tipo. Coste de energía 1-2, zonas de impacto
+02/11/2026: unicidad total — 16 cartas BASE, una por cada combinación ATK/DEF
+de 0 a 3 (ataque 3/3..0/0 y su inverso defensivo), sin repeticiones. Revisión
+del 03/11/2026: las 16 base cuestan SIEMPRE 1 de energía y se añaden 7 cartas
+ESPECIALES de coste 2 (4 de Golpe Limpio y 3 femeninas de Guardia Vital, ver
+Ability). Una especial puede compartir ATK/DEF con una base: la unicidad se
+mide por (ATK, DEF, habilidad). Coste de energía 1-2, zonas de impacto
 Cabeza/Tronco/Piernas, daño real = max(0, ATK atacante - DEF rival). Ver ese documento para la justificación completa de cada regla; este
 módulo solo modela la ESTRUCTURA de una carta, no la lógica de combate (eso
 vive en pvp_engine.py).
@@ -63,11 +66,18 @@ class CardCategory(str, Enum):
 
 
 class Ability(str, Enum):
-    """Habilidad especial. Las 16 cartas actuales no llevan ninguna (solo
-    stats); el motor sigue soportando todas estas por si se asignan a
-    alguna carta más adelante."""
+    """Habilidad especial. Las 16 cartas base no llevan ninguna (solo stats);
+    las 7 especiales llevan CLEAN_STRIKE o GUARD_ENERGY. El resto se conserva
+    por si se asigna a alguna carta más adelante."""
 
     NONE = "none"
+    # Especiales de ATAQUE (coste 2): si su ATK entra entero porque el rival NO tiene defensa en esa
+    # zona, el golpe hace CLEAN_STRIKE_BASE_DAMAGE + CLEAN_STRIKE_BONUS (10 + 3 = 13) en vez de su ATK.
+    # Si el rival la bloquea (cualquier DEF en esa zona), el combo se anula: daño normal ATK − DEF.
+    CLEAN_STRIKE = "clean_strike"
+    # Especiales FEMENINAS de Defensa/Vida (coste 2): si el rival ataca su zona de defensa y el bloqueo
+    # es TOTAL (0 daño en esa zona), el jugador recupera `energy_bonus` de energía (sin pasar de MAX_ENERGY).
+    GUARD_ENERGY = "guard_energy"
     LIFESTEAL = "lifesteal"       # Cura al atacante según el daño que hace en su zona
     COMBO_STRIKE = "combo_strike"  # +daño si ese turno se dañan 2 o 3 zonas a la vez
     HEAL_POTION = "heal_potion"   # (sin cartas) Bloquea la zona y convierte el daño en HP
@@ -75,16 +85,20 @@ class Ability(str, Enum):
     COUNTER = "counter"           # (sin cartas) Devuelve daño si el rival no ataca esa zona
 
 
+BASE_CARD_COST = 1      # Las 16 cartas base: coste FIJO de 1 (revisión del 03/11/2026)
+SPECIAL_CARD_COST = 2   # Las 7 especiales (y las habilidades antiguas poción/perforante/counter)
+SPECIAL_COST_ABILITIES = frozenset({
+    Ability.CLEAN_STRIKE, Ability.GUARD_ENERGY, Ability.HEAL_POTION, Ability.PIERCING, Ability.COUNTER,
+})
+
+
 def compute_energy_cost(atk: int, defense: int, ability: Ability) -> int:
-    """Coste de energía (1 o 2) a partir de las stats: 1 si ATK+DEF <= 2, y 2
-    en caso contrario. Las especiales actuales (Robo de Vida / Combo
-    Simultáneo) siguen la misma regla — si costaran 2 fijo, el Combo
-    Simultáneo no podría jugarse junto a otras cartas para dañar 2-3 zonas
-    en el mismo turno. Las habilidades antiguas (poción/perforante/counter,
-    sin cartas hoy) cuestan 2."""
-    if ability in (Ability.HEAL_POTION, Ability.PIERCING, Ability.COUNTER):
-        return 2
-    return 1 if (atk + defense) <= 2 else 2
+    """Coste de energía: 2 para las especiales (SPECIAL_COST_ABILITIES) y 1 FIJO para todas las
+    demás, sean cuales sean sus stats (antes dependía de ATK+DEF). Robo de Vida / Combo Simultáneo
+    (sin cartas hoy) cuestan 1 para poder jugarse junto a otras y dañar 2-3 zonas en el mismo turno."""
+    if ability in SPECIAL_COST_ABILITIES:
+        return SPECIAL_CARD_COST
+    return BASE_CARD_COST
 
 
 @dataclass
@@ -106,6 +120,8 @@ class Card:
     heal_amount: int = 0
     # Solo relevante para ability=COUNTER: daño que devuelve si el rival no ataca esa zona.
     counter_damage: int = 0
+    # Solo relevante para ability=GUARD_ENERGY: energía que recupera al bloquear del todo un ataque.
+    energy_bonus: int = 0
     cost_energy: int = field(default=0)  # se recalcula siempre en __post_init__
     # Token del NFT (GAMENFT/fox_<id>.png) usado como ilustración, si aplica.
     nft_token_id: Optional[int] = None
@@ -138,6 +154,7 @@ class Card:
             is_placeholder=d.get("is_placeholder", False),
             heal_amount=d.get("heal_amount", 0),
             counter_damage=d.get("counter_damage", 0),
+            energy_bonus=d.get("energy_bonus", 0),
             nft_token_id=d.get("nft_token_id"),
         )
 
@@ -159,9 +176,8 @@ BASE_HP_BY_RARITY: dict[NFTRarity, int] = {
     NFTRarity.LEGENDARY: 100,
 }
 
-# Tamaño del mazo: las 16 combinaciones ATK/DEF únicas, una de cada (antes 15
-# en la sección 5.1; con 15 faltaría siempre una combinación por partida).
-DECK_SIZE = 16
+# Tamaño del mazo: las 16 cartas base + las 7 especiales, todas en cada partida (antes 16).
+DECK_SIZE = 23
 HAND_SIZE = 3            # Cartas robadas por turno
 STARTING_ENERGY = 3      # Energía inicial (sección 2.2)
 MAX_ENERGY = 3           # Tope ABSOLUTO del acumulador de energía: nunca puede superar 3
@@ -177,6 +193,9 @@ TRIPARTITE_COMBO_BONUS = 3     # +3 HP de daño extra al completar las 3 zonas
 # Cartas especiales COMBO_STRIKE: daño extra (una vez por turno) si ese mismo
 # turno el jugador daña 2 o 3 zonas distintas del rival a la vez.
 SIMULTANEOUS_COMBO_BONUS = {2: 2, 3: 4}
+# Especiales de Golpe Limpio (CLEAN_STRIKE): daño de un golpe que entra sin ninguna defensa.
+CLEAN_STRIKE_BASE_DAMAGE = 10
+CLEAN_STRIKE_BONUS = 3          # «plus de regalo»: 10 + 3 = 13 en total
 CRITICAL_COMBO_DAMAGE = 20     # Daño directo de ataque pesado en combo máximo
 CASHOUT_BATTLE_REQUIREMENT = 300  # Batallas PvP acumuladas para poder retirar fondos
 FREE_DAILY_MATCH_LIMIT = 10        # Límite diario de partidas para usuarios Free

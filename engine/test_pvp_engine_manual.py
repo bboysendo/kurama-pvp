@@ -8,9 +8,10 @@ from pvp_engine import (
     EngineError, MatchStatus, Zone, build_deck_from_pool, end_turn, get_match_state, play_card, start_match,
 )
 
-def mk(id, atk, defense, ability=Ability.NONE, heal=0, counter=0):
+def mk(id, atk, defense, ability=Ability.NONE, heal=0, counter=0, bonus=0):
     return Card(id=id, name=id, faction=Faction.NEUTRAL, category=CardCategory.STANDARD,
-                atk=atk, defense=defense, ability=ability, heal_amount=heal, counter_damage=counter)
+                atk=atk, defense=defense, ability=ability, heal_amount=heal, counter_damage=counter,
+                energy_bonus=bonus)
 
 # --- Basic damage: A attacks HEAD with 3/0, B has no shield -> 3 dmg ---
 deckA = [mk("a_atk3", 3, 0)] * 15
@@ -130,10 +131,10 @@ assert s2["player_b"]["hp"] == 80, s2["player_b"]["hp"]  # flat 20 damage
 print("critical combo OK, B hp =", s2["player_b"]["hp"])
 
 # --- Energy cap enforcement (force the hand so the test is deterministic) ---
-deckA = [mk("a_2a", 3, 0), mk("a_2b", 2, 1)] + [mk("a_pad", 1, 0)] * 13
+deckA = [mk("a_2a", 3, 0, ability=Ability.CLEAN_STRIKE), mk("a_2b", 2, 1, ability=Ability.CLEAN_STRIKE)] + [mk("a_pad", 1, 0)] * 13
 deckB = [mk("b_pad", 0, 0)] * 15
 m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=9)
-m.player_a.hand = [mk("a_2a", 3, 0), mk("a_2b", 2, 1), mk("a_pad", 1, 0)]
+m.player_a.hand = [mk("a_2a", 3, 0, ability=Ability.CLEAN_STRIKE), mk("a_2b", 2, 1, ability=Ability.CLEAN_STRIKE), mk("a_pad", 1, 0)]  # especiales: coste 2
 play_card(m, "a", "a_2a", Zone.HEAD)  # costs 2 of the 3 per-turn budget
 try:
     play_card(m, "a", "a_2b", Zone.TORSO)  # would need 2 more -> 4 > MAX_ENERGY_SPEND_PER_TURN (3)
@@ -263,13 +264,13 @@ def end_turn_no_idle(m):
     m.player_a.inactive_turns = m.player_b.inactive_turns = 0
     end_turn(m)
 
-m.player_a.hand = [mk("c2", 2, 1), mk("c1", 1, 0), mk("c1b", 0, 1)]
+m.player_a.hand = [mk("c2", 2, 1, ability=Ability.CLEAN_STRIKE), mk("c1", 1, 0), mk("c1b", 0, 1)]
 play_card(m, "a", "c2", Zone.HEAD)      # coste 2
 play_card(m, "a", "c1", Zone.TORSO)     # coste 1 -> gastados 3 de 3
 end_turn_no_idle(m)
 assert m.player_a.energy == 1, m.player_a.energy   # 3 - 3 + 1
 assert m.player_b.energy == 3, m.player_b.energy   # no gastó: sigue en el tope
-m.player_a.hand = [mk("d2", 2, 1), mk("d1", 1, 0), mk("d0", 0, 0)]
+m.player_a.hand = [mk("d2", 2, 1, ability=Ability.CLEAN_STRIKE), mk("d1", 1, 0), mk("d0", 0, 0)]
 try:
     play_card(m, "a", "d2", Zone.HEAD)  # coste 2 con solo 1 de energía
     raise AssertionError("debía faltar energía")
@@ -287,7 +288,7 @@ print("energy spend/regen OK")
 # --- Pasar turno sin energía: recarga +1 y sin inactividad ---
 m = start_match([mk("p1", 1, 0)] * 16, [mk("q1", 1, 0)] * 16, hp_a=50, hp_b=50, seed=40)
 m.player_a.energy = 1
-m.player_a.hand = [mk("big1", 3, 0), mk("big2", 2, 1), mk("big3", 0, 3)]  # todas coste 2
+m.player_a.hand = [mk("big1", 3, 0, ability=Ability.CLEAN_STRIKE), mk("big2", 2, 1, ability=Ability.CLEAN_STRIKE), mk("big3", 0, 3, ability=Ability.GUARD_ENERGY, bonus=2)]  # todas coste 2
 pass_turn(m, "a")
 end_turn(m, timed_out=True)
 assert m.player_a.energy == 2, m.player_a.energy
@@ -349,22 +350,89 @@ end_turn(m)
 assert m.player_b.hp == 50 - 3 - 3 - SIMULTANEOUS_COMBO_BONUS[3], m.player_b.hp
 print("simultaneous combo (3 zones) OK, B hp =", m.player_b.hp)
 
+# =================== Especiales (revisión 03/11/2026) ===================
+def _duel(a_hand, b_hand, a_plays, b_plays, a_energy=3, b_energy=3):
+    """Partida controlada: fija manos/energía, juega las cartas indicadas [(id, zona_atk, zona_def)] y resuelve."""
+    m = start_match([mk("pa", 0, 0)] * 30, [mk("pb", 0, 0)] * 30, hp_a=50, hp_b=50, seed=99)
+    m.player_a.hand, m.player_b.hand = list(a_hand), list(b_hand)
+    m.player_a.energy, m.player_b.energy = a_energy, b_energy
+    for cid, z, dz in a_plays:
+        play_card(m, "a", cid, z, defense_zone=dz)
+    for cid, z, dz in b_plays:
+        play_card(m, "b", cid, z, defense_zone=dz)
+    end_turn(m)
+    return m
+
+# Golpe Limpio sin defensa: 10 + 3 = 13 (cualquiera de las 4, sea cual sea su ATK).
+for atk, dfn in [(3, 0), (2, 0), (2, 2), (1, 0)]:
+    m = _duel([mk("cs", atk, dfn, ability=Ability.CLEAN_STRIKE)], [], [("cs", Zone.HEAD, Zone.HEAD)], [])
+    assert m.player_b.hp == 50 - 13, (atk, dfn, m.player_b.hp)
+    assert any("Golpe Limpio" in l for l in m.log)
+print("clean strike unblocked = 13 OK (las 4 especiales)")
+
+# Bloqueada (cualquier DEF en esa zona): combo anulado, daño normal ATK − DEF.
+m = _duel([mk("cs", 3, 0, ability=Ability.CLEAN_STRIKE)], [mk("sh", 0, 1)],
+          [("cs", Zone.HEAD, Zone.HEAD)], [("sh", Zone.HEAD, Zone.HEAD)])
+assert m.player_b.hp == 50 - 2, m.player_b.hp
+assert any("se anula" in l for l in m.log)
+m = _duel([mk("cs", 2, 0, ability=Ability.CLEAN_STRIKE)], [mk("sh", 0, 3)],
+          [("cs", Zone.TORSO, Zone.TORSO)], [("sh", Zone.TORSO, Zone.TORSO)])
+assert m.player_b.hp == 50, m.player_b.hp
+# Defensa en OTRA zona no bloquea: entra limpio.
+m = _duel([mk("cs", 2, 0, ability=Ability.CLEAN_STRIKE)], [mk("sh", 0, 3)],
+          [("cs", Zone.LEGS, Zone.LEGS)], [("sh", Zone.HEAD, Zone.HEAD)])
+assert m.player_b.hp == 50 - 13, m.player_b.hp
+# Una carta normal con las mismas stats no tiene el plus.
+m = _duel([mk("n", 3, 0)], [], [("n", Zone.HEAD, Zone.HEAD)], [])
+assert m.player_b.hp == 47, m.player_b.hp
+print("clean strike blocked -> combo anulado OK")
+
+# Guardia Vital: bloqueo total del ataque rival => +energy_bonus (tope 3).
+g = lambda b: mk("g", 0, 3, ability=Ability.GUARD_ENERGY, bonus=b)
+m = _duel([mk("x", 2, 0)], [g(2)], [("x", Zone.HEAD, Zone.HEAD)], [("g", Zone.HEAD, Zone.HEAD)], b_energy=3)
+# B: 3 - 2 (coste) + 1 (regen) = 2, +2 por bloquear => 3 (tope)
+assert m.player_b.energy == 3 and m.player_b.hp == 50, (m.player_b.energy, m.player_b.hp)
+assert any("Guardia Vital" in l for l in m.log)
+m = _duel([mk("x", 2, 0)], [mk("g", 0, 2, ability=Ability.GUARD_ENERGY, bonus=1), mk("y", 0, 0)],
+          [("x", Zone.HEAD, Zone.HEAD)], [("g", Zone.HEAD, Zone.HEAD)], b_energy=2)
+assert m.player_b.energy == 2, m.player_b.energy           # 2 - 2 + 1 = 1, +1 => 2
+# Sin ataque en su zona: no hay bloqueo, no hay energía extra.
+m = _duel([mk("x", 2, 0)], [g(2)], [("x", Zone.LEGS, Zone.LEGS)], [("g", Zone.HEAD, Zone.HEAD)], b_energy=2)
+assert m.player_b.energy == 1, m.player_b.energy           # 2 - 2 + 1
+# Bloqueo PARCIAL (entra daño): no cuenta como bloqueo con éxito.
+m = _duel([mk("x", 3, 0)], [mk("g", 0, 2, ability=Ability.GUARD_ENERGY, bonus=1)],
+          [("x", Zone.TORSO, Zone.TORSO)], [("g", Zone.TORSO, Zone.TORSO)], b_energy=2)
+assert m.player_b.energy == 1 and m.player_b.hp == 49, (m.player_b.energy, m.player_b.hp)
+# La femenina también para un Golpe Limpio (lo anula) y gana su energía.
+m = _duel([mk("cs", 2, 0, ability=Ability.CLEAN_STRIKE)], [g(2)],
+          [("cs", Zone.HEAD, Zone.HEAD)], [("g", Zone.HEAD, Zone.HEAD)], b_energy=2)
+assert m.player_b.hp == 50 and m.player_b.energy == 3, (m.player_b.hp, m.player_b.energy)
+print("guard energy OK (bloqueo total +energía, parcial/sin ataque no)")
+
 # --- Unicidad total: catálogo, mazo y mano sin ninguna repetición ---
 import random as _random
 from card_schema import DECK_SIZE
-from cards_catalog import REQUIRED_BASE_COMBOS, build_catalog, validate_catalog
+from cards_catalog import REQUIRED_BASE_COMBOS, SPECIAL_CARDS, build_catalog, validate_catalog
 from pvp_engine import bot_choose_plays as _bot
 
 catalog = build_catalog()
 validate_catalog(catalog, check_files=True)
-assert len(catalog) == len(REQUIRED_BASE_COMBOS) == 16 == DECK_SIZE
-assert sorted((c.atk, c.defense) for c in catalog) == sorted(REQUIRED_BASE_COMBOS)
+base = [c for c in catalog if c.category == CardCategory.STANDARD]
+specials = [c for c in catalog if c.category == CardCategory.SPECIAL]
+assert len(base) == len(REQUIRED_BASE_COMBOS) == 16 and len(specials) == 7 and len(catalog) == 23 == DECK_SIZE
+assert sorted((c.atk, c.defense) for c in base) == sorted(REQUIRED_BASE_COMBOS)
+assert all(c.cost_energy == 1 for c in base), "las 16 base cuestan 1"
+assert all(c.cost_energy == 2 for c in specials), "las 7 especiales cuestan 2"
+assert sorted((c.atk, c.defense) for c in specials if c.ability == Ability.CLEAN_STRIKE) == [(1, 0), (2, 0), (2, 2), (3, 0)]
+assert sorted((c.atk, c.defense, c.energy_bonus) for c in specials if c.ability == Ability.GUARD_ENERGY) == [
+    (0, 2, 1), (0, 3, 2), (1, 1, 1)]
 for seed in range(200):
     deck = build_deck_from_pool(catalog, rng=_random.Random(seed))
-    assert len(deck) == 16
-    assert len({c.id for c in deck}) == 16, "carta repetida en el mazo"
-    assert sorted((c.atk, c.defense) for c in deck) == sorted(REQUIRED_BASE_COMBOS), "combinación repetida/ausente"
-print("deck OK: las 16 combinaciones, cada una exactamente una vez")
+    assert len(deck) == 23
+    assert len({c.id for c in deck}) == 23, "carta repetida en el mazo"
+    assert sorted((c.atk, c.defense) for c in deck if c.category == CardCategory.STANDARD) == sorted(
+        REQUIRED_BASE_COMBOS), "combinación base repetida/ausente"
+print("deck OK: 16 base (coste 1) + 7 especiales (coste 2), cada una exactamente una vez")
 
 # Un pool con dos cartas de la misma combinación nunca mete las dos.
 dup_pool = [mk("x1", 2, 0), mk("x2", 2, 0), mk("y", 1, 1)]
@@ -380,11 +448,67 @@ for seed in range(300):
     for _turn in range(12):
         for pl in (m.player_a, m.player_b):
             assert len(pl.hand) == 3, (seed, _turn, [c.id for c in pl.hand])
-            assert len({(c.atk, c.defense) for c in pl.hand}) == 3 and len({c.id for c in pl.hand}) == 3
+            assert len({(c.atk, c.defense, c.ability) for c in pl.hand}) == 3 and len({c.id for c in pl.hand}) == 3
         _bot(m, "a"); _bot(m, "b")
         end_turn(m)
         if m.status != MatchStatus.ONGOING:
             break
 print("hand uniqueness OK (300 partidas x 12 turnos)")
+
+# --- Mano persistente: las cartas no jugadas se quedan; solo se repone lo jugado ---
+from pvp_engine import pass_turn
+from card_schema import HAND_SIZE
+for seed in range(200):
+    rng = _random.Random(seed)
+    m = start_match(build_deck_from_pool(catalog, rng=rng), build_deck_from_pool(catalog, rng=rng),
+                    hp_a=999, hp_b=999, seed=seed)
+    a = m.player_a
+    before = [c.id for c in a.hand]
+    cheapest = min(a.hand, key=lambda c: c.cost_energy)
+    play_card(m, "a", cheapest.id, Zone.HEAD)
+    kept = [cid for cid in before if cid != cheapest.id]
+    end_turn(m)
+    after = [c.id for c in a.hand]
+    assert after[:len(kept)] == kept, (seed, before, after)        # las no jugadas siguen, en su orden
+    assert len(after) == HAND_SIZE and cheapest.id not in after     # solo se repone la jugada
+    assert len({(c.atk, c.defense, c.ability) for c in a.hand}) == HAND_SIZE   # unicidad intacta
+print("persistent hand OK (200 partidas)")
+
+# --- Rotación: pasar sin jugar descarta 1 carta al azar y roba 1 nueva ---
+rotated_positions = set()
+for seed in range(200):
+    rng = _random.Random(seed)
+    m = start_match(build_deck_from_pool(catalog, rng=rng), build_deck_from_pool(catalog, rng=rng),
+                    hp_a=999, hp_b=999, seed=seed)
+    a = m.player_a
+    before = [c.id for c in a.hand]
+    discard_before = len(a.discard)
+    pass_turn(m, "a")
+    end_turn(m)
+    after = [c.id for c in a.hand]
+    gone = [cid for cid in before if cid not in after]
+    assert len(gone) == 1 and len(after) == HAND_SIZE, (seed, before, after)   # cambia EXACTAMENTE 1
+    assert a.discard[-1].id == gone[0] and len(a.discard) == discard_before + 1
+    assert after[-1] not in before                                           # la nueva es distinta
+    rotated_positions.add(before.index(gone[0]))
+    assert any("descarta 1 carta al azar" in line for line in m.log)
+assert rotated_positions == set(range(HAND_SIZE)), rotated_positions          # al azar, no siempre la misma
+print("rotation on pass OK (1 carta al azar)")
+
+# Mismo efecto si se le agota el tiempo sin actuar (timed_out) — B tampoco juega aquí.
+m = start_match(build_deck_from_pool(catalog, rng=_random.Random(7)),
+                build_deck_from_pool(catalog, rng=_random.Random(8)), hp_a=999, hp_b=999, seed=7)
+ha, hb = [c.id for c in m.player_a.hand], [c.id for c in m.player_b.hand]
+end_turn(m, timed_out=True)
+assert len(set(ha) - {c.id for c in m.player_a.hand}) == 1
+assert len(set(hb) - {c.id for c in m.player_b.hand}) == 1
+print("rotation on timeout OK")
+
+# Sin nada que robar (mazo y descarte vacíos) la carta no se pierde.
+m = start_match([mk("s1", 1, 0), mk("s2", 0, 1), mk("s3", 2, 0)], [mk("t1", 1, 0)], hp_a=99, hp_b=99, seed=1)
+assert len(m.player_a.hand) == 3 and not m.player_a.deck
+end_turn(m)
+assert sorted(c.id for c in m.player_a.hand) == ["s1", "s2", "s3"] and not m.player_a.discard
+print("rotation with empty deck keeps the hand OK")
 
 print("\nALL ENGINE ASSERTIONS PASSED")

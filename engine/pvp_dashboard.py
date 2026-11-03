@@ -57,6 +57,8 @@ from blockchain_connector import (
     has_crystals,
 )
 from card_schema import (
+    CLEAN_STRIKE_BASE_DAMAGE,
+    CLEAN_STRIKE_BONUS,
     CRITICAL_COMBO_DAMAGE,
     DECK_SIZE,
     ENERGY_PER_TURN,
@@ -276,6 +278,10 @@ def card_type_label(card_dict: dict) -> str:
     (Poción/Perforante/Contraataque) o, si no tiene, de si pega, protege o
     ambas cosas (Ataque/Defensa/Híbrida)."""
     ability = card_dict.get("ability", "none")
+    if ability == "clean_strike":
+        return "Golpe Limpio"
+    if ability == "guard_energy":
+        return "Guardia Vital"
     if ability == "lifesteal":
         return "Robo de Vida"
     if ability == "combo_strike":
@@ -301,6 +307,18 @@ def card_effect_text(card_dict: dict) -> str:
     (misma mecánica que resuelve pvp_engine.py `_resolve_direction` /
     `_collect_counter_hits`) o, si no tiene, según si ataca y/o defiende."""
     ability = card_dict.get("ability", "none")
+    if ability == "clean_strike":
+        return (
+            f"💥 Golpe Limpio: si el rival NO tiene defensa en la zona atacada, haces "
+            f"{CLEAN_STRIKE_BASE_DAMAGE} + {CLEAN_STRIKE_BONUS} = {CLEAN_STRIKE_BASE_DAMAGE + CLEAN_STRIKE_BONUS} "
+            f"de daño. Si te la bloquean, el combo se anula y pegas tu ATK normal (ATK − DEF)."
+        )
+    if ability == "guard_energy":
+        bonus = card_dict.get("energy_bonus") or 0
+        return (
+            f"💖 Guardia Vital: si el rival ataca tu zona de defensa y lo bloqueas del todo (0 daño), "
+            f"recuperas +{bonus} de energía (máx. {MAX_ENERGY})."
+        )
     if ability == "lifesteal":
         heal = card_dict.get("heal_amount") or 0
         return (
@@ -376,7 +394,12 @@ def render_gallery(catalog_dicts: list[dict]) -> None:
                 st.caption(f"⚡ Coste {card_dict['cost_energy']} · {card_dict['atk']} ATK / {card_dict['defense']} DEF")
                 st.caption(f"🏷️ {CATEGORY_LABELS.get(card_dict['category'], card_dict['category'])} · {card_type_label(card_dict)}")
                 ability_note = ""
-                if card_dict.get("ability") == "lifesteal":
+                if card_dict.get("ability") == "clean_strike":
+                    ability_note = (f"💥 Sin defensa rival: {CLEAN_STRIKE_BASE_DAMAGE}+{CLEAN_STRIKE_BONUS} = "
+                                    f"{CLEAN_STRIKE_BASE_DAMAGE + CLEAN_STRIKE_BONUS} de daño")
+                elif card_dict.get("ability") == "guard_energy":
+                    ability_note = f"💖 Bloqueo total: +{card_dict.get('energy_bonus') or 0} energía"
+                elif card_dict.get("ability") == "lifesteal":
                     ability_note = f"🩸 Roba hasta {card_dict.get('heal_amount') or 0} HP"
                 elif card_dict.get("ability") == "combo_strike":
                     ability_note = (
@@ -548,8 +571,9 @@ def render_tutorial(catalog_dicts: list[dict]) -> None:
         with c3:
             st.markdown("### 🂠 El mazo")
             st.markdown(
-                f"Tu mazo de combate tiene **{DECK_SIZE} cartas**. Cada turno robas **{HAND_SIZE} nuevas** "
-                f"(la mano se renueva entera) y tienes **{TURN_TIMER_SECONDS} segundos** para decidir — "
+                f"Tu mazo de combate tiene **{DECK_SIZE} cartas** y tu mano **{HAND_SIZE}**. Las cartas que no "
+                f"juegas se quedan en la mano; al acabar el turno robas solo las que hayas jugado. Si pasas "
+                f"sin jugar, se descarta **1 carta al azar** de tu mano y robas otra. Tienes **{TURN_TIMER_SECONDS} segundos** para decidir — "
                 f"si el mazo se queda sin cartas, la pila de descarte se baraja y vuelve a usarse."
             )
         st.info(
@@ -596,11 +620,13 @@ def render_tutorial(catalog_dicts: list[dict]) -> None:
                 if note:
                     st.caption(note)
 
-        st.markdown("#### 🃏 16 cartas, una de cada combinación")
+        st.markdown("#### 🃏 16 cartas base + 7 especiales")
         st.caption(
-            "No hay ninguna carta repetida ni dos cartas con las mismas stats: están todas las "
-            "combinaciones de ataque (3/3, 3/2, 3/1, 3/0, 2/2, 2/1, 2/0, 1/1, 1/0, 0/0) y su inverso "
-            f"defensivo (2/3, 1/3, 0/3, 1/2, 0/2, 0/1). Tu mazo de {DECK_SIZE} cartas es el set completo."
+            "Las 16 cartas base (coste 1) cubren todas las combinaciones de ataque (3/3, 3/2, 3/1, 3/0, "
+            "2/2, 2/1, 2/0, 1/1, 1/0, 0/0) y su inverso defensivo (2/3, 1/3, 0/3, 1/2, 0/2, 0/1). Las 7 "
+            f"especiales cuestan 2: 4 de Golpe Limpio ({CLEAN_STRIKE_BASE_DAMAGE}+{CLEAN_STRIKE_BONUS} de daño si el "
+            "rival no defiende la zona) y 3 de Guardia Vital (energía extra si bloqueas del todo). Tu mazo de "
+            f"{DECK_SIZE} cartas es el set completo."
         )
         st.markdown("##### ⚔️ Ataque")
         c1, c2, c3 = st.columns(3)
@@ -819,8 +845,8 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
 def _reset_tactical_selection(player_key: str | None = None) -> None:
     """Limpia la carta/zona de ataque/zona de defensa elegidas en la arena
     (puntos tácticos) — tras arrancar partida, confirmar un turno o terminar
-    uno (la mano se renueva entera, así que cualquier card_id elegido deja de
-    existir). `player_key=None` limpia ambos jugadores a la vez."""
+    uno (las cartas jugadas o rotadas salen de la mano, así que su card_id puede
+    dejar de existir). `player_key=None` limpia ambos jugadores a la vez."""
     for pk in (player_key,) if player_key else ("a", "b"):
         st.session_state[f"sel_cards_{pk}"] = []
         st.session_state[f"active_card_{pk}"] = None
@@ -1429,7 +1455,7 @@ st.set_page_config(
 init_state()
 catalog_dicts = load_catalog()
 catalog = [Card.from_dict(d) for d in catalog_dicts]
-# Pool de combate: las 16 cartas únicas (una por combinación ATK/DEF); el
+# Pool de combate: 16 cartas base (una por combinación ATK/DEF) + 7 especiales; el
 # mazo de cada partida es el set completo barajado, sin repeticiones (ver
 # pvp_engine.build_deck_from_pool).
 card_pool = list(catalog)
@@ -3770,7 +3796,7 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
         st.caption("Sin cartas en mano.")
         return
 
-    # Poda: la mano se renueva cada turno, así que cualquier id elegido que
+    # Poda: las cartas jugadas/rotadas salen de la mano, así que cualquier id elegido que
     # ya no esté en ella se descarta (y con él sus zonas).
     hand_ids = {c["id"] for c in p["hand"]}
     sel_ids = [cid for cid in st.session_state[f"sel_cards_{player_key}"] if cid in hand_ids]

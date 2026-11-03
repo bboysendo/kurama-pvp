@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pvp-dashboard",
+      "runtimeExecutable": "py",
+      "runtimeArgs": ["-m", "streamlit", "run", "engine/pvp_dashboard.py", "--server.headless", "true"],
+      "port": 8501
+    },
+    {
+      "name": "valdeande-pvp",
+      "runtimeExecutable": "py",
+      "runtimeArgs": ["-m", "streamlit", "run", "C:/Users/rosen/Documents/VALDEANDEALLSTARS/engine/pvp_dashboard.py", "--server.headless", "true", "--server.port", "8502"],
+      "port": 8502
+    }
+  ]
+}
