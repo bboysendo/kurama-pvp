@@ -1,177 +1,353 @@
+"""Pruebas manuales del motor PvP (python test_pvp_engine_manual.py).
+Reglas definitivas de zonas múltiples (Sendo, 05/11/2026) — ver pvp_engine.py."""
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from card_schema import MAX_ENERGY, SIMULTANEOUS_COMBO_BONUS, Ability, Card, CardCategory, Faction
+from card_schema import (
+    HEALER_HEAL_AMOUNT, MAX_ENERGY, SPECIAL_COMBO_BONUS, TRIPARTITE_COMBO_BONUS, ZONE_HIT_DAMAGE, Ability, Card, CardCategory, Faction,
+)
 from pvp_engine import (
-    EngineError, MatchStatus, Zone, build_deck_from_pool, end_turn, get_match_state, play_card, start_match,
+    EngineError, MatchStatus, Zone, build_deck_from_pool, end_turn, get_match_state, max_attack_zones,
+    max_defense_zones, pass_turn, play_card, start_match,
 )
 
-def mk(id, atk, defense, ability=Ability.NONE, heal=0, counter=0, bonus=0):
+H, T, L = Zone.HEAD, Zone.TORSO, Zone.LEGS
+ALL = [H, T, L]
+TRI = Ability.TRIPARTITE_STRIKE
+HEAL = Ability.HEALER
+
+
+def mk(id, atk, defense, ability=Ability.NONE):
     return Card(id=id, name=id, faction=Faction.NEUTRAL, category=CardCategory.STANDARD,
-                atk=atk, defense=defense, ability=ability, heal_amount=heal, counter_damage=counter,
-                energy_bonus=bonus)
+                atk=atk, defense=defense, ability=ability)
 
-# --- Basic damage: A attacks HEAD with 3/0, B has no shield -> 3 dmg ---
-deckA = [mk("a_atk3", 3, 0)] * 15
-deckB = [mk("b_def0", 0, 0)] * 15
-m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=1)
-play_card(m, "a", "a_atk3", Zone.HEAD)
-end_turn(m)
-s = get_match_state(m)
-assert s["player_b"]["hp"] == 47, s["player_b"]["hp"]
-print("basic damage OK, B hp =", s["player_b"]["hp"])
 
-# --- Shield mitigates: B shields HEAD with 0/3, A attacks HEAD with 2/0 -> 0 dmg ---
-deckA = [mk("a_atk2", 2, 0)] * 15
-deckB = [mk("b_def3", 0, 3)] * 15
-m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=2)
-play_card(m, "a", "a_atk2", Zone.TORSO)
-play_card(m, "b", "b_def3", Zone.TORSO)
-end_turn(m)
-s = get_match_state(m)
-assert s["player_b"]["hp"] == 50, s["player_b"]["hp"]
-print("shield mitigation OK, B hp =", s["player_b"]["hp"])
+def play_full(m, p, cid):
+    """Juega la carta marcando todas sus zonas (las primeras N)."""
+    card = next(c for c in getattr(m, f"player_{p}").hand if c.id == cid)
+    play_card(m, p, cid, ALL[:max_attack_zones(card)], ALL[:max_defense_zones(card)])
 
-# --- Piercing ignores shield ---
-deckA = [mk("a_pierce", 2, 0, ability=Ability.PIERCING)] * 15
-deckB = [mk("b_def3", 0, 3)] * 15
-m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=3)
-play_card(m, "a", "a_pierce", Zone.LEGS)
-play_card(m, "b", "b_def3", Zone.LEGS)
-end_turn(m)
-s = get_match_state(m)
-assert s["player_b"]["hp"] == 48, s["player_b"]["hp"]  # 2 dmg despite 3 DEF shield
-print("piercing OK, B hp =", s["player_b"]["hp"])
 
-# --- Potion blocks and heals ---
-deckA = [mk("a_atk3b", 3, 0)] * 15
-deckB = [mk("b_potion", 0, 0, ability=Ability.HEAL_POTION, heal=2)] * 15
-m = start_match(deckA, deckB, hp_a=50, hp_b=40, seed=4)
-m.player_b.hp = 35  # simula daño previo, para poder ver la curación sin tope de max_hp
-play_card(m, "a", "a_atk3b", Zone.HEAD)
-play_card(m, "b", "b_potion", Zone.HEAD)
-end_turn(m)
-s = get_match_state(m)
-assert s["player_b"]["hp"] == 38, s["player_b"]["hp"]  # 35 + max(2, 3) = 38, damage blocked to 0
-print("potion heal OK, B hp =", s["player_b"]["hp"])
+def duel(a_hand, b_hand, a_plays, b_plays, a_energy=3, b_energy=3, hp=50):
+    """Partida controlada: fija manos/energía, juega [(id, [zonas_atk], [zonas_def])] y resuelve el turno."""
+    m = start_match([mk("pa", 0, 0)] * 30, [mk("pb", 0, 0)] * 30, hp_a=hp, hp_b=hp, seed=99)
+    m.player_a.hand, m.player_b.hand = list(a_hand), list(b_hand)
+    m.player_a.energy, m.player_b.energy = a_energy, b_energy
+    for cid, z, dz in a_plays:
+        play_card(m, "a", cid, z, dz)
+    for cid, z, dz in b_plays:
+        play_card(m, "b", cid, z, dz)
+    end_turn(m)
+    return m
 
-# --- Counter triggers only if attacker did NOT attack that zone ---
-# (counter card itself has atk=1/def=1, so it ALSO lands its own 1 normal
-# attack dmg via the regular b->a resolution, on top of the 4-dmg reflect —
-# that's intentional: counter cards are hybrids, not pure-utility cards)
-deckA = [mk("a_idle", 0, 0)] * 15
-deckB = [mk("b_counter", 1, 1, ability=Ability.COUNTER, counter=4)] * 15
-m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=5)
-play_card(m, "b", "b_counter", Zone.TORSO)  # A plays nothing on TORSO
-end_turn(m)
-s = get_match_state(m)
-assert s["player_a"]["hp"] == 45, s["player_a"]["hp"]  # 1 (normal atk, unshielded) + 4 (counter reflect)
-print("counter trigger OK, A hp =", s["player_a"]["hp"])
 
-# Pure counter (atk=0) only deals the reflect damage, nothing else
-deckA = [mk("a_idle2", 0, 0)] * 15
-deckB = [mk("b_counter_pure", 0, 1, ability=Ability.COUNTER, counter=4)] * 15
-m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=5)
-play_card(m, "b", "b_counter_pure", Zone.TORSO)
-end_turn(m)
-s = get_match_state(m)
-assert s["player_a"]["hp"] == 46, s["player_a"]["hp"]  # only the 4-dmg reflect
-print("pure counter (atk=0) OK, A hp =", s["player_a"]["hp"])
+def must_fail(fn, *args, **kw):
+    try:
+        fn(*args, **kw)
+    except EngineError as e:
+        return str(e)
+    raise AssertionError("se esperaba EngineError")
 
-# Counter reflect should NOT add on top if attacker DID attack that zone —
-# the counter card's own 1 ATK still lands normally (A has no shield there).
-deckA = [mk("a_atk1", 1, 0)] * 15
-deckB = [mk("b_counter2", 1, 1, ability=Ability.COUNTER, counter=4)] * 15
-m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=6)
-play_card(m, "a", "a_atk1", Zone.TORSO)
-play_card(m, "b", "b_counter2", Zone.TORSO)
-end_turn(m)
-s = get_match_state(m)
-assert s["player_a"]["hp"] == 49, s["player_a"]["hp"]  # only the card's own 1 atk, no +4 reflect
-assert s["player_b"]["hp"] == 50, s["player_b"]["hp"]  # 1 atk - 1 def shield = 0 dmg
-print("counter reflect NOT triggered when zone was attacked OK")
 
-# --- Tripartite combo: damage all 3 zones across the match -> +3 bonus on 3rd ---
-deckA = [mk("a_hit", 1, 0)] * 15
-deckB = [mk("b_pass", 0, 0)] * 15
-m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=7)
-# B juega su carta 0/0 cada turno (no altera el daño) para no caer en la
-# regla de inactividad (INACTIVITY_LIMIT turnos seguidos sin jugar = derrota).
-play_card(m, "a", "a_hit", Zone.HEAD)
-play_card(m, "b", "b_pass", Zone.LEGS)
-end_turn(m)
-play_card(m, "a", "a_hit", Zone.TORSO)
-play_card(m, "b", "b_pass", Zone.LEGS)
-end_turn(m)
-play_card(m, "a", "a_hit", Zone.LEGS)
-play_card(m, "b", "b_pass", Zone.LEGS)
-end_turn(m)
-s = get_match_state(m)
-# 1 + 1 + (1+3 tripartite bonus) = 6 total damage
-assert s["player_b"]["hp"] == 44, s["player_b"]["hp"]
-assert s["player_a"]["tripartite_claimed"] is True
-print("tripartite combo OK, B hp =", s["player_b"]["hp"])
+assert ZONE_HIT_DAMAGE == 5 and TRIPARTITE_COMBO_BONUS == 3 and SPECIAL_COMBO_BONUS == 3 and HEALER_HEAL_AMOUNT == 3
 
-# --- Critical combo: after tripartite claimed, a 3/0 card deals flat 20 ---
-play_card(m, "a", "a_hit", Zone.HEAD)  # a_hit is 1/0, not heavy enough -> normal path
+# ================= Regla 1: zonas únicas por carta =================
+m = start_match([mk("x", 0, 0)] * 30, [mk("y", 0, 0)] * 30, hp_a=50, hp_b=50, seed=1)
+m.player_a.hand = [mk("a3", 3, 0), mk("d3", 0, 3), mk("h21", 2, 1)]
+print("repetir zona:", must_fail(play_card, m, "a", "a3", [H, H, T], []))
+print("más zonas que ATK:", must_fail(play_card, m, "a", "h21", [H, T, L], []))
+print("más zonas que DEF:", must_fail(play_card, m, "a", "h21", [H], [H, T]))
+must_fail(play_card, m, "a", "d3", [], [T, T])
+must_fail(play_card, m, "a", "d3", [H], [])          # 0 ATK: no puede atacar
+must_fail(play_card, m, "a", "a3", [], [H])          # 0 DEF: no puede defender
+must_fail(play_card, m, "a", "a3", ["brazo"], [])    # zona inexistente
+assert len(m.player_a.hand) == 3 and not m.player_a.staged_plays  # una jugada ilegal no consume nada
+play_card(m, "a", "a3", [H, T], [])                  # obviar zonas sobrantes es legal
+# Zonas únicas por TURNO: otra carta tuya no puede repetir una zona ya ocupada este turno.
+print("solapar con otra carta:", must_fail(play_card, m, "a", "h21", [L, H], []))
+must_fail(play_card, m, "a", "h21", [T], [])
+assert len(m.player_a.staged_plays) == 1 and len(m.player_a.hand) == 2
+play_card(m, "a", "h21", "legs", "torso")            # str y una sola zona también valen
+assert m.player_a.staged_plays[1].attack_zones == (L,) and m.player_a.staged_plays[1].defense_zones == (T,)
+print("defensa repetida con otra carta:", must_fail(play_card, m, "a", "d3", [], [H, T]))
+play_card(m, "a", "d3", [], [H, L])                  # zonas de defensa libres: OK
+# Ataque y defensa en la misma zona sí se pueden (son casillas distintas: rival vs. propia).
+m = start_match([mk("x", 0, 0)] * 30, [mk("y", 0, 0)] * 30, hp_a=50, hp_b=50, seed=2)
+m.player_a.hand = [mk("h11", 1, 1)]
+play_card(m, "a", "h11", [H], [H])
+# El rival tiene su propio tablero: puede usar las mismas zonas que tú.
+m.player_b.hand = [mk("b11", 1, 1)]
+play_card(m, "b", "b11", [H], [H])
+# Sin zonas libres puedes seguir jugando la carta sin marcar nada (te sobran ataques/defensas).
+m = start_match([mk("x", 0, 0)] * 30, [mk("y", 0, 0)] * 30, hp_a=50, hp_b=50, seed=3)
+m.player_a.hand = [mk("a3", 3, 0), mk("a1", 1, 0)]
+play_card(m, "a", "a3", ALL, [])
+play_card(m, "a", "a1", [], [])
 end_turn(m)
-s = get_match_state(m)
-print("post-tripartite normal hit, B hp =", s["player_b"]["hp"])
+assert m.player_b.hp == 50 - 15 - 3, m.player_b.hp
+print("regla 1 (zonas únicas por carta y por turno, obviar zonas) OK")
 
-deckA2 = [mk("a_heavy", 3, 0)] * 15
-deckB2 = [mk("b_pass2", 0, 0)] * 15
-m2 = start_match(deckA2, deckB2, hp_a=50, hp_b=100, seed=8)
-m2.player_a.tripartite_claimed = True  # simulate combo already completed
-play_card(m2, "a", "a_heavy", Zone.HEAD)
-end_turn(m2)
-s2 = get_match_state(m2)
-assert s2["player_b"]["hp"] == 80, s2["player_b"]["hp"]  # flat 20 damage
-print("critical combo OK, B hp =", s2["player_b"]["hp"])
-
-# --- Energy cap enforcement (force the hand so the test is deterministic) ---
-deckA = [mk("a_2a", 3, 0, ability=Ability.CLEAN_STRIKE), mk("a_2b", 2, 1, ability=Ability.CLEAN_STRIKE)] + [mk("a_pad", 1, 0)] * 13
-deckB = [mk("b_pad", 0, 0)] * 15
-m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=9)
-m.player_a.hand = [mk("a_2a", 3, 0, ability=Ability.CLEAN_STRIKE), mk("a_2b", 2, 1, ability=Ability.CLEAN_STRIKE), mk("a_pad", 1, 0)]  # especiales: coste 2
-play_card(m, "a", "a_2a", Zone.HEAD)  # costs 2 of the 3 per-turn budget
+# ================= Regla 2: 5 por zona, bloqueo 1:1 =================
+m = duel([mk("a3", 3, 0)], [], [("a3", ALL, [])], [])
+assert m.player_b.hp == 50 - 15 - 3, m.player_b.hp              # 3 zonas tocadas a la vez: +3 Tripartito
+m = duel([mk("a3", 3, 0)], [], [("a3", [H], [])], [])
+assert m.player_b.hp == 45, m.player_b.hp                       # 1 de 3 zonas usada -> 5
+m = duel([mk("a3", 3, 0)], [mk("d2", 0, 2)], [("a3", ALL, [])], [("d2", [], [H, L])])
+assert m.player_b.hp == 45, m.player_b.hp                       # 2 bloqueados, entra Tronco
+m = duel([mk("a3", 3, 0)], [mk("d3", 0, 3)], [("a3", ALL, [])], [("d3", [], ALL)])
+assert m.player_b.hp == 50, m.player_b.hp                       # todo bloqueado
+# Cartas distintas NO apilan en la misma zona (zonas únicas por turno).
 try:
-    play_card(m, "a", "a_2b", Zone.TORSO)  # would need 2 more -> 4 > MAX_ENERGY_SPEND_PER_TURN (3)
-    raise AssertionError("expected EngineError for exceeding the per-turn spend cap")
-except EngineError as e:
-    print("energy cap correctly rejected second card:", e)
+    duel([mk("a1", 1, 0), mk("b1", 1, 0)], [], [("a1", [H], []), ("b1", [H], [])], [])
+    raise AssertionError("se esperaba EngineError")
+except EngineError:
+    pass
+m = duel([mk("a1", 1, 0), mk("b1", 1, 0)], [mk("d1", 0, 1)],
+         [("a1", [H], []), ("b1", [T], [])], [("d1", [], [H])])
+assert m.player_b.hp == 50 - 5, m.player_b.hp                   # Cabeza bloqueada, Tronco entra
+# Simultáneo: los dos reciben a la vez.
+m = duel([mk("h21", 2, 1)], [mk("h12", 1, 2)], [("h21", [H, T], [L])], [("h12", [L], [H, L])])
+assert m.player_b.hp == 45 and m.player_a.hp == 50, (m.player_a.hp, m.player_b.hp)
+# 0/0: se juega pero no hace nada.
+m = duel([mk("z", 0, 0)], [], [("z", [], [])], [])
+assert m.player_b.hp == 50 and m.player_a.hp == 50
+print("regla 2 (5 por zona, bloqueo 1:1, sin apilar entre cartas, simultáneo) OK")
 
-# --- Victory condition ---
-deckA = [mk("a_finisher", 3, 0)] * 15
-deckB = [mk("b_weak", 0, 0)] * 15
-m = start_match(deckA, deckB, hp_a=50, hp_b=2, seed=10)
-play_card(m, "a", "a_finisher", Zone.HEAD)
+# ================= Regla 2: Combo Tripartito (zonas afectadas, acumulado, 1 vez) =================
+m = start_match([mk("pa", 0, 0)] * 30, [mk("pb", 0, 0)] * 30, hp_a=100, hp_b=100, seed=7)
+def turn(m, a_cards, b_cards=()):
+    m.player_a.hand = [c for c, _, _ in a_cards]
+    m.player_b.hand = [c for c, _, _ in b_cards]
+    m.player_a.energy = m.player_b.energy = 3
+    for c, z, dz in a_cards:
+        play_card(m, "a", c.id, z, dz)
+    for c, z, dz in b_cards:
+        play_card(m, "b", c.id, z, dz)
+    end_turn(m)
+turn(m, [(mk("j1", 1, 0), [H], [])])                                     # afecta Cabeza
+assert m.player_b.hp == 95 and m.player_a.zones_affected == {H} and not m.player_a.tripartite_claimed
+turn(m, [(mk("j2", 1, 0), [T], [])], [(mk("w", 0, 1), [], [T])])        # bloqueado: Tronco NO queda afectado
+assert m.player_b.hp == 95 and m.player_a.zones_affected == {H}
+turn(m, [(mk("j3", 2, 0), [T, H], [])])                                  # afecta Tronco (Cabeza repetida no cuenta)
+assert m.player_b.hp == 85 and m.player_a.zones_affected == {H, T}
+turn(m, [(mk("j4", 1, 0), [L], [])])                                     # 3.ª zona -> +3 una vez
+assert m.player_b.hp == 85 - 5 - 3, m.player_b.hp
+assert m.player_a.tripartite_claimed and m.player_a.last_turn.tripartite
+assert any("Combo Tripartito" in l for l in m.log)
+turn(m, [(mk("j5", 3, 0), ALL, [])])                                     # ya cobrado: nunca más
+assert m.player_b.hp == 77 - 15 and not m.player_a.last_turn.tripartite, m.player_b.hp
+assert sum("¡Combo Tripartito" in l for l in m.log) == 1
+# Cada jugador lleva su propio combo; el del rival no afecta al tuyo.
+assert m.player_b.zones_affected == set() and not m.player_b.tripartite_claimed
+print("combo tripartito (zonas afectadas acumuladas, +3 una sola vez) OK")
+
+# ================= Regla 2: Combo Especial (+3 de las especiales, repetible) =================
+def fresh_with_tripartite_used():
+    m = start_match([mk("pa", 0, 0)] * 30, [mk("pb", 0, 0)] * 30, hp_a=100, hp_b=100, seed=8)
+    m.player_a.zones_affected, m.player_a.tripartite_claimed = set(Zone), True
+    return m
+for atk, expected in ((3, 18), (2, 13), (1, 8)):   # 5 x zonas + 3
+    m = fresh_with_tripartite_used()
+    turn(m, [(mk("sp", atk, 0, TRI), ALL[:atk], [])])
+    assert m.player_b.hp == 100 - expected, (atk, m.player_b.hp)
+    assert m.player_a.last_turn.combos == ["sp"]
+    assert any("Combo Especial" in l for l in m.log)
+# Repetible: segunda especial en otro turno vuelve a sumar +3.
+turn(m, [(mk("sp2", 2, 0, TRI), [T, L], [])])
+assert m.player_b.hp == 100 - 8 - 13 and m.player_a.combos_completed == 2, m.player_b.hp
+# Los dos bonus se suman: 3/0 especial en las 3 zonas desde cero = 15 + 3 (especial) + 3 (tripartito) = 21.
+m = duel([mk("sp", 3, 0, TRI)], [], [("sp", ALL, [])], [])
+assert m.player_b.hp == 50 - 21, m.player_b.hp
+assert m.player_a.last_turn.combos == ["sp"] and m.player_a.last_turn.tripartite
+# 2/0 especial que completa la 3.ª zona afectada: 10 + 3 + 3 = 16.
+m = start_match([mk("pa", 0, 0)] * 30, [mk("pb", 0, 0)] * 30, hp_a=100, hp_b=100, seed=9)
+m.player_a.zones_affected = {H}
+turn(m, [(mk("sp", 2, 0, TRI), [T, L], [])])
+assert m.player_b.hp == 100 - 16, m.player_b.hp
+m = fresh_with_tripartite_used()
+turn(m, [(mk("sp", 2, 2, TRI), [H, L], [T])])
+assert m.player_b.hp == 100 - 13, m.player_b.hp                  # la 2/2 especial sigue la misma regla
+# No usa todas sus zonas -> solo base, sin +3 especial.
+m = fresh_with_tripartite_used()
+turn(m, [(mk("sp", 3, 0, TRI), [H, T], [])])
+assert m.player_b.hp == 90 and not m.player_a.last_turn.combos, m.player_b.hp
+# Un ataque bloqueado -> especial anulado: 2 x 5 = 10.
+m = fresh_with_tripartite_used()
+turn(m, [(mk("sp", 3, 0, TRI), ALL, [])], [(mk("d1", 0, 1), [], [T])])
+assert m.player_b.hp == 90 and not m.player_a.last_turn.combos, m.player_b.hp
+m = fresh_with_tripartite_used()
+turn(m, [(mk("sp", 1, 0, TRI), [L], [])], [(mk("d1", 0, 1), [], [L])])
+assert m.player_b.hp == 100, m.player_b.hp
+# Defensa en otra zona no bloquea: especial completo.
+m = fresh_with_tripartite_used()
+turn(m, [(mk("sp", 2, 0, TRI), [H, T], [])], [(mk("d1", 0, 1), [], [L])])
+assert m.player_b.hp == 87, m.player_b.hp
+# Una carta normal con las mismas stats no tiene el +3 especial.
+m = fresh_with_tripartite_used()
+turn(m, [(mk("n", 3, 0), ALL, [])])
+assert m.player_b.hp == 85, m.player_b.hp
+# Especial + carta normal en zonas distintas: la normal no afecta al +3 de la especial.
+m = fresh_with_tripartite_used()
+turn(m, [(mk("sp", 2, 0, TRI), [H, T], []), (mk("n1", 1, 0), [L], [])])
+assert m.player_b.hp == 100 - 18 and m.player_a.last_turn.combos == ["sp"], m.player_b.hp
+print("combo especial (18 / 13 / 8, repetible, se suma al tripartito, anulado si bloquean) OK")
+
+# ================= Registro: desglose por zona =================
+# «recibido»/«impacto» solo cuando el ataque pasa; si se bloquea entero nunca aparece.
+from pvp_engine import zone_log_line as _zl
+assert "recibid" not in _zl("A", "B", H, 1, 1) and "impacto recibido" not in _zl("A", "B", H, 2, 2)
+from pvp_engine import zone_log_line
+assert zone_log_line("A", "B", T, 2, 1) == (
+    "A → B · 🔴 Tronco: 2 ataques lanzados | 🔵 1 defensa bloquea 5 de daño | 💥 1 impacto recibido: 5 de daño.")
+assert zone_log_line("A", "B", H, 1, 0) == (
+    "A → B · 🔴 Cabeza: 1 ataque lanzado | 🔵 sin defensa en esta zona | 💥 1 impacto recibido: 5 de daño.")
+assert zone_log_line("A", "B", L, 2, 3) == (
+    "A → B · 🔴 Piernas: 2 ataques lanzados | 🔵 2 defensas bloquean 10 de daño (1 defensa de sobra) | "
+    "🛡️ sin impacto: 0 de daño.")
+assert zone_log_line("A", "B", H, 3, 0).endswith("💥 3 impactos recibidos: 15 de daño.")
+m = duel([mk("a2", 2, 0)], [mk("d1", 0, 1)], [("a2", [T, L], [])], [("d1", [], [T])])
+lines = [l.replace(m.player_a.name, "pa").replace(m.player_b.name, "pb") for l in m.log]
+assert "pa → pb · 🔴 Tronco: 1 ataque lanzado | 🔵 1 defensa bloquea 5 de daño | 🛡️ sin impacto: 0 de daño." \
+    in lines, m.log[-6:]
+assert "pa → pb · 🔴 Piernas: 1 ataque lanzado | 🔵 sin defensa en esta zona | 💥 1 impacto recibido: 5 de daño." \
+    in lines
+assert any(l.startswith("📊 ") and "5 de daño en total" in l for l in m.log)
+assert any(l.startswith("❤️ ") and "50 → 45 HP (−5 daño)" in l for l in m.log), m.log[-4:]
+m = duel([mk("sp", 3, 0, TRI)], [], [("sp", ALL, [])], [])
+tot = next(l for l in m.log if l.startswith("📊 "))
+assert "21 de daño en total (5 Cabeza + 5 Tronco + 5 Piernas + 3 Combo Tripartito + 3 Combo Especial)" in tot, tot
+print("registro por zona (ataques | defensas | daño que pasa) + totales OK")
+
+# ================= Regla 3: curadoras (dependen del Combo Tripartito del RIVAL) =================
+def heal_duel(a_plays, b_healer, b_zones, a_combo=True, b_hp=40, b_combo=False):
+    """A ataca; B juega una curadora. a_combo = A (el RIVAL de B) ya tenía su Combo Tripartito."""
+    m = start_match([mk("pa", 0, 0)] * 30, [mk("pb", 0, 0)] * 30, hp_a=50, hp_b=50, seed=11)
+    m.player_b.hp = b_hp
+    if a_combo:
+        m.player_a.zones_affected, m.player_a.tripartite_claimed = set(Zone), True
+    if b_combo:
+        m.player_b.zones_affected, m.player_b.tripartite_claimed = set(Zone), True
+    m.player_a.hand = [c for c, _ in a_plays]
+    m.player_b.hand = [b_healer]
+    for c, z in a_plays:
+        play_card(m, "a", c.id, z, [])
+    play_card(m, "b", b_healer.id, b_healer.atk and [L] or [], b_zones)
+    e_before = m.player_b.energy
+    end_turn(m)
+    return m, e_before
+
+# 1) Combo rival activo + bloquea en TODAS sus zonas -> +3 de vida (las 3 curadoras).
+m, e0 = heal_duel([(mk("a3", 3, 0), ALL)], mk("hl", 0, 3, HEAL), ALL)
+assert m.player_b.hp == 43, m.player_b.hp                        # 0 daño (todo bloqueado) + 3
+assert m.player_b.energy == 2, m.player_b.energy                 # 3 - 2 (coste) + 1: NUNCA energía extra
+assert any("+3 de vida" in l and "Combo Tripartito rival activo" in l for l in m.log)
+m, _ = heal_duel([(mk("a2", 2, 0), [H, T])], mk("hl", 0, 2, HEAL), [H, T])
+assert m.player_b.hp == 43, m.player_b.hp
+m, _ = heal_duel([(mk("a1", 1, 0), [T])], mk("hl", 1, 1, HEAL), [T])
+assert m.player_b.hp == 43 and m.player_a.hp == 45, (m.player_a.hp, m.player_b.hp)   # la 1/1 además ataca
+# Bloquear en todas las zonas que DEFIENDE (las que marcó): una 0/3 que solo defiende 1 zona y la acierta, cura.
+m, _ = heal_duel([(mk("a1", 1, 0), [L])], mk("hl", 0, 3, HEAL), [L])
+assert m.player_b.hp == 43, m.player_b.hp
+# Nunca pasa de la vida máxima.
+m, _ = heal_duel([(mk("a3", 3, 0), ALL)], mk("hl", 0, 3, HEAL), ALL, b_hp=50)
+assert m.player_b.hp == 50, m.player_b.hp
+
+# 2) Combo rival activo pero NO bloquea en todas sus zonas -> no cura.
+m, _ = heal_duel([(mk("a2", 2, 0), [H, T])], mk("hl", 0, 3, HEAL), ALL)          # Piernas no atacada
+assert m.player_b.hp == 40 and any("el rival no atacó Piernas" in l for l in m.log), m.player_b.hp
+m, _ = heal_duel([], mk("hl", 0, 2, HEAL), [H, T])                               # nadie le ataca
+assert m.player_b.hp == 40, m.player_b.hp
+m, _ = heal_duel([(mk("a1", 1, 0), [H])], mk("hl", 1, 1, HEAL), [])              # no defendió nada
+assert m.player_b.hp == 35 and any("no defendió ninguna zona" in l for l in m.log), m.player_b.hp
+
+# 3) SIN el Combo Tripartito del rival: solo defiende (bloquea), nada de vida ni de energía.
+m, e0 = heal_duel([(mk("a3", 3, 0), ALL)], mk("hl", 0, 3, HEAL), ALL, a_combo=False)
+assert m.player_b.hp == 40 and m.player_b.energy == 2, (m.player_b.hp, m.player_b.energy)
+assert any("solo defiende" in l for l in m.log)
+assert m.player_a.last_turn.blocked == {"head": 1, "torso": 1, "legs": 1}        # pero bloquea como cualquiera
+# Es el combo del RIVAL el que cuenta: que el dueño de la curadora tenga el suyo no sirve.
+m, _ = heal_duel([(mk("a3", 3, 0), ALL)], mk("hl", 0, 3, HEAL), ALL, a_combo=False, b_combo=True)
+assert m.player_b.hp == 40, m.player_b.hp
+# El combo tiene que estar activado ANTES del turno: si el rival lo completa en este mismo turno, aún no cura.
+m = start_match([mk("pa", 0, 0)] * 30, [mk("pb", 0, 0)] * 30, hp_a=50, hp_b=50, seed=12)
+m.player_b.hp = 40
+m.player_a.zones_affected = {H, T}                               # a A solo le falta Piernas
+m.player_a.hand = [mk("a1", 1, 0)]
+m.player_b.hand = [mk("hl", 0, 2, HEAL)]
+play_card(m, "a", "a1", [L], [])                                 # completa el combo (Piernas entra)
+play_card(m, "b", "hl", [], [H, T])
+end_turn(m)
+assert m.player_a.tripartite_claimed and m.player_b.hp == 40 - 5 - 3, m.player_b.hp
+# ...y al turno siguiente ya sí cura si bloquea todo lo que defiende.
+m.player_a.hand = [mk("a2", 2, 0)]
+m.player_b.hand = [mk("hl2", 0, 2, HEAL)]
+m.player_a.energy = m.player_b.energy = 3
+play_card(m, "a", "a2", [H, T], [])
+play_card(m, "b", "hl2", [], [H, T])
+end_turn(m)
+assert m.player_b.hp == 32 + 3, m.player_b.hp
+print("regla 3 (curadoras: solo con el Combo Tripartito rival activo y bloqueando en todas sus zonas, +3 vida) OK")
+
+# ================= Regla 4: energía, 3 cartas de coste 1 =================
+m = duel([mk("c1", 1, 0), mk("c2", 2, 1), mk("c3", 0, 2)], [mk("d3", 0, 3)],
+         [("c1", [H], []), ("c2", [T, L], [L]), ("c3", [], [H, T])], [("d3", [], [H])], a_energy=3)
+assert m.player_a.energy == 1, m.player_a.energy                 # 3 - 3 + 1
+assert m.player_b.hp == 50 - 10, m.player_b.hp                   # 3 ataques, Cabeza bloqueada; sin Tripartito
+m = start_match([mk("x", 0, 0)] * 30, [mk("y", 0, 0)] * 30, hp_a=50, hp_b=50, seed=5)
+m.player_a.hand = [mk("sp", 3, 0, TRI), mk("c1", 1, 0), mk("c2", 1, 1)]
+play_card(m, "a", "sp", ALL, [])                                 # coste 2
+must_fail(play_card, m, "a", "c1", [H], [])                       # Cabeza ya la ataca la especial
+play_card(m, "a", "c1", [], [])                                  # sin zonas libres: se juega sin marcar
+must_fail(play_card, m, "a", "c2", [], [L])                      # ya no queda energía
+m.player_a.energy = 2
+m.player_a.staged_plays = []
+m.player_a.hand = [mk("c1", 1, 0), mk("c2", 1, 1), mk("c3", 0, 1)]
+play_card(m, "a", "c1", [H], [])
+play_card(m, "a", "c2", [T], [L])
+must_fail(play_card, m, "a", "c3", [], [H])                       # 2 de energía -> solo 2 cartas
+print("regla 4 (3 cartas de coste 1 con 3 de energía, tope respetado) OK")
+
+# --- Victoria / empate ---
+m = duel([mk("a3", 3, 0)], [], [("a3", ALL, [])], [], hp=18)
+assert m.status == MatchStatus.PLAYER_A_WINS, m.status
+m = duel([mk("a1", 1, 0)], [mk("b1", 1, 0)], [("a1", [H], [])], [("b1", [T], [])], hp=5)
+assert m.status == MatchStatus.DRAW, m.status
+print("victoria / empate OK")
+
+# --- Snapshot para la UI ---
+m = start_match([mk("x", 0, 0)] * 30, [mk("y", 0, 0)] * 30, hp_a=50, hp_b=50, seed=6)
+m.player_a.hand = [mk("sp", 2, 0, TRI)]
+play_card(m, "a", "sp", [H, L], [])
+s = get_match_state(m)
+assert s["player_a"]["staged_plays"][0]["attack_zones"] == ["head", "legs"]
 end_turn(m)
 s = get_match_state(m)
-assert s["status"] == "player_a_wins", s["status"]
-print("victory condition OK, status =", s["status"])
+assert s["player_a"]["last_turn"] == {"hits": {"head": 1, "legs": 1}, "blocked": {}, "damage_dealt": 13,
+                                      "combos": ["sp"], "tripartite": False, "healed": 0}, s["player_a"]["last_turn"]
+assert s["player_a"]["zones_affected"] == ["head", "legs"] and s["player_a"]["tripartite_claimed"] is False
+assert s["player_a"]["combos_completed"] == 1
+print("snapshot OK")
 
-# --- Decoupled attack/defense zone (Waves Ducks style): a card can shield a
-# DIFFERENT zone than the one it attacks. ---
-deckA = [mk("a_split", 2, 3)] * 15
-deckB = [mk("b_split", 2, 0)] * 15
-m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=11)
-# A attacks HEAD but defends LEGS; B attacks LEGS -> A's LEGS shield (3) blocks it.
-play_card(m, "a", "a_split", Zone.HEAD, defense_zone=Zone.LEGS)
-play_card(m, "b", "b_split", Zone.LEGS)
+# --- Energía: el acumulador nunca supera MAX_ENERGY y se recupera +1 por turno ---
+m = start_match([mk("e", 1, 0)] * 30, [mk("f", 0, 1)] * 30, hp_a=999, hp_b=999, seed=20)
+assert m.player_a.energy == 3
+m.player_a.hand = [mk("s2", 2, 0, TRI), mk("c1", 1, 0), mk("c0", 0, 1)]
+play_card(m, "a", "s2", [H, T], [])
+play_card(m, "a", "c1", [L], [])
 end_turn(m)
-s = get_match_state(m)
-assert s["player_b"]["hp"] == 48, s["player_b"]["hp"]  # A's 2 atk on HEAD, B unshielded there
-assert s["player_a"]["hp"] == 50, s["player_a"]["hp"]  # B's 2 atk on LEGS fully blocked by A's 3 def there
-print("decoupled attack/defense zone OK, A hp =", s["player_a"]["hp"], "B hp =", s["player_b"]["hp"])
+assert m.player_a.energy == 1, m.player_a.energy
+end_turn(m); assert m.player_a.energy == 2
+end_turn(m); end_turn(m); assert m.player_a.energy == 3
+print("energy spend/regen OK")
 
 # --- Inactividad: SOLO cuando se agota el tiempo sin actuar 3 turnos seguidos ---
 deckA = [mk("a_act", 0, 1)] * 15
 deckB = [mk("b_idle", 0, 1)] * 15
 m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=12)
 for _ in range(3):
-    play_card(m, "a", "a_act", Zone.HEAD)  # A juega; a B se le agota el tiempo
+    play_full(m, "a", "a_act")  # A juega; a B se le agota el tiempo
     end_turn(m, timed_out=True)
 s = get_match_state(m)
 assert s["status"] == "player_a_wins" and s["end_reason"] == "inactivity", (s["status"], s["end_reason"])
@@ -180,11 +356,11 @@ print("inactivity loss (timeouts) OK, status =", s["status"])
 # Jugar cualquier carta reinicia el contador de inactividad.
 m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=13)
 for _ in range(2):
-    play_card(m, "a", "a_act", Zone.HEAD)
+    play_full(m, "a", "a_act")
     end_turn(m, timed_out=True)
 assert m.player_b.inactive_turns == 2
-play_card(m, "a", "a_act", Zone.HEAD)
-play_card(m, "b", "b_idle", Zone.HEAD)
+play_full(m, "a", "a_act")
+play_full(m, "b", "b_idle")
 end_turn(m, timed_out=True)
 assert m.player_b.inactive_turns == 0 and m.status == MatchStatus.ONGOING
 print("inactivity counter reset by playing OK")
@@ -226,7 +402,7 @@ for action in ("register", "pass", "play"):
     elif action == "pass":
         pass_turn(m, "a")
     else:
-        play_card(m, "a", m.player_a.hand[0].id, Zone.HEAD)
+        play_full(m, "a", m.player_a.hand[0].id)
     assert m.player_a.inactive_turns == 0, (action, m.player_a.inactive_turns)
     assert get_match_state(m)["player_a"]["inactive_turns"] == 0
     pass_turn(m, "b")
@@ -240,174 +416,6 @@ for _ in range(5):
     end_turn(m)
 assert m.player_a.inactive_turns == 0 and m.status == MatchStatus.ONGOING
 print("end_turn without timeout never penalizes OK")
-
-# --- Energía: el acumulador nunca supera MAX_ENERGY (3) ---
-assert MAX_ENERGY == 3
-deckA = [mk("a_e", 1, 0)] * 15
-deckB = [mk("b_e", 0, 1)] * 15
-m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=20)
-assert m.player_a.energy == 3
-for _ in range(6):
-    play_card(m, "a", "a_e", Zone.HEAD)
-    play_card(m, "b", "b_e", Zone.TORSO)
-    end_turn(m)
-    assert m.player_a.energy <= MAX_ENERGY and m.player_b.energy <= MAX_ENERGY, (m.player_a.energy, m.player_b.energy)
-print("energy cap 3 OK, energy =", m.player_a.energy)
-
-# --- Energía: lo gastado se descuenta y se recupera +1 por turno (máx. 3) ---
-deckA = [mk("e1", 1, 0), mk("e2", 0, 1), mk("e3", 2, 1), mk("e4", 1, 1)] * 4
-deckB = [mk("f1", 0, 0)] * 16
-m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=30)
-
-def end_turn_no_idle(m):
-    # este test solo mira la energía: se neutraliza la regla de inactividad
-    m.player_a.inactive_turns = m.player_b.inactive_turns = 0
-    end_turn(m)
-
-m.player_a.hand = [mk("c2", 2, 1, ability=Ability.CLEAN_STRIKE), mk("c1", 1, 0), mk("c1b", 0, 1)]
-play_card(m, "a", "c2", Zone.HEAD)      # coste 2
-play_card(m, "a", "c1", Zone.TORSO)     # coste 1 -> gastados 3 de 3
-end_turn_no_idle(m)
-assert m.player_a.energy == 1, m.player_a.energy   # 3 - 3 + 1
-assert m.player_b.energy == 3, m.player_b.energy   # no gastó: sigue en el tope
-m.player_a.hand = [mk("d2", 2, 1, ability=Ability.CLEAN_STRIKE), mk("d1", 1, 0), mk("d0", 0, 0)]
-try:
-    play_card(m, "a", "d2", Zone.HEAD)  # coste 2 con solo 1 de energía
-    raise AssertionError("debía faltar energía")
-except EngineError:
-    pass
-play_card(m, "a", "d1", Zone.HEAD)      # coste 1 -> 0
-end_turn_no_idle(m)
-assert m.player_a.energy == 1, m.player_a.energy   # 1 - 1 + 1
-end_turn_no_idle(m)                                        # no juega nada
-assert m.player_a.energy == 2, m.player_a.energy
-end_turn_no_idle(m); end_turn_no_idle(m)
-assert m.player_a.energy == 3, m.player_a.energy   # nunca pasa de 3
-print("energy spend/regen OK")
-
-# --- Pasar turno sin energía: recarga +1 y sin inactividad ---
-m = start_match([mk("p1", 1, 0)] * 16, [mk("q1", 1, 0)] * 16, hp_a=50, hp_b=50, seed=40)
-m.player_a.energy = 1
-m.player_a.hand = [mk("big1", 3, 0, ability=Ability.CLEAN_STRIKE), mk("big2", 2, 1, ability=Ability.CLEAN_STRIKE), mk("big3", 0, 3, ability=Ability.GUARD_ENERGY, bonus=2)]  # todas coste 2
-pass_turn(m, "a")
-end_turn(m, timed_out=True)
-assert m.player_a.energy == 2, m.player_a.energy
-assert m.player_a.inactive_turns == 0, m.player_a.inactive_turns
-print("pass without energy OK: energía", m.player_a.energy)
-
-# --- Robo de Vida: cura al atacante el daño hecho en su zona (hasta heal_amount) ---
-deckA = [mk("a_vamp", 2, 0, ability=Ability.LIFESTEAL, heal=3)] * 15
-deckB = [mk("b_hit", 3, 0)] * 15
-m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=21)
-play_card(m, "a", "a_vamp", Zone.HEAD)
-play_card(m, "b", "b_hit", Zone.TORSO)
-end_turn(m)
-assert m.player_b.hp == 48, m.player_b.hp
-assert m.player_a.hp == 49, m.player_a.hp  # 50 - 3 + 2 robados
-print("lifesteal OK, A hp =", m.player_a.hp)
-
-# Robo de Vida sin daño (zona bloqueada) no cura nada.
-deckB = [mk("b_wall", 0, 3)] * 15
-m = start_match(deckA, deckB, hp_a=40, hp_b=50, seed=22)
-m.player_a.hp = 30
-play_card(m, "a", "a_vamp", Zone.HEAD)
-play_card(m, "b", "b_wall", Zone.HEAD)
-end_turn(m)
-assert m.player_a.hp == 30 and m.player_b.hp == 50, (m.player_a.hp, m.player_b.hp)
-print("lifesteal blocked OK")
-
-# --- Combo Simultáneo: +2 si dañas 2 zonas el mismo turno, +4 si dañas 3 ---
-deckA = [mk("a_combo", 1, 0, ability=Ability.COMBO_STRIKE)] + [mk("a_jab", 1, 0)] * 14
-deckB = [mk("b_idle_c", 0, 0)] * 15
-m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=23)
-m.player_a.hand = [mk("a_combo", 1, 0, ability=Ability.COMBO_STRIKE), mk("a_jab", 1, 0)]
-play_card(m, "a", "a_combo", Zone.HEAD)
-play_card(m, "a", "a_jab", Zone.LEGS)
-play_card(m, "b", "b_idle_c", Zone.TORSO)
-end_turn(m)
-assert m.player_b.hp == 50 - 2 - SIMULTANEOUS_COMBO_BONUS[2], m.player_b.hp
-print("simultaneous combo (2 zones) OK, B hp =", m.player_b.hp)
-
-# Sin carta de combo, dañar 2 zonas no da bonus.
-m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=24)
-m.player_a.hand = [mk("a_jab", 1, 0), mk("a_jab2", 1, 0)]
-play_card(m, "a", "a_jab", Zone.HEAD)
-play_card(m, "a", "a_jab2", Zone.LEGS)
-play_card(m, "b", "b_idle_c", Zone.TORSO)
-end_turn(m)
-assert m.player_b.hp == 48, m.player_b.hp
-print("no combo card -> no bonus OK")
-
-# Combo de 3 zonas: 3 cartas de coste 1 en el mismo turno (gasto 3 = tope).
-m = start_match(deckA, deckB, hp_a=50, hp_b=50, seed=26)
-m.player_a.hand = [mk("a_combo", 1, 0, ability=Ability.COMBO_STRIKE), mk("a_j1", 1, 0), mk("a_j2", 1, 0)]
-play_card(m, "a", "a_combo", Zone.HEAD)
-play_card(m, "a", "a_j1", Zone.TORSO)
-play_card(m, "a", "a_j2", Zone.LEGS)
-play_card(m, "b", "b_idle_c", Zone.TORSO)
-end_turn(m)
-# 3 zonas dañadas: 3 de daño + 3 del Combo Tripartito (primera vez) + 4 del Combo Simultáneo
-assert m.player_b.hp == 50 - 3 - 3 - SIMULTANEOUS_COMBO_BONUS[3], m.player_b.hp
-print("simultaneous combo (3 zones) OK, B hp =", m.player_b.hp)
-
-# =================== Especiales (revisión 03/11/2026) ===================
-def _duel(a_hand, b_hand, a_plays, b_plays, a_energy=3, b_energy=3):
-    """Partida controlada: fija manos/energía, juega las cartas indicadas [(id, zona_atk, zona_def)] y resuelve."""
-    m = start_match([mk("pa", 0, 0)] * 30, [mk("pb", 0, 0)] * 30, hp_a=50, hp_b=50, seed=99)
-    m.player_a.hand, m.player_b.hand = list(a_hand), list(b_hand)
-    m.player_a.energy, m.player_b.energy = a_energy, b_energy
-    for cid, z, dz in a_plays:
-        play_card(m, "a", cid, z, defense_zone=dz)
-    for cid, z, dz in b_plays:
-        play_card(m, "b", cid, z, defense_zone=dz)
-    end_turn(m)
-    return m
-
-# Golpe Limpio sin defensa: 10 + 3 = 13 (cualquiera de las 4, sea cual sea su ATK).
-for atk, dfn in [(3, 0), (2, 0), (2, 2), (1, 0)]:
-    m = _duel([mk("cs", atk, dfn, ability=Ability.CLEAN_STRIKE)], [], [("cs", Zone.HEAD, Zone.HEAD)], [])
-    assert m.player_b.hp == 50 - 13, (atk, dfn, m.player_b.hp)
-    assert any("Golpe Limpio" in l for l in m.log)
-print("clean strike unblocked = 13 OK (las 4 especiales)")
-
-# Bloqueada (cualquier DEF en esa zona): combo anulado, daño normal ATK − DEF.
-m = _duel([mk("cs", 3, 0, ability=Ability.CLEAN_STRIKE)], [mk("sh", 0, 1)],
-          [("cs", Zone.HEAD, Zone.HEAD)], [("sh", Zone.HEAD, Zone.HEAD)])
-assert m.player_b.hp == 50 - 2, m.player_b.hp
-assert any("se anula" in l for l in m.log)
-m = _duel([mk("cs", 2, 0, ability=Ability.CLEAN_STRIKE)], [mk("sh", 0, 3)],
-          [("cs", Zone.TORSO, Zone.TORSO)], [("sh", Zone.TORSO, Zone.TORSO)])
-assert m.player_b.hp == 50, m.player_b.hp
-# Defensa en OTRA zona no bloquea: entra limpio.
-m = _duel([mk("cs", 2, 0, ability=Ability.CLEAN_STRIKE)], [mk("sh", 0, 3)],
-          [("cs", Zone.LEGS, Zone.LEGS)], [("sh", Zone.HEAD, Zone.HEAD)])
-assert m.player_b.hp == 50 - 13, m.player_b.hp
-# Una carta normal con las mismas stats no tiene el plus.
-m = _duel([mk("n", 3, 0)], [], [("n", Zone.HEAD, Zone.HEAD)], [])
-assert m.player_b.hp == 47, m.player_b.hp
-print("clean strike blocked -> combo anulado OK")
-
-# Guardia Vital: bloqueo total del ataque rival => +energy_bonus (tope 3).
-g = lambda b: mk("g", 0, 3, ability=Ability.GUARD_ENERGY, bonus=b)
-m = _duel([mk("x", 2, 0)], [g(2)], [("x", Zone.HEAD, Zone.HEAD)], [("g", Zone.HEAD, Zone.HEAD)], b_energy=3)
-# B: 3 - 2 (coste) + 1 (regen) = 2, +2 por bloquear => 3 (tope)
-assert m.player_b.energy == 3 and m.player_b.hp == 50, (m.player_b.energy, m.player_b.hp)
-assert any("Guardia Vital" in l for l in m.log)
-m = _duel([mk("x", 2, 0)], [mk("g", 0, 2, ability=Ability.GUARD_ENERGY, bonus=1), mk("y", 0, 0)],
-          [("x", Zone.HEAD, Zone.HEAD)], [("g", Zone.HEAD, Zone.HEAD)], b_energy=2)
-assert m.player_b.energy == 2, m.player_b.energy           # 2 - 2 + 1 = 1, +1 => 2
-# Sin ataque en su zona: no hay bloqueo, no hay energía extra.
-m = _duel([mk("x", 2, 0)], [g(2)], [("x", Zone.LEGS, Zone.LEGS)], [("g", Zone.HEAD, Zone.HEAD)], b_energy=2)
-assert m.player_b.energy == 1, m.player_b.energy           # 2 - 2 + 1
-# Bloqueo PARCIAL (entra daño): no cuenta como bloqueo con éxito.
-m = _duel([mk("x", 3, 0)], [mk("g", 0, 2, ability=Ability.GUARD_ENERGY, bonus=1)],
-          [("x", Zone.TORSO, Zone.TORSO)], [("g", Zone.TORSO, Zone.TORSO)], b_energy=2)
-assert m.player_b.energy == 1 and m.player_b.hp == 49, (m.player_b.energy, m.player_b.hp)
-# La femenina también para un Golpe Limpio (lo anula) y gana su energía.
-m = _duel([mk("cs", 2, 0, ability=Ability.CLEAN_STRIKE)], [g(2)],
-          [("cs", Zone.HEAD, Zone.HEAD)], [("g", Zone.HEAD, Zone.HEAD)], b_energy=2)
-assert m.player_b.hp == 50 and m.player_b.energy == 3, (m.player_b.hp, m.player_b.energy)
-print("guard energy OK (bloqueo total +energía, parcial/sin ataque no)")
 
 # --- Unicidad total: catálogo, mazo y mano sin ninguna repetición ---
 import random as _random
@@ -423,9 +431,8 @@ assert len(base) == len(REQUIRED_BASE_COMBOS) == 16 and len(specials) == 7 and l
 assert sorted((c.atk, c.defense) for c in base) == sorted(REQUIRED_BASE_COMBOS)
 assert all(c.cost_energy == 1 for c in base), "las 16 base cuestan 1"
 assert all(c.cost_energy == 2 for c in specials), "las 7 especiales cuestan 2"
-assert sorted((c.atk, c.defense) for c in specials if c.ability == Ability.CLEAN_STRIKE) == [(1, 0), (2, 0), (2, 2), (3, 0)]
-assert sorted((c.atk, c.defense, c.energy_bonus) for c in specials if c.ability == Ability.GUARD_ENERGY) == [
-    (0, 2, 1), (0, 3, 2), (1, 1, 1)]
+assert sorted((c.atk, c.defense) for c in specials if c.ability == Ability.TRIPARTITE_STRIKE) == [(1, 0), (2, 0), (2, 2), (3, 0)]
+assert sorted((c.atk, c.defense) for c in specials if c.ability == Ability.HEALER) == [(0, 2), (0, 3), (1, 1)]
 for seed in range(200):
     deck = build_deck_from_pool(catalog, rng=_random.Random(seed))
     assert len(deck) == 23
@@ -465,7 +472,7 @@ for seed in range(200):
     a = m.player_a
     before = [c.id for c in a.hand]
     cheapest = min(a.hand, key=lambda c: c.cost_energy)
-    play_card(m, "a", cheapest.id, Zone.HEAD)
+    play_full(m, "a", cheapest.id)
     kept = [cid for cid in before if cid != cheapest.id]
     end_turn(m)
     after = [c.id for c in a.hand]

@@ -3,61 +3,68 @@ Motor de combate PvP por turnos síncronos 1v1, puro Python y desacoplado de
 Streamlit/Web3/UI (sección 2 de PVP_Rules). Expone 4 funciones de alto nivel:
 
     start_match(deck_a, deck_b, hp_a, hp_b) -> MatchState
-    play_card(match, player, card_id, zone) -> MatchState
+    play_card(match, player, card_id, attack_zones, defense_zones) -> MatchState
     end_turn(match) -> MatchState
     get_match_state(match) -> dict   # snapshot serializable para la UI
 
-Reglas modeladas (ver PVP_Rules/PVP KURAMARUN....md para el texto original):
-- Zonas de impacto Cabeza/Tronco/Piernas; cada carta jugada se dirige a UNA
-  zona y aporta ahí su ATK (ataque a esa zona del rival) y/o su DEF (escudo
-  en esa misma zona propia) — las cartas híbridas aportan ambos a la vez.
-- Daño real = max(0, ATK atacante en zona Z - DEF rival en zona Z), salvo:
-    * Rompedefensas/Perforante (PIERCING): ignora el escudo de esa zona.
-    * Poción (HEAL_POTION): bloquea el daño de esa zona del todo y cura al
-      defensor por max(heal_amount de la poción, daño que iba a recibir).
-    * Contraataque (COUNTER): si el rival NO atacó esa zona este turno,
-      devuelve `counter_damage` directo (ignorando defensa) — si sí la
-      atacó, la carta solo actúa como escudo normal (su propio DEF).
-- Combo Tripartito: la primera vez que un jugador ha dañado (>0) las 3 zonas
-  del rival a lo largo de TODA la partida, ese golpe suma +3 de daño extra.
-- Combo Crítico: una vez completado el combo tripartito, cualquier carta de
-  Ataque Puro (3 ATK/0 DEF) jugada después inflige 20 de daño directo fijo en
-  vez del cálculo normal (ignora escudo/perforante/etc. de esa zona).
+REGLAS DEFINITIVAS DE COMBATE (Sendo, 05/11/2026) — sistema de zonas múltiples
+----------------------------------------------------------------------------
+1. Zonas únicas por carta: ATK y DEF son NÚMERO DE ZONAS (Cabeza, Tronco,
+   Piernas). Una carta de ATK N marca hasta N zonas de ataque DISTINTAS y una
+   de DEF M hasta M zonas de defensa DISTINTAS — nunca 2 ataques (ni 2
+   defensas) de la misma carta en la misma zona.
+   Zonas únicas por TURNO (Sendo, 05/11/2026): tampoco se pueden repetir
+   zonas entre cartas DISTINTAS del mismo jugador en el mismo turno — cada
+   zona recibe como mucho 1 ataque tuyo y 1 defensa tuya por turno (máx. 3
+   ataques y 3 defensas en total). Una casilla ya ocupada por otra carta
+   tuya ese turno queda bloqueada. Se pueden dejar ataques/defensas sin usar
+   si sobran (incluso jugar una carta sin zonas si ya no queda ninguna libre).
+   play_card lo valida estrictamente.
+2. Daño por zona: cada ataque que entra en una zona quita ZONE_HIT_DAMAGE (5).
+   Cada defensa del rival en esa zona anula UN ataque (bloqueo 1:1).
+   Combo Tripartito (zonas afectadas): cada zona del rival donde ENTRA un
+   ataque (no bloqueado) queda afectada para el resto de la partida — se
+   acumula entre turnos. En el turno en que el jugador completa las 3 zonas
+   afectadas suma +TRIPARTITE_COMBO_BONUS (3), UNA SOLA VEZ por partida.
+   Combo Especial (especiales de ataque, TRIPARTITE_STRIKE): si la carta usa
+   TODAS sus zonas de ataque y NINGUNO de sus ataques es bloqueado, suma
+   +SPECIAL_COMBO_BONUS (3), cada vez que ocurra: 3/0 -> 5x3+3 = 18, 2/0 ->
+   13, 1/0 -> 8 (la 2/2 especial sigue la misma regla: 13). Ambos bonus se
+   suman si coinciden (3/0 que completa además las 3 zonas: 15+3+3 = 21).
+   (Con zonas únicas por turno nunca hay más de 1 ataque por zona; si un
+   cliente antiguo apilara varios, la defensa pararía primero los de la
+   especial, así un bloqueo en su zona siempre le anula el +3.)
+3. Curadoras (HEALER) 0/3, 0/2, 1/1 — regla definitiva de Sendo (05/11/2026):
+   - Si el RIVAL todavía NO tiene activado su Combo Tripartito: la curadora
+     solo defiende sus zonas (bloquea como cualquier defensa). Nada más.
+   - Si el RIVAL YA lo tenía activado al empezar la resolución del turno
+     (tripartite_claimed del rival, cobrado en una ronda ANTERIOR): si la
+     curadora acierta y bloquea en TODAS las zonas que defiende (el rival
+     lanzó ataque a cada una y ninguno pasó), el jugador recibe
+     +HEALER_HEAL_AMOUNT (3) de VIDA (nunca energía), sin pasar de su vida
+     máxima. Cada curadora que lo cumpla cura +3.
+4. Energía: con 3 de energía se pueden jugar 3 cartas de coste 1 en el mismo
+   turno, repartiendo sus zonas sin que se solapen (regla 1). Base = coste 1,
+   especiales = coste 2, tope de gasto 3.
+
+Resto de reglas (sin cambios):
+- Turno síncrono: las dos direcciones de daño se calculan sobre el mismo
+  estado de inicio de turno y la vida se aplica a la vez (posible empate).
+- Energía: empieza en STARTING_ENERGY (3); al cerrar el turno se resta lo
+  gastado y se recupera +ENERGY_PER_TURN, sin superar nunca MAX_ENERGY (3).
 - Mazo y mano: unicidad total — nunca dos cartas iguales ni dos con la
   misma combinación (ATK, DEF, habilidad) (build_deck_from_pool / _draw).
-  Una especial puede convivir con la base de sus mismas stats.
-- Costes: las 16 base cuestan 1; las 7 especiales cuestan 2.
-- Golpe Limpio (CLEAN_STRIKE, 4 especiales de ataque): si el rival no tiene
-  NINGUNA defensa en la zona atacada, la carta hace 10 + 3 = 13 de daño en
-  vez de su ATK. Si el rival la bloquea (DEF > 0 ahí), el combo se anula y
-  cuenta su daño normal ATK − DEF. El Combo Crítico (20) tiene prioridad.
-- Guardia Vital (GUARD_ENERGY, 3 especiales femeninas): si el rival ataca
-  su zona de defensa y el bloqueo es total (0 daño en esa zona), el jugador
-  gana `energy_bonus` de energía al cerrar el turno (tope MAX_ENERGY).
-- Habilidades soportadas por el motor (hoy ninguna carta del catálogo las
-  lleva, se conservan por si se asignan a alguna de las 16):
-    * Robo de Vida (LIFESTEAL): si la zona que ataca recibe daño (>0), el
-      atacante recupera ese daño en HP, hasta `heal_amount` por carta.
-    * Combo Simultáneo (COMBO_STRIKE): si ese MISMO turno el jugador daña 2
-      o 3 zonas distintas del rival, suma SIMULTANEOUS_COMBO_BONUS[2|3] de
-      daño extra (una vez por turno aunque juegue varias).
-- Energía: empieza en STARTING_ENERGY (3). Jugar cartas DESCUENTA su coste
-  de la energía disponible; al cerrar el turno se resta lo gastado y se
-  recupera +ENERGY_PER_TURN, sin superar nunca MAX_ENERGY (3). Ej.: 3 ->
-  gastas 3 -> 0 + 1 = 1 al turno siguiente; gastas 1 -> 0 + 1 = 1; pasas
-  sin gastar -> 2; y así hasta volver a 3.
-- Mano PERSISTENTE: las cartas que no juegas se quedan en la mano para los
-  turnos siguientes. Al cerrar el turno solo van a descarte las cartas
-  JUGADAS y se roba lo justo para volver a HAND_SIZE.
-- Rotación por inactividad: si un jugador cierra el turno SIN jugar ninguna
-  carta (pasa turno o se le agota el tiempo), se descarta UNA carta al azar
-  de su mano y se roba una nueva en su lugar (_rotate_one_card), en vez de
-  renovar la mano entera. El mazo de descarte se rebaraja
-  automáticamente en cuanto el mazo de robo se queda sin cartas.
+- Mano PERSISTENTE: al cerrar el turno solo van a descarte las cartas
+  JUGADAS y se roba lo justo para volver a HAND_SIZE. Quien cierra el turno
+  sin jugar ninguna carta rota UNA carta al azar (_rotate_one_card).
+- Inactividad: solo cuenta el turno en que se agota el temporizador sin
+  jugar, pasar ni interactuar; INACTIVITY_LIMIT seguidos = derrota.
 
-Ambigüedades del documento resueltas con un criterio explícito (y señaladas
-en el propio código): si el equipo de diseño quiso decir otra cosa, son
-constantes/ifs puntuales fáciles de cambiar, no una reescritura.
+Retirado respecto a la versión anterior (sustituido por las reglas de arriba):
+Combo Crítico (20), Golpe Limpio
+(10+3) y Guardia Vital (+energía). Las habilidades heredadas (poción,
+perforante, contraataque, robo de vida, combo simultáneo) no tienen cartas y
+este motor no les da efecto.
 """
 
 from __future__ import annotations
@@ -65,21 +72,21 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Iterable, Optional, Union
 
 from card_schema import (
-    CLEAN_STRIKE_BASE_DAMAGE,
-    CLEAN_STRIKE_BONUS,
-    CRITICAL_COMBO_DAMAGE,
     DECK_SIZE,
     ENERGY_PER_TURN,
     HAND_SIZE,
+    HEALER_HEAL_AMOUNT,
     INACTIVITY_LIMIT,
     MAX_ENERGY,
     MAX_ENERGY_SPEND_PER_TURN,
-    SIMULTANEOUS_COMBO_BONUS,
+    NUM_ZONES,
+    SPECIAL_COMBO_BONUS,
     STARTING_ENERGY,
     TRIPARTITE_COMBO_BONUS,
+    ZONE_HIT_DAMAGE,
     Ability,
     Card,
 )
@@ -91,6 +98,9 @@ class Zone(str, Enum):
     LEGS = "legs"
 
 
+ZONE_LABEL = {Zone.HEAD: "Cabeza", Zone.TORSO: "Tronco", Zone.LEGS: "Piernas"}
+
+
 class MatchStatus(str, Enum):
     ONGOING = "ongoing"
     PLAYER_A_WINS = "player_a_wins"
@@ -99,15 +109,46 @@ class MatchStatus(str, Enum):
 
 
 class EngineError(ValueError):
-    """Jugada ilegal (energía insuficiente, carta no está en mano, partida ya
-    terminada, etc.) — siempre con un mensaje claro para mostrar en la UI."""
+    """Jugada ilegal (energía insuficiente, carta no está en mano, zona
+    repetida, más zonas que ATK/DEF, partida ya terminada...) — siempre con
+    un mensaje claro para mostrar en la UI."""
+
+
+def max_attack_zones(card: Card) -> int:
+    """Zonas de ataque que puede marcar la carta (1 por punto de ATK, máx. 3)."""
+    return max(0, min(card.atk, NUM_ZONES))
+
+
+def max_defense_zones(card: Card) -> int:
+    """Zonas de defensa que puede marcar la carta (1 por punto de DEF, máx. 3)."""
+    return max(0, min(card.defense, NUM_ZONES))
+
+
+def is_tripartite_card(card: Card) -> bool:
+    return card.ability == Ability.TRIPARTITE_STRIKE and max_attack_zones(card) > 0
+
+
+def is_healer_card(card: Card) -> bool:
+    return card.ability == Ability.HEALER and max_defense_zones(card) > 0
 
 
 @dataclass
 class StagedPlay:
     card: Card
-    zone: Zone            # zona de ATAQUE (dónde pega el ATK de la carta)
-    defense_zone: Zone    # zona de DEFENSA (dónde protege el DEF de la carta) — Waves Ducks: puede diferir de `zone`
+    attack_zones: tuple   # zonas DISTINTAS del rival que ataca esta carta (<= ATK)
+    defense_zones: tuple  # zonas DISTINTAS propias que defiende esta carta (<= DEF)
+
+
+@dataclass
+class TurnReport:
+    """Resumen del último turno resuelto, desde el punto de vista del ATACANTE
+    (lo lee la UI para el panel bajo cada luchador)."""
+    hits: dict = field(default_factory=dict)       # zona.value -> ataques que entraron
+    blocked: dict = field(default_factory=dict)    # zona.value -> ataques bloqueados
+    damage_dealt: int = 0
+    combos: list = field(default_factory=list)     # nombres de especiales que activaron su +3
+    tripartite: bool = False                       # este turno completó las 3 zonas afectadas (+3)
+    healed: int = 0                                # vida recibida por curadoras propias
 
 
 @dataclass
@@ -120,8 +161,10 @@ class PlayerState:
     discard: list[Card] = field(default_factory=list)
     energy: int = min(STARTING_ENERGY, MAX_ENERGY)
     staged_plays: list[StagedPlay] = field(default_factory=list)
-    zones_damaged: set = field(default_factory=set)   # Zone completados contra el rival, toda la partida
-    tripartite_claimed: bool = False
+    last_turn: TurnReport = field(default_factory=TurnReport)
+    zones_affected: set = field(default_factory=set)  # zonas del RIVAL tocadas alguna vez (toda la partida)
+    tripartite_claimed: bool = False  # ya cobró el +3 del Combo Tripartito (solo 1 vez por partida)
+    combos_completed: int = 0  # Combos Especiales (+3 de especial) conseguidos en la partida (informativo)
     battles_played: int = 0  # informativo para el dashboard (no afecta al combate)
     inactive_turns: int = 0  # turnos SEGUIDOS en que se le agotó el tiempo sin actuar (regla de inactividad)
     acted_this_turn: bool = False  # jugó, pasó turno o interactuó este turno (nunca es inactividad)
@@ -259,9 +302,65 @@ def _get_player(match: MatchState, player: str) -> PlayerState:
     raise EngineError("player debe ser 'a' o 'b'")
 
 
+ZoneArg = Union[Zone, str, Iterable, None]
+
+
+def _normalize_zones(zones: ZoneArg) -> list[Zone]:
+    if zones is None:
+        return []
+    if isinstance(zones, (Zone, str)):
+        zones = [zones]
+    try:
+        return [Zone(z) for z in zones]
+    except ValueError as e:
+        raise EngineError(f"Zona no válida: {e}") from None
+
+
+def validate_zones(card: Card, attack_zones: ZoneArg, defense_zones: ZoneArg) -> tuple[tuple, tuple]:
+    """Regla 1 — zonas únicas por carta. Devuelve (ataques, defensas) como
+    tuplas de Zone o lanza EngineError si la selección es ilegal:
+    - más zonas de ataque que ATK (o de defensa que DEF);
+    - la misma zona repetida dentro de la MISMA carta.
+    Dejar zonas sin usar (menos que ATK/DEF, incluso ninguna) es legal."""
+    atk = _normalize_zones(attack_zones)
+    dfn = _normalize_zones(defense_zones)
+    for kind, chosen, limit in (("ataque", atk, max_attack_zones(card)), ("defensa", dfn, max_defense_zones(card))):
+        if len(chosen) > limit:
+            raise EngineError(
+                f"{card.name} ({card.atk}/{card.defense}) solo puede marcar {limit} zona(s) de {kind}; "
+                f"se han elegido {len(chosen)}."
+            )
+        if len(set(chosen)) != len(chosen):
+            raise EngineError(
+                f"{card.name}: no se pueden poner 2 {kind}s de la misma carta en la misma zona."
+            )
+    return tuple(atk), tuple(dfn)
+
+
+def zones_taken_this_turn(player: "PlayerState") -> tuple[set, set]:
+    """(zonas de ataque, zonas de defensa) ya ocupadas por las cartas que el
+    jugador ha preparado este turno."""
+    atk, dfn = set(), set()
+    for sp in player.staged_plays:
+        atk.update(sp.attack_zones)
+        dfn.update(sp.defense_zones)
+    return atk, dfn
+
+
+def _zones_txt(zones: tuple) -> str:
+    return ", ".join(ZONE_LABEL[z] for z in zones) if zones else "—"
+
+
 def play_card(
-    match: MatchState, player: str, card_id: str, zone: Zone, defense_zone: Optional[Zone] = None
+    match: MatchState,
+    player: str,
+    card_id: str,
+    attack_zones: ZoneArg = None,
+    defense_zones: ZoneArg = None,
 ) -> MatchState:
+    """Prepara una carta para este turno con sus zonas de ataque y de defensa
+    (listas de Zone/str; una sola Zone también vale). Valida la regla de
+    zonas únicas por carta y la energía (regla 4: hasta 3 cartas de coste 1)."""
     if match.status != MatchStatus.ONGOING:
         raise EngineError("La partida ya ha terminado.")
     p = _get_player(match, player)
@@ -278,165 +377,169 @@ def play_card(
     if spent + card.cost_energy > p.energy:
         raise EngineError(f"Energía insuficiente: tienes {p.energy}, ya comprometidos {spent}.")
 
-    zone = Zone(zone)
-    defense_zone = Zone(defense_zone) if defense_zone is not None else zone
+    atk, dfn = validate_zones(card, attack_zones, defense_zones)
+    taken_atk, taken_dfn = zones_taken_this_turn(p)
+    for kind, art, chosen, taken in (("ataque", "un", atk, taken_atk), ("defensa", "una", dfn, taken_dfn)):
+        clash = [z for z in chosen if z in taken]
+        if clash:
+            raise EngineError(
+                f"{card.name}: {_zones_txt(tuple(clash))} ya tiene{'n' if len(clash) > 1 else ''} {art} {kind} "
+                f"de otra carta tuya este turno; cada zona solo admite 1 {kind} por turno."
+            )
     p.hand.remove(card)
-    p.staged_plays.append(StagedPlay(card=card, zone=zone, defense_zone=defense_zone))
+    p.staged_plays.append(StagedPlay(card=card, attack_zones=atk, defense_zones=dfn))
     p.acted_this_turn = True
     p.inactive_turns = 0
-    if defense_zone == zone:
-        match.log.append(f"{p.name} juega {card.name} ({card.atk}/{card.defense}) en {zone.value}.")
-    else:
-        match.log.append(
-            f"{p.name} juega {card.name} atacando {zone.value} y defendiendo {defense_zone.value}."
-        )
+    match.log.append(
+        f"{p.name} juega {card.name} ({card.atk}/{card.defense}) · ⚔️ {_zones_txt(atk)} · 🛡️ {_zones_txt(dfn)}."
+    )
     return match
 
 
 @dataclass
-class _ZoneMaps:
-    attack: dict
-    shield: dict
-    piercing_zones: set
-    counter_damage: dict
-    potion_zone: Optional[Zone]
-    potion_card: Optional[Card]
-    heavy_attack_zones: set  # zonas donde se jugó una carta 3 ATK/0 DEF este turno
-    lifesteal_cap: dict      # zona -> HP máximos que roba el atacante si daña esa zona
-    combo_strike: bool       # jugó al menos una carta de Combo Simultáneo este turno
-    clean_strike: dict       # zona -> ATK de las cartas de Golpe Limpio que atacan ahí (lista)
-    guard_energy: dict       # zona -> energía que dan las Guardia Vital que defienden ahí si bloquean del todo
+class _Direction:
+    damage: int
+    report: TurnReport
 
 
-def _build_zone_maps(player: PlayerState) -> _ZoneMaps:
-    attack = {z: 0 for z in Zone}
-    shield = {z: 0 for z in Zone}
-    counter_damage = {z: 0 for z in Zone}
-    piercing_zones = set()
-    heavy_attack_zones = set()
-    lifesteal_cap = {z: 0 for z in Zone}
-    combo_strike = False
-    clean_strike = {z: [] for z in Zone}
-    guard_energy = {z: 0 for z in Zone}
-    potion_zone, potion_card = None, None
-
-    for staged in player.staged_plays:
-        card, zone, def_zone = staged.card, staged.zone, staged.defense_zone
-        if card.ability == Ability.HEAL_POTION:
-            potion_zone, potion_card = def_zone, card
-            continue
-        attack[zone] += card.atk
-        shield[def_zone] += card.defense
-        if card.ability == Ability.PIERCING:
-            piercing_zones.add(zone)
-        if card.ability == Ability.COUNTER:
-            counter_damage[def_zone] += card.counter_damage
-        if card.ability == Ability.LIFESTEAL:
-            lifesteal_cap[zone] += card.heal_amount
-        if card.ability == Ability.COMBO_STRIKE:
-            combo_strike = True
-        if card.ability == Ability.CLEAN_STRIKE and card.atk > 0:
-            clean_strike[zone].append(card.atk)
-        if card.ability == Ability.GUARD_ENERGY:
-            guard_energy[def_zone] += card.energy_bonus
-        if card.atk == 3 and card.defense == 0:
-            heavy_attack_zones.add(zone)
-
-    return _ZoneMaps(
-        attack, shield, piercing_zones, counter_damage, potion_zone, potion_card, heavy_attack_zones,
-        lifesteal_cap, combo_strike, clean_strike, guard_energy,
-    )
+def _plural(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
 
 
-def _resolve_direction(attacker: PlayerState, defender: PlayerState, maps_atk: _ZoneMaps, maps_def: _ZoneMaps, log: list[str]) -> tuple[int, int, int, set]:
-    """Daño total que `attacker` inflige a `defender`, curación que
-    `defender` recibe (pociones) y HP que `attacker` roba (Robo de Vida),
-    resolviendo las 3 zonas. Devuelve (daño_total, curacion_defensor,
-    robo_vida_atacante, zonas_bloqueadas) — zonas_bloqueadas: zonas que
-    `attacker` atacó y en las que `defender` no recibió NADA de daño (bloqueo
-    total; las usa Guardia Vital). No aplica los cambios de HP (eso lo hace el caller,
-    para que las dos direcciones se calculen sobre el MISMO estado
-    "congelado" de inicio de turno, de verdad síncrono)."""
-    total_damage = 0
-    total_heal = 0
-    total_steal = 0
-    zones_hit = 0
-    blocked_zones: set = set()
+def zone_log_line(attacker: str, defender: str, zone: Zone, attacks: int, defenses: int) -> str:
+    """Una línea de registro por zona atacada, con el desglose completo:
+    ataques LANZADOS | defensas que bloquean (y cuánto daño paran) | impactos RECIBIDOS y su daño.
+    «Lanzado» = el atacante lo dirigió a esa zona (pase o no); «impacto recibido» solo cuando el
+    ataque pasa y resta vida. Si todo se bloquea: «🛡️ sin impacto: 0 de daño».
+    Ej.: «Rival → Tú · 🔴 Piernas: 1 ataque lanzado | 🔵 1 defensa bloquea 5 de daño | 🛡️ sin
+    impacto: 0 de daño.» — precedido de «Atacante → Defensor ·» para saber quién golpea a quién."""
+    blocked = min(attacks, defenses)
+    landed = attacks - blocked
+    spare = defenses - blocked
+    head = f"{attacker} → {defender} · 🔴 {ZONE_LABEL[zone]}: " + _plural(attacks, "ataque lanzado", "ataques lanzados")
+    if blocked:
+        verb = "bloquea" if blocked == 1 else "bloquean"
+        mid = f"🔵 {_plural(blocked, 'defensa', 'defensas')} {verb} {blocked * ZONE_HIT_DAMAGE} de daño"
+        if spare:
+            mid += f" ({_plural(spare, 'defensa', 'defensas')} de sobra)"
+    else:
+        mid = "🔵 sin defensa en esta zona"
+    if landed:
+        tail = (f"💥 {_plural(landed, 'impacto recibido', 'impactos recibidos')}: "
+                f"{landed * ZONE_HIT_DAMAGE} de daño.")
+    else:
+        tail = "🛡️ sin impacto: 0 de daño."
+    return f"{head} | {mid} | {tail}"
 
+
+def _resolve_direction(attacker: PlayerState, defender: PlayerState, log: list[str]) -> _Direction:
+    """Daño que `attacker` inflige a `defender` este turno (reglas 2 y 3).
+    No toca la vida: el caller aplica las dos direcciones a la vez (síncrono)."""
+    report = TurnReport()
+    blocks = {z: 0 for z in Zone}
+    for sp in defender.staged_plays:
+        for z in sp.defense_zones:
+            blocks[z] += 1
+
+    # Ataques por zona: (prioridad, orden, índice de jugada). Prioridad 0 = especial
+    # (la defensa la para primero), 1 = resto.
+    blocked_plays: set[int] = set()
+    total_hits = 0
     for z in Zone:
-        raw_atk = maps_atk.attack[z]
-
-        if maps_def.potion_zone == z:
-            if raw_atk > 0:
-                heal = max(maps_def.potion_card.heal_amount, raw_atk)
-                total_heal += heal
-                log.append(f"{defender.name} bloquea {z.value} con {maps_def.potion_card.name} y cura {heal} HP.")
+        hits = [
+            (0 if is_tripartite_card(sp.card) else 1, i)
+            for i, sp in enumerate(attacker.staged_plays) if z in sp.attack_zones
+        ]
+        if not hits:
             continue
+        hits.sort()
+        n_block = min(blocks[z], len(hits))
+        for _prio, i in hits[:n_block]:
+            blocked_plays.add(i)
+        landed = len(hits) - n_block
+        total_hits += landed
+        if landed:
+            report.hits[z.value] = landed
+        if n_block:
+            report.blocked[z.value] = n_block
+        log.append(zone_log_line(attacker.name, defender.name, z, len(hits), blocks[z]))
 
-        if raw_atk == 0:
-            continue  # nada que resolver en esta zona para esta dirección
+    damage = total_hits * ZONE_HIT_DAMAGE
+    breakdown = [f"{report.hits[z.value] * ZONE_HIT_DAMAGE} {ZONE_LABEL[z]}" for z in Zone if z.value in report.hits]
 
-        clean_atks = maps_atk.clean_strike[z]
-        if attacker.tripartite_claimed and z in maps_atk.heavy_attack_zones:
-            damage = CRITICAL_COMBO_DAMAGE
-            log.append(f"¡Combo Crítico! {attacker.name} inflige {CRITICAL_COMBO_DAMAGE} de daño directo en {z.value}.")
-        elif clean_atks and maps_def.shield[z] == 0:
-            # Golpe Limpio: el rival no tiene NINGUNA defensa aquí => cada carta especial pega 10 + 3
-            # en vez de su ATK (el resto de cartas de la zona suman su ATK normal).
-            per_card = CLEAN_STRIKE_BASE_DAMAGE + CLEAN_STRIKE_BONUS
-            damage = raw_atk - sum(clean_atks) + per_card * len(clean_atks)
-            log.append(
-                f"💥 ¡Golpe Limpio de {attacker.name} en {z.value}! Sin defensa rival: "
-                f"{CLEAN_STRIKE_BASE_DAMAGE} + {CLEAN_STRIKE_BONUS} de daño extra"
-                + (f" (x{len(clean_atks)})" if len(clean_atks) > 1 else "") + "."
-            )
-        else:
-            shield = 0 if z in maps_atk.piercing_zones else maps_def.shield[z]
-            damage = max(0, raw_atk - shield)
-            if clean_atks:
-                log.append(f"🛡️ {defender.name} bloquea en {z.value}: el Golpe Limpio de {attacker.name} se anula.")
-
-        if damage <= 0:
-            blocked_zones.add(z)
-            continue
-
-        if z not in attacker.zones_damaged:
-            attacker.zones_damaged.add(z)
-            if not attacker.tripartite_claimed and len(attacker.zones_damaged) == 3:
-                attacker.tripartite_claimed = True
-                damage += TRIPARTITE_COMBO_BONUS
-                log.append(f"¡Combo Tripartito completado por {attacker.name}! +{TRIPARTITE_COMBO_BONUS} de daño extra.")
-
-        total_damage += damage
-        zones_hit += 1
-        log.append(f"{attacker.name} inflige {damage} de daño en {z.value} de {defender.name}.")
-
-        steal = min(damage, maps_atk.lifesteal_cap[z])
-        if steal > 0:
-            total_steal += steal
-            log.append(f"🩸 Robo de Vida: {attacker.name} recupera {steal} HP.")
-
-    if maps_atk.combo_strike and zones_hit >= 2:
-        bonus = SIMULTANEOUS_COMBO_BONUS[min(zones_hit, 3)]
-        total_damage += bonus
+    # Combo Tripartito: zonas afectadas acumuladas en la partida; +3 una sola vez al completar las 3.
+    for zv in report.hits:
+        attacker.zones_affected.add(Zone(zv))
+    if not attacker.tripartite_claimed and len(attacker.zones_affected) == len(Zone):
+        attacker.tripartite_claimed = True
+        report.tripartite = True
+        damage += TRIPARTITE_COMBO_BONUS
+        breakdown.append(f"{TRIPARTITE_COMBO_BONUS} Combo Tripartito")
         log.append(
-            f"⚡ ¡Combo Simultáneo de {attacker.name}! {zones_hit} zonas dañadas a la vez: +{bonus} de daño."
+            f"🔥 ¡Combo Tripartito de {attacker.name}! Ha tocado las 3 zonas de {defender.name}: "
+            f"+{TRIPARTITE_COMBO_BONUS} de daño (solo una vez por partida)."
         )
 
-    return total_damage, total_heal, total_steal, blocked_zones
+    for i, sp in enumerate(attacker.staged_plays):
+        if not is_tripartite_card(sp.card):
+            continue
+        full = len(sp.attack_zones) == max_attack_zones(sp.card)
+        if full and i not in blocked_plays:
+            damage += SPECIAL_COMBO_BONUS
+            breakdown.append(f"{SPECIAL_COMBO_BONUS} Combo Especial")
+            report.combos.append(sp.card.name)
+            n = len(sp.attack_zones)
+            log.append(
+                f"💥 ¡Combo Especial de {attacker.name} con {sp.card.name}! Entraron sus "
+                f"{_plural(n, 'ataque', 'ataques')}: +{SPECIAL_COMBO_BONUS} de daño "
+                f"({n} × {ZONE_HIT_DAMAGE} + {SPECIAL_COMBO_BONUS} = {n * ZONE_HIT_DAMAGE + SPECIAL_COMBO_BONUS} con esta carta)."
+            )
+        elif sp.attack_zones:
+            reason = "le han bloqueado un ataque" if full else (
+                f"solo marcó {len(sp.attack_zones)} de {max_attack_zones(sp.card)} zonas"
+            )
+            log.append(f"✖️ {attacker.name}: {sp.card.name} no activa su Combo Especial: {reason}.")
+    report.damage_dealt = damage
+    if any(sp.attack_zones for sp in attacker.staged_plays):
+        detail = f" ({' + '.join(breakdown)})" if len(breakdown) > 1 else ""
+        log.append(f"📊 {attacker.name} → {defender.name}: {damage} de daño en total{detail}.")
+    return _Direction(damage=damage, report=report)
 
 
-def _collect_counter_hits(attacker: PlayerState, defender: PlayerState, maps_atk: _ZoneMaps, maps_def: _ZoneMaps, log: list[str]) -> int:
-    """Daño de contraataque que `defender` devuelve a `attacker`: zonas donde
-    `defender` tiene un COUNTER activo y `attacker` NO atacó esa zona este
-    turno. Se resuelve aparte de `_resolve_direction` porque golpea en la
-    dirección CONTRARIA (defensor -> atacante)."""
+def _healing(player: PlayerState, rival: PlayerState, rival_combo_active: bool,
+             rival_report: TurnReport, log: list[str]) -> int:
+    """Regla 3 (curadoras). `rival_combo_active`: el RIVAL ya tenía su Combo
+    Tripartito activado al empezar a resolver este turno. `rival_report`: lo
+    que el rival hizo contra `player` este turno (zonas donde entró algún
+    ataque = rival_report.hits). Una zona defendida por la curadora se
+    «acierta» si el rival lanzó al menos un ataque ahí y ninguno pasó."""
     total = 0
-    for z in Zone:
-        counter = maps_def.counter_damage[z]
-        if counter > 0 and maps_atk.attack[z] == 0:
-            total += counter
-            log.append(f"{defender.name} contraataca en {z.value}: {counter} de daño directo a {attacker.name}.")
+    attacked = {z for sp in rival.staged_plays for z in sp.attack_zones}
+    for sp in player.staged_plays:
+        if not is_healer_card(sp.card):
+            continue
+        if not rival_combo_active:
+            log.append(
+                f"🛡️ {player.name}: {sp.card.name} solo defiende (el rival aún no ha activado su Combo Tripartito)."
+            )
+            continue
+        zones = sp.defense_zones
+        missed = [z for z in zones if z not in attacked]
+        leaked = [z for z in zones if z in attacked and z.value in rival_report.hits]
+        if zones and not missed and not leaked:
+            total += HEALER_HEAL_AMOUNT
+            log.append(
+                f"💚 {player.name}: {sp.card.name} bloquea {'su zona' if len(zones) == 1 else f'sus {len(zones)} zonas'}"
+                f" ({_zones_txt(zones)}) con el Combo Tripartito rival activo: +{HEALER_HEAL_AMOUNT} de vida."
+            )
+        else:
+            if not zones:
+                reason = "no defendió ninguna zona"
+            elif missed:
+                reason = f"el rival no atacó {_zones_txt(tuple(missed))}"
+            else:
+                reason = f"le entró un ataque en {_zones_txt(tuple(leaked))}"
+            log.append(f"✖️ {player.name}: {sp.card.name} no cura: {reason} (tiene que bloquear en todas sus zonas).")
     return total
 
 
@@ -468,23 +571,25 @@ def end_turn(match: MatchState, timed_out: bool = False) -> MatchState:
         raise EngineError("La partida ya ha terminado.")
 
     a, b = match.player_a, match.player_b
-    maps_a = _build_zone_maps(a)
-    maps_b = _build_zone_maps(b)
+    # Combo Tripartito activado ANTES de este turno (para las curadoras del rival).
+    combo_before = {"a": a.tripartite_claimed, "b": b.tripartite_claimed}
+    to_b = _resolve_direction(a, b, match.log)
+    to_a = _resolve_direction(b, a, match.log)
+    heal_a = _healing(a, b, combo_before["b"], to_a.report, match.log)
+    heal_b = _healing(b, a, combo_before["a"], to_b.report, match.log)
+    to_b.report.healed, to_a.report.healed = heal_a, heal_b
+    a.last_turn, b.last_turn = to_b.report, to_a.report
+    a.combos_completed += len(to_b.report.combos)
+    b.combos_completed += len(to_a.report.combos)
 
-    damage_to_b, heal_to_b, steal_to_a, b_blocked = _resolve_direction(a, b, maps_a, maps_b, match.log)
-    damage_to_a, heal_to_a, steal_to_b, a_blocked = _resolve_direction(b, a, maps_b, maps_a, match.log)
-    # Guardia Vital: energía extra por cada zona donde una femenina bloqueó del todo el ataque rival.
-    guard_bonus = {
-        "a": sum(maps_a.guard_energy[z] for z in a_blocked),
-        "b": sum(maps_b.guard_energy[z] for z in b_blocked),
-    }
-    heal_to_a += steal_to_a
-    heal_to_b += steal_to_b
-    counter_to_a = _collect_counter_hits(a, b, maps_a, maps_b, match.log)  # contraataques de B que golpean a A
-    counter_to_b = _collect_counter_hits(b, a, maps_b, maps_a, match.log)  # contraataques de A que golpean a B
-
-    b.hp = max(0, min(b.max_hp, b.hp - damage_to_b - counter_to_b + heal_to_b))
-    a.hp = max(0, min(a.max_hp, a.hp - damage_to_a - counter_to_a + heal_to_a))
+    # Síncrono: daño y curación de los dos se aplican a la vez sobre la vida de inicio de turno.
+    for p, dmg, heal in ((a, to_a.damage, heal_a), (b, to_b.damage, heal_b)):
+        before = p.hp
+        p.hp = max(0, min(p.max_hp, p.hp - dmg + heal))
+        if dmg or heal:
+            parts = ([f"−{dmg} daño"] if dmg else []) + ([f"+{heal} curación"] if heal else [])
+            capped = " (tope de vida)" if heal and p.hp == p.max_hp and before - dmg + heal > p.max_hp else ""
+            match.log.append(f"❤️ {p.name}: {before} → {p.hp} HP ({', '.join(parts)}){capped}.")
 
     # Regla ESTRICTA de inactividad: solo cuenta el turno en que se agota el
     # temporizador sin una acción limpia. Solo jugar cartas (play_card) o
@@ -507,16 +612,9 @@ def end_turn(match: MatchState, timed_out: bool = False) -> MatchState:
     # falte para volver a HAND_SIZE.
     # Energía: se DESCUENTA lo gastado este turno y luego se recupera
     # +ENERGY_PER_TURN, sin pasar nunca de MAX_ENERGY (3).
-    for key, player in (("a", a), ("b", b)):
+    for player in (a, b):
         spent = player.energy_spent_this_turn
         player.energy = min(MAX_ENERGY, max(0, player.energy - spent) + ENERGY_PER_TURN)
-        if guard_bonus[key] > 0:
-            gained = min(MAX_ENERGY, player.energy + guard_bonus[key]) - player.energy
-            player.energy += gained
-            match.log.append(
-                f"💖 Guardia Vital: {player.name} bloquea el ataque y recupera +{guard_bonus[key]} de energía"
-                + (f" (tope {MAX_ENERGY}: +{gained} efectiva)." if gained < guard_bonus[key] else ".")
-            )
         played_any = bool(player.staged_plays)
         player.discard.extend(sp.card for sp in player.staged_plays)
         player.staged_plays = []
@@ -575,8 +673,10 @@ def auto_skip_turn(match: MatchState, player: str) -> None:
 
 
 def bot_choose_plays(match: MatchState, player: str) -> None:
-    """IA mínima para el modo Vs. Bot: juega cartas aleatorias asequibles en
-    zonas aleatorias hasta agotar el presupuesto de energía del turno."""
+    """IA mínima para el modo Vs. Bot: juega cartas aleatorias asequibles
+    hasta agotar el presupuesto de energía del turno. Cada carta marca TODAS
+    las zonas LIBRES que permite su ATK/DEF (sin repetir dentro de la carta
+    ni con otras cartas suyas del turno), elegidas al azar."""
     p = _get_player(match, player)
     p.acted_this_turn = True  # el Bot siempre decide (jugar o pasar): nunca es inactividad
     rng = match.rng
@@ -586,12 +686,23 @@ def bot_choose_plays(match: MatchState, player: str) -> None:
         spent = p.energy_spent_this_turn
         if spent + card.cost_energy > min(MAX_ENERGY_SPEND_PER_TURN, p.energy):
             continue
-        zone = rng.choice(list(Zone))
-        defense_zone = rng.choice(list(Zone))
-        play_card(match, player, card.id, zone, defense_zone=defense_zone)
+        taken_atk, taken_dfn = zones_taken_this_turn(p)
+        free_atk = [z for z in Zone if z not in taken_atk]
+        free_dfn = [z for z in Zone if z not in taken_dfn]
+        atk = rng.sample(free_atk, min(len(free_atk), max_attack_zones(card)))
+        dfn = rng.sample(free_dfn, min(len(free_dfn), max_defense_zones(card)))
+        if (max_attack_zones(card) or max_defense_zones(card)) and not (atk or dfn):
+            continue  # ya no le queda ninguna casilla libre que usar con esta carta
+        play_card(match, player, card.id, atk, dfn)
 
 
 def get_match_state(match: MatchState) -> dict:
+    def report_snapshot(r: TurnReport) -> dict:
+        return {
+            "hits": dict(r.hits), "blocked": dict(r.blocked), "damage_dealt": r.damage_dealt,
+            "combos": list(r.combos), "tripartite": r.tripartite, "healed": r.healed,
+        }
+
     def player_snapshot(p: PlayerState) -> dict:
         return {
             "name": p.name,
@@ -601,13 +712,19 @@ def get_match_state(match: MatchState) -> dict:
             "energy_spent_this_turn": p.energy_spent_this_turn,
             "hand": [c.to_dict() for c in p.hand],
             "staged_plays": [
-                {"card": sp.card.to_dict(), "zone": sp.zone.value, "defense_zone": sp.defense_zone.value}
+                {
+                    "card": sp.card.to_dict(),
+                    "attack_zones": [z.value for z in sp.attack_zones],
+                    "defense_zones": [z.value for z in sp.defense_zones],
+                }
                 for sp in p.staged_plays
             ],
             "deck_remaining": len(p.deck),
             "discard_count": len(p.discard),
-            "zones_damaged": sorted(z.value for z in p.zones_damaged),
+            "last_turn": report_snapshot(p.last_turn),
+            "zones_affected": sorted(z.value for z in p.zones_affected),
             "tripartite_claimed": p.tripartite_claimed,
+            "combos_completed": p.combos_completed,
             "inactive_turns": p.inactive_turns,
         }
 

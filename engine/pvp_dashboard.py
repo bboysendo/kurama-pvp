@@ -57,19 +57,18 @@ from blockchain_connector import (
     has_crystals,
 )
 from card_schema import (
-    CLEAN_STRIKE_BASE_DAMAGE,
-    CLEAN_STRIKE_BONUS,
-    CRITICAL_COMBO_DAMAGE,
     DECK_SIZE,
     ENERGY_PER_TURN,
     HAND_SIZE,
+    HEALER_HEAL_AMOUNT,
     MATCHMAKING_SECONDS,
     MAX_ENERGY,
     MAX_ENERGY_SPEND_PER_TURN,
-    SIMULTANEOUS_COMBO_BONUS,
+    SPECIAL_COMBO_BONUS,
     STARTING_ENERGY,
     TRIPARTITE_COMBO_BONUS,
     TURN_TIMER_SECONDS,
+    ZONE_HIT_DAMAGE,
     Card,
     NFTRarity,
 )
@@ -78,6 +77,8 @@ from pvp_engine import (
     MatchStatus,
     Zone,
     auto_skip_turn,
+    max_attack_zones,
+    max_defense_zones,
     bot_choose_plays,
     build_deck_from_pool,
     end_turn,
@@ -226,7 +227,8 @@ def init_state() -> None:
     # cartas a la vez mientras su coste total quepa en la energía del turno.
     #   sel_cards_{pk}:   ids elegidos, en orden de selección (orden de juego)
     #   active_card_{pk}: la carta que editan ahora los puntos rojo/verde
-    #   zones_{pk}:       {card_id: {"atk": zona|None, "def": zona|None}}
+    #   zones_{pk}:       {card_id: {"atk": [zonas], "def": [zonas]}} — zonas DISTINTAS,
+    #                     como mucho ATK/DEF de la carta (reglas de zonas, pvp_engine.py)
     # (ver render_tactical_points/render_hand).
     for _pk in ("a", "b"):
         st.session_state.setdefault(f"sel_cards_{_pk}", [])
@@ -278,10 +280,10 @@ def card_type_label(card_dict: dict) -> str:
     (Poción/Perforante/Contraataque) o, si no tiene, de si pega, protege o
     ambas cosas (Ataque/Defensa/Híbrida)."""
     ability = card_dict.get("ability", "none")
-    if ability == "clean_strike":
-        return "Golpe Limpio"
-    if ability == "guard_energy":
-        return "Guardia Vital"
+    if ability in ("tripartite_strike", "clean_strike"):
+        return "Combo Especial"
+    if ability in ("healer", "guard_energy"):
+        return "Curación"
     if ability == "lifesteal":
         return "Robo de Vida"
     if ability == "combo_strike":
@@ -302,53 +304,40 @@ def card_type_label(card_dict: dict) -> str:
     return "Especial"
 
 
+def _zones_word(n: int) -> str:
+    return "1 zona" if n == 1 else f"{n} zonas distintas"
+
+
 def card_effect_text(card_dict: dict) -> str:
-    """Efecto exacto en combate de una carta, según su habilidad especial
-    (misma mecánica que resuelve pvp_engine.py `_resolve_direction` /
-    `_collect_counter_hits`) o, si no tiene, según si ataca y/o defiende."""
+    """Efecto exacto en combate de una carta con las reglas definitivas de
+    zonas (pvp_engine.py): cada punto de ATK = 1 zona de ataque distinta
+    (5 de daño si entra), cada punto de DEF = 1 zona de defensa distinta
+    (anula 1 ataque), más el efecto de su habilidad especial."""
     ability = card_dict.get("ability", "none")
-    if ability == "clean_strike":
+    atk, defense = min(card_dict["atk"], 3), min(card_dict["defense"], 3)
+    if ability in ("tripartite_strike", "clean_strike"):
+        total = atk * ZONE_HIT_DAMAGE + SPECIAL_COMBO_BONUS
         return (
-            f"💥 Golpe Limpio: si el rival NO tiene defensa en la zona atacada, haces "
-            f"{CLEAN_STRIKE_BASE_DAMAGE} + {CLEAN_STRIKE_BONUS} = {CLEAN_STRIKE_BASE_DAMAGE + CLEAN_STRIKE_BONUS} "
-            f"de daño. Si te la bloquean, el combo se anula y pegas tu ATK normal (ATK − DEF)."
-        )
-    if ability == "guard_energy":
-        bonus = card_dict.get("energy_bonus") or 0
+            f"💥 Combo Especial: ataca {_zones_word(atk)} ({ZONE_HIT_DAMAGE} por zona). Si marcas las {atk} y "
+            f"ningún ataque es bloqueado: +{SPECIAL_COMBO_BONUS} → {total} de daño en total."
+            if atk > 1 else
+            f"💥 Combo Especial: ataca 1 zona ({ZONE_HIT_DAMAGE}). Si no la bloquean: "
+            f"+{SPECIAL_COMBO_BONUS} → {total} de daño en total."
+        ) + (f" Además defiende {_zones_word(defense)}." if defense else "")
+    if ability in ("healer", "guard_energy"):
         return (
-            f"💖 Guardia Vital: si el rival ataca tu zona de defensa y lo bloqueas del todo (0 daño), "
-            f"recuperas +{bonus} de energía (máx. {MAX_ENERGY})."
-        )
-    if ability == "lifesteal":
-        heal = card_dict.get("heal_amount") or 0
-        return (
-            f"🩸 Ataca la zona elegida y, si hace daño, recuperas esos HP "
-            f"(máximo {heal} por turno)."
-        )
-    if ability == "combo_strike":
-        return (
-            f"⚡ Si este turno dañas 2 zonas a la vez, +{SIMULTANEOUS_COMBO_BONUS[2]} de daño; "
-            f"si dañas las 3, +{SIMULTANEOUS_COMBO_BONUS[3]}."
-        )
-    if ability == "heal_potion":
-        heal = card_dict.get("heal_amount") or 0
-        return (
-            f"🧪 Bloquea la zona elegida: si el rival te ataca ahí, conviertes "
-            f"ese daño en HP (mínimo {heal})."
-        )
-    if ability == "piercing":
-        return "🗡️ Ignora la defensa rival de la zona elegida: tu ataque pasa directo, sin bloqueo."
-    if ability == "counter":
-        dmg = card_dict.get("counter_damage") or 0
-        return f"↩️ Si el rival no ataca esa zona este turno, le devuelves {dmg} de daño."
-    atk, defense = card_dict["atk"], card_dict["defense"]
+            f"💚 Curación: defiende {_zones_word(defense)}. Si el rival ya tiene activado su Combo "
+            f"Tripartito y bloqueas sus ataques en TODAS las zonas que defiendes, recibes "
+            f"+{HEALER_HEAL_AMOUNT} de vida. Sin su combo, solo defiende."
+        ) + (f" Además ataca {_zones_word(atk)} ({ZONE_HIT_DAMAGE} por zona)." if atk else "")
     if atk > 0 and defense > 0:
-        return "⚔️🛡️ Ataca y defiende la zona elegida a la vez."
+        return (f"⚔️🛡️ Ataca hasta {_zones_word(atk)} ({ZONE_HIT_DAMAGE} de daño cada una) y defiende hasta "
+                f"{_zones_word(defense)} (cada defensa anula 1 ataque).")
     if atk > 0:
-        return "⚔️ Inflige daño directo a la zona elegida (daño real = tu ATK − DEF rival)."
+        return f"⚔️ Ataca hasta {_zones_word(atk)}: {ZONE_HIT_DAMAGE} de daño por cada ataque que no bloqueen."
     if defense > 0:
-        return "🛡️ Defiende la zona elegida, bloqueando el daño entrante."
-    return "✨ Efecto especial — ver descripción."
+        return f"🛡️ Defiende hasta {_zones_word(defense)}: cada defensa anula 1 ataque rival en esa zona."
+    return "✨ Finta: ni ataca ni defiende, pero cuenta como jugada."
 
 
 def render_gallery(catalog_dicts: list[dict]) -> None:
@@ -394,21 +383,11 @@ def render_gallery(catalog_dicts: list[dict]) -> None:
                 st.caption(f"⚡ Coste {card_dict['cost_energy']} · {card_dict['atk']} ATK / {card_dict['defense']} DEF")
                 st.caption(f"🏷️ {CATEGORY_LABELS.get(card_dict['category'], card_dict['category'])} · {card_type_label(card_dict)}")
                 ability_note = ""
-                if card_dict.get("ability") == "clean_strike":
-                    ability_note = (f"💥 Sin defensa rival: {CLEAN_STRIKE_BASE_DAMAGE}+{CLEAN_STRIKE_BONUS} = "
-                                    f"{CLEAN_STRIKE_BASE_DAMAGE + CLEAN_STRIKE_BONUS} de daño")
-                elif card_dict.get("ability") == "guard_energy":
-                    ability_note = f"💖 Bloqueo total: +{card_dict.get('energy_bonus') or 0} energía"
-                elif card_dict.get("ability") == "lifesteal":
-                    ability_note = f"🩸 Roba hasta {card_dict.get('heal_amount') or 0} HP"
-                elif card_dict.get("ability") == "combo_strike":
-                    ability_note = (
-                        f"⚡ +{SIMULTANEOUS_COMBO_BONUS[2]} / +{SIMULTANEOUS_COMBO_BONUS[3]} en combo"
-                    )
-                elif card_dict.get("ability") == "heal_potion" and card_dict.get("heal_amount"):
-                    ability_note = f"💚 Cura mínimo {card_dict['heal_amount']} HP"
-                elif card_dict.get("ability") == "counter" and card_dict.get("counter_damage"):
-                    ability_note = f"↩️ Devuelve {card_dict['counter_damage']} de daño"
+                if card_dict.get("ability") in ("tripartite_strike", "clean_strike"):
+                    _tot = min(card_dict["atk"], 3) * ZONE_HIT_DAMAGE + SPECIAL_COMBO_BONUS
+                    ability_note = f"💥 Combo Especial: {_tot} de daño si entran todos sus ataques"
+                elif card_dict.get("ability") in ("healer", "guard_energy"):
+                    ability_note = f"💚 Con el combo rival activo: +{HEALER_HEAL_AMOUNT} de vida si bloquea todo"
                 st.markdown(f"<div class='gallery-ability'>{ability_note or '&nbsp;'}</div>", unsafe_allow_html=True)
                 st.markdown(
                     f"<div class='gallery-desc'>{html.escape(card_dict.get('description') or '')}</div>",
@@ -437,90 +416,102 @@ TUTORIAL_STEPS = [
             "Tú y el rival empezáis con la misma vida (depende de vuestra rareza de NFT — "
             f"aquí usamos 50 HP de ejemplo) y {HAND_SIZE} cartas en la mano. Tienes "
             f"{MAX_ENERGY} de energía (el máximo): cada carta que juegas resta su coste y cada turno "
-            f"recuperas +{ENERGY_PER_TURN}. Puedes jugar varias cartas a la vez, "
-            "eligiendo en qué **zona** (Cabeza, Tronco o Piernas) actúa cada una."
+            f"recuperas +{ENERGY_PER_TURN}. En cada carta, **cada punto de ATK es una zona que puedes "
+            "atacar y cada punto de DEF una zona que puedes defender** (Cabeza, Tronco o Piernas), "
+            "siempre zonas distintas dentro de la misma carta."
         ),
         "hp_a": 50, "hp_b": 50,
         "badge": None,
     },
     {
-        "title": "Turno 1 — Ataque básico",
+        "title": "Turno 1 — Un ataque en 3 zonas",
         "actor": "tú",
         "card_id": "tz_shadow_claw_3x0",
-        "zone": "Cabeza",
+        "zone": "⚔️ Cabeza · Tronco · Piernas",
         "text": (
-            "Juegas **Shadow Claw: Aerial Predator** (3 ATK / 0 DEF) apuntando a la **Cabeza** "
-            "del rival. Como él no protegió esa zona este turno, el daño pasa entero: "
-            "**Daño = 3 ATK − 0 DEF = 3**."
+            "Juegas **Shadow Claw** (3 ATK / 0 DEF): con 3 de ATK marcas **3 zonas distintas** del "
+            f"rival. No se defendió en ninguna, así que entran los 3 ataques: **3 × {ZONE_HIT_DAMAGE} = "
+            f"{3 * ZONE_HIT_DAMAGE}**. Además, al quedar afectadas sus 3 zonas se activa el **Combo "
+            f"Tripartito: +{TRIPARTITE_COMBO_BONUS}** → **{3 * ZONE_HIT_DAMAGE + TRIPARTITE_COMBO_BONUS} de daño**. "
+            "Ese +3 solo se cobra una vez por partida."
         ),
-        "hp_a": 50, "hp_b": 47,
-        "badge": "⚔️ Ataque normal",
+        "hp_a": 50, "hp_b": 50 - 3 * ZONE_HIT_DAMAGE - TRIPARTITE_COMBO_BONUS,
+        "badge": "🔥 Ataque multizona + Combo Tripartito",
     },
     {
-        "title": "Turno 2 — El rival responde",
-        "actor": "rival",
-        "card_id": "kr_pyre_cosmos_3x1",
-        "zone": "Tronco",
-        "text": (
-            "El rival juega **Pyre & Cosmos** (3 ATK / 1 DEF) contra tu **Tronco**, que esta vez "
-            "dejaste sin proteger: **recibes 3 de daño**. Su 1 DEF protege a la vez su propio Tronco."
-        ),
-        "hp_a": 47, "hp_b": 47,
-        "badge": "⚔️ Golpe del rival",
-    },
-    {
-        "title": "Turno 3 — El escudo detiene el golpe",
+        "title": "Turno 2 — El escudo detiene el golpe",
         "actor": "rival",
         "card_id": "tz_lava_rage_0x3",
-        "zone": "Tronco",
+        "zone": "🛡️ Cabeza · Tronco · Piernas",
         "text": (
-            "El rival protege el **Tronco** con **Lava Rage: Volcanic Striker** (0 ATK / 3 DEF). "
-            "Atacas ahí con **Cyber-Kitsune Operative** (2 ATK): **Daño = max(0, 2 − 3) = 0**. "
-            "Contra un buen escudo, un ataque normal no pasa."
+            "El rival juega **Lava Rage** (0 ATK / 3 DEF) y cubre sus 3 zonas. Atacas con "
+            "**Cyber-Kitsune Operative** (2 ATK) en Cabeza y Tronco: **cada defensa anula un ataque** "
+            "en su zona, así que los dos quedan bloqueados → **0 de daño**."
         ),
-        "hp_a": 47, "hp_b": 47,
+        "hp_a": 50, "hp_b": 50 - 3 * ZONE_HIT_DAMAGE - TRIPARTITE_COMBO_BONUS,
         "badge": "🛡️ Defensa / Escudo",
     },
     {
-        "title": "Turno 4 — Carta híbrida",
+        "title": "Turno 3 — Carta híbrida",
         "actor": "tú",
         "card_id": "nft_fox_11_2x1",
-        "zone": "Piernas",
+        "zone": "⚔️ Tronco · Piernas  /  🛡️ Cabeza",
         "text": (
-            "Juegas **Fox #11 · Goggle Raider** (2 ATK / 1 DEF): ataca las **Piernas**, que el rival "
-            "dejó sin proteger (**2 de daño**), y a la vez su 1 DEF cubre una de tus zonas. "
-            "Cada combinación ATK/DEF existe una sola vez en el juego: esta es la única 2/1."
+            "Juegas **Fox #11** (2/1): atacas Tronco y Piernas y defiendes tu Cabeza. El rival juega "
+            "**Pyre & Cosmos** (3/1): te ataca en las 3 zonas y defiende sus Piernas. Tu defensa para "
+            f"su golpe a la Cabeza: **recibes 2 × {ZONE_HIT_DAMAGE} = {2 * ZONE_HIT_DAMAGE}**. Su defensa "
+            f"para tu golpe a las Piernas: **le haces {ZONE_HIT_DAMAGE}** en el Tronco."
         ),
-        "hp_a": 47, "hp_b": 45,
+        "hp_a": 50 - 2 * ZONE_HIT_DAMAGE, "hp_b": 50 - 4 * ZONE_HIT_DAMAGE - TRIPARTITE_COMBO_BONUS,
         "badge": "⚔️🛡️ Híbrida",
     },
     {
-        "title": "Turno 5 — ¡Combo Tripartito!",
+        "title": "Turno 4 — ¡Combo Especial!",
         "actor": "tú",
-        "card_id": "kr_cyber_operative_2x0",
-        "zone": "Tronco",
+        "card_id": "sp_fox_1468_3x0",
+        "zone": "⚔️ Cabeza · Tronco · Piernas",
         "text": (
-            f"Atacas el **Tronco** con **Cyber-Kitsune Operative** (2 ATK) y esta vez entra: 2 de daño. "
-            f"Ya habías dañado la Cabeza (turno 1) y las Piernas (turno 4), así que completas las 3 "
-            f"zonas y se activa el **Combo Tripartito**: **+{TRIPARTITE_COMBO_BONUS}**. "
-            f"**Daño total = 2 + {TRIPARTITE_COMBO_BONUS} = {2 + TRIPARTITE_COMBO_BONUS}**."
+            "Juegas la especial **Fox #1468 · Ronin Executioner** (3/0, coste 2) en las 3 zonas y el "
+            "rival no bloquea ninguna: la especial suma su **Combo Especial** → "
+            f"**3 × {ZONE_HIT_DAMAGE} + {SPECIAL_COMBO_BONUS} = {3 * ZONE_HIT_DAMAGE + SPECIAL_COMBO_BONUS} "
+            f"de daño**. El Combo Tripartito ya lo cobraste en el turno 1, pero el +{SPECIAL_COMBO_BONUS} de las "
+            f"especiales se repite cada vez. Las especiales 2/0 hacen {2 * ZONE_HIT_DAMAGE + SPECIAL_COMBO_BONUS} y "
+            f"la 1/0 {ZONE_HIT_DAMAGE + SPECIAL_COMBO_BONUS}, siempre que marquen todas sus zonas y no les "
+            "bloqueen ningún ataque."
         ),
-        "hp_a": 47, "hp_b": 45 - (2 + TRIPARTITE_COMBO_BONUS),
-        "badge": "🔥 Combo Tripartito",
+        "hp_a": 50 - 2 * ZONE_HIT_DAMAGE,
+        "hp_b": 50 - 7 * ZONE_HIT_DAMAGE - TRIPARTITE_COMBO_BONUS - SPECIAL_COMBO_BONUS,
+        "badge": "💥 Combo Especial",
     },
     {
-        "title": "Turno 6 — ¡Combo Crítico!",
-        "actor": "tú",
-        "card_id": "tz_shadow_claw_3x0",
-        "zone": "Cabeza",
+        "title": "Turno 5 — El rival se cura",
+        "actor": "rival",
+        "card_id": "sp_fox_963_0x2",
+        "zone": "🛡️ Cabeza · Tronco",
         "text": (
-            f"Tu mazo se ha rebarajado y vuelves a robar **Shadow Claw**. Con el Combo Tripartito "
-            f"ya activo, tu carta de **Ataque Puro (3 ATK / 0 DEF)** se convierte en un golpe "
-            f"crítico: **{CRITICAL_COMBO_DAMAGE} de daño fijo, ignorando cualquier escudo**."
+            "Atacas Cabeza y Tronco con **Celestial Kitsune Operative (Duelist)** (2/2). El rival juega la curadora "
+            "**Fox #963 · Blossom Ward** (0/2) defendiendo justo esas 2 zonas: bloquea tus 2 ataques. "
+            "Como **tú ya activaste tu Combo Tripartito** (turno 1), su curadora acierta en todas las "
+            f"zonas que defiende y le da **+{HEALER_HEAL_AMOUNT} de vida**. Si aún no tuvieras el combo, "
+            "o si le hubiera entrado un ataque en alguna de esas zonas, solo habría defendido."
         ),
-        "hp_a": 47,
-        "hp_b": 45 - (2 + TRIPARTITE_COMBO_BONUS) - CRITICAL_COMBO_DAMAGE,
-        "badge": "💥 Combo Crítico",
+        "hp_a": 50 - 2 * ZONE_HIT_DAMAGE,
+        "hp_b": 50 - 7 * ZONE_HIT_DAMAGE - TRIPARTITE_COMBO_BONUS - SPECIAL_COMBO_BONUS + HEALER_HEAL_AMOUNT,
+        "badge": "💚 Curación",
+    },
+    {
+        "title": "Turno 6 — Ataque y defensa total",
+        "actor": "tú",
+        "card_id": "kr_celestial_operative_3x3",
+        "zone": "⚔️ Cabeza · Tronco · Piernas  /  🛡️ Cabeza · Tronco · Piernas",
+        "text": (
+            "Juegas **Celestial Kitsune Operative** (3/3): ataca las 3 zonas del rival y defiende tus 3 "
+            "zonas con una sola carta. El rival te ataca con una 3/0 en las 3 zonas: todo bloqueado. Él no "
+            f"se defendió: entran tus 3 ataques → **{3 * ZONE_HIT_DAMAGE} de daño**. Si juegas varias cartas "
+            "en un turno, recuerda que no pueden repetir zona entre ellas."
+        ),
+        "hp_a": 50 - 2 * ZONE_HIT_DAMAGE, "hp_b": 0,
+        "badge": "⚔️🛡️ Carta completa",
     },
     {
         "title": "Cómo se gana",
@@ -528,13 +519,12 @@ TUTORIAL_STEPS = [
         "card_id": None,
         "zone": None,
         "text": (
-            "Sigue así hasta dejar al rival a **0 HP**: ganas la partida. Si eres tú quien llega "
+            "El rival ha llegado a **0 HP**: ganas la partida. Si eres tú quien llega "
             "antes a 0, pierdes. Pasar turno es una jugada válida (guardas energía), pero si se te "
             "**agota el tiempo 3 turnos seguidos sin jugar ni pasar turno** (dejar una carta elegida "
             "a medias también cuenta), pierdes por inactividad."
         ),
-        "hp_a": 47,
-        "hp_b": 45 - (2 + TRIPARTITE_COMBO_BONUS) - CRITICAL_COMBO_DAMAGE,
+        "hp_a": 50 - 2 * ZONE_HIT_DAMAGE, "hp_b": 0,
         "badge": "🏆 Victoria",
     },
 ]
@@ -577,9 +567,10 @@ def render_tutorial(catalog_dicts: list[dict]) -> None:
                 f"si el mazo se queda sin cartas, la pila de descarte se baraja y vuelve a usarse."
             )
         st.info(
-            "💡 **Resumen rápido**: cada carta que juegas apunta a UNA zona. Si la carta tiene ATK, "
-            "ataca esa zona del rival. Si tiene DEF, protege esa misma zona tuya. Algunas cartas "
-            "tienen las dos cosas a la vez (son las *híbridas*)."
+            "💡 **Resumen rápido**: cada punto de **ATK** de una carta es **1 zona del rival que atacas** "
+            "y cada punto de **DEF** es **1 zona tuya que defiendes** — siempre zonas distintas dentro de "
+            f"la misma carta (puedes dejar zonas sin usar). Cada ataque que entra quita **{ZONE_HIT_DAMAGE}**; "
+            "cada defensa del rival en esa zona anula **un** ataque."
         )
 
     with tab_zones:
@@ -595,13 +586,21 @@ def render_tutorial(catalog_dicts: list[dict]) -> None:
                         "zona mecánicamente mejor, solo depende de lo que juegue el rival.")
         with zc3:
             st.markdown("## 🦵 Piernas")
-            st.markdown("La tercera zona. Dañar las 3 zonas distintas a lo largo de la partida "
-                        "es justo lo que activa el Combo Tripartito (pestaña ⚡ Combos).")
+            st.markdown("La tercera zona. Cuando has tocado las 3 zonas del rival (aunque sea en "
+                        "turnos distintos) activas el Combo Tripartito (pestaña ⚡ Combos).")
         st.markdown(
-            "**¿Cómo se calcula el daño en una zona?** Si atacas una zona donde el rival NO se "
-            "protegió, pasa todo tu ATK. Si SÍ se protegió con una carta de DEF en esa misma zona, "
-            "se resta: `Daño real = max(0, tu ATK − su DEF en esa zona)`. Por eso elegir bien la "
-            "zona (o adivinar dónde se protegerá el rival) es la clave táctica del juego."
+            f"**¿Cómo se calcula el daño?** Cada ataque que entra en una zona quita **{ZONE_HIT_DAMAGE}**. "
+            "Cada defensa que el rival tenga en esa misma zona **anula un ataque**. Ejemplo: una 3/0 en "
+            f"las 3 zonas contra una 0/2 que cubre Cabeza y Tronco → solo entran las Piernas: "
+            f"**{ZONE_HIT_DAMAGE} de daño**.\n\n"
+            "**Reglas de selección:** con una carta de ATK 1 marcas 1 zona, con ATK 2 dos zonas "
+            "**diferentes**, con ATK 3 tres zonas **diferentes** — nunca repites zona con la misma carta. "
+            "Con la DEF igual. Si no quieres usar todos los ataques o defensas, puedes dejar zonas sin "
+            "marcar.\n\n"
+            "**Varias cartas en el mismo turno:** tampoco se repiten zonas entre tus cartas. Cada zona "
+            "admite **1 ataque y 1 defensa tuyos por turno**: en cuanto una carta usa una casilla, queda "
+            "bloqueada para las demás. Si ya tienes cubiertas todas las casillas y te sobran ataques o "
+            "defensas, no estás obligado a usarlos: puedes jugar la carta igualmente o pasar turno."
         )
 
     with tab_cards:
@@ -624,47 +623,77 @@ def render_tutorial(catalog_dicts: list[dict]) -> None:
         st.caption(
             "Las 16 cartas base (coste 1) cubren todas las combinaciones de ataque (3/3, 3/2, 3/1, 3/0, "
             "2/2, 2/1, 2/0, 1/1, 1/0, 0/0) y su inverso defensivo (2/3, 1/3, 0/3, 1/2, 0/2, 0/1). Las 7 "
-            f"especiales cuestan 2: 4 de Golpe Limpio ({CLEAN_STRIKE_BASE_DAMAGE}+{CLEAN_STRIKE_BONUS} de daño si el "
-            "rival no defiende la zona) y 3 de Guardia Vital (energía extra si bloqueas del todo). Tu mazo de "
+            f"especiales cuestan 2: 4 de Combo Especial (+{SPECIAL_COMBO_BONUS} si entran todos sus ataques) "
+            f"y 3 curadoras (+{HEALER_HEAL_AMOUNT} de vida si el rival ya tiene su Combo Tripartito y bloquean "
+            "en todas sus zonas). Tu mazo de "
             f"{DECK_SIZE} cartas es el set completo."
         )
         st.markdown("##### ⚔️ Ataque")
         c1, c2, c3 = st.columns(3)
-        show_card(c1, "tz_shadow_claw_3x0", "Ataque Puro (3/0): máximo daño, nada de defensa.")
-        show_card(c2, "kr_pyre_cosmos_3x1", "Ataque pesado con algo de guardia (3/1).")
-        show_card(c3, "kr_cyber_operative_2x0", "Ataque Moderado (2/0): barato y directo.")
+        show_card(c1, "tz_shadow_claw_3x0", f"3/0: ataca 3 zonas distintas (hasta {3 * ZONE_HIT_DAMAGE}).")
+        show_card(c2, "kr_pyre_cosmos_3x1", "3/1: ataca 3 zonas y defiende 1.")
+        show_card(c3, "kr_cyber_operative_2x0", f"2/0: ataca 2 zonas distintas (hasta {2 * ZONE_HIT_DAMAGE}).")
 
         st.markdown("##### 🛡️ Defensa")
-        st.caption("Protegen tu propia zona, restando su DEF al daño que recibas ahí este turno.")
+        st.caption("Cada punto de DEF cubre una zona tuya distinta y anula un ataque rival en ella.")
         c4, c5, c6 = st.columns(3)
-        show_card(c4, "tz_lava_rage_0x3", "Escudo pesado (0/3): la mejor mitigación en una zona.")
-        show_card(c5, "kr_celestial_flux_1x3", "Escudo grande con un toque de ataque (1/3).")
-        show_card(c6, "kr_cyber_guardian_0x2", "Escudo ligero (0/2): mitiga menos, pero cuesta 1.")
+        show_card(c4, "tz_lava_rage_0x3", "0/3: cubre tus 3 zonas.")
+        show_card(c5, "kr_celestial_flux_1x3", "1/3: cubre 3 zonas y ataca 1.")
+        show_card(c6, "kr_cyber_guardian_0x2", "0/2: cubre 2 zonas distintas.")
 
         st.markdown("##### ⚔️🛡️ Híbridas")
         c7, c8, c9 = st.columns(3)
-        show_card(c7, "kr_celestial_operative_3x3", "Potencia simétrica máxima (3/3).")
-        show_card(c8, "tz_raging_earthquake_1x2", "Se cubre con púas y pincha (1/2).")
+        show_card(c7, "kr_celestial_operative_3x3", "3/3: ataca y defiende las 3 zonas.")
+        show_card(c8, "tz_raging_earthquake_1x2", "1/2: ataca 1 zona y cubre 2.")
         show_card(c9, "nft_fox_27_0x0", "Finta (0/0): ni ataca ni defiende, pero cuenta como jugada.")
 
     with tab_combos:
         st.subheader("Mecánicas especiales que deciden las partidas")
 
-        with st.expander(f"🔥 Combo Tripartito (+{TRIPARTITE_COMBO_BONUS} de daño extra)", expanded=True):
+        with st.expander(f"🔥 Combo Tripartito (+{TRIPARTITE_COMBO_BONUS} de daño extra, una vez)", expanded=True):
             st.markdown(
-                f"La primera vez que consigues dañar **las 3 zonas distintas** del rival — Cabeza, "
-                f"Tronco y Piernas — en algún momento de la partida (no hace falta que sea en el "
-                f"mismo turno), el golpe que completa la tercera zona suma automáticamente "
-                f"**+{TRIPARTITE_COMBO_BONUS} de daño extra**. Solo se activa una vez por partida."
+                "Cada zona del rival donde **entra** uno de tus ataques queda **afectada** para el resto de la "
+                "partida (un ataque bloqueado no cuenta). No hace falta que sea en el mismo turno: en cuanto "
+                "tengas afectadas **Cabeza, Tronco y Piernas**, ese golpe suma "
+                f"**+{TRIPARTITE_COMBO_BONUS} de daño extra**. Solo se activa **una vez por partida**; el "
+                "marcador bajo el rival te muestra cuántas zonas llevas."
             )
-            st.caption("Consejo: varía la zona a la que atacas en vez de insistir siempre en la misma.")
+            st.caption("Consejo: varía las zonas que atacas en vez de insistir siempre en la misma.")
 
-        with st.expander(f"💥 Combo Crítico ({CRITICAL_COMBO_DAMAGE} de daño fijo)"):
+        with st.expander(f"💥 Combo Especial (+{SPECIAL_COMBO_BONUS} de las cartas especiales)"):
             st.markdown(
-                f"Una vez que ya activaste el Combo Tripartito, cada carta de **Ataque Puro "
-                f"(3 ATK / 0 DEF)** que juegues después inflige **{CRITICAL_COMBO_DAMAGE} de daño "
-                f"directo y fijo**, ignorando escudos, perforación o cualquier otra defensa. "
-                f"Es el mejor momento para usar tus cartas más fuertes."
+                f"Lo activan las **especiales de ataque**. Si la carta marca **todas** sus zonas y **ninguno** "
+                f"de sus ataques es bloqueado, suma **+{SPECIAL_COMBO_BONUS}** a los {ZONE_HIT_DAMAGE} por zona — "
+                "**cada vez** que lo consigas:\n\n"
+                f"- **3/0** → 3 zonas × {ZONE_HIT_DAMAGE} + {SPECIAL_COMBO_BONUS} = "
+                f"**{3 * ZONE_HIT_DAMAGE + SPECIAL_COMBO_BONUS}**\n"
+                f"- **2/0** → 2 zonas × {ZONE_HIT_DAMAGE} + {SPECIAL_COMBO_BONUS} = "
+                f"**{2 * ZONE_HIT_DAMAGE + SPECIAL_COMBO_BONUS}**\n"
+                f"- **1/0** → 1 zona × {ZONE_HIT_DAMAGE} + {SPECIAL_COMBO_BONUS} = "
+                f"**{ZONE_HIT_DAMAGE + SPECIAL_COMBO_BONUS}**\n\n"
+                "Si dejas una zona sin marcar o el rival bloquea uno de sus ataques, no hay +3. Si en el mismo "
+                f"golpe completas también el Combo Tripartito, se suman los dos: una 3/0 especial que "
+                f"completa las 3 zonas hace {3 * ZONE_HIT_DAMAGE} + {SPECIAL_COMBO_BONUS} + "
+                f"{TRIPARTITE_COMBO_BONUS} = **{3 * ZONE_HIT_DAMAGE + SPECIAL_COMBO_BONUS + TRIPARTITE_COMBO_BONUS}**."
+            )
+
+        with st.expander(f"💚 Curación (+{HEALER_HEAL_AMOUNT} de vida)"):
+            st.markdown(
+                "Las **curadoras** (0/3, 0/2 y 1/1) dependen del **Combo Tripartito de tu rival**:\n\n"
+                "- **Si el rival aún no lo ha activado:** solo defienden — bloquean como cualquier defensa.\n"
+                "- **Si el rival ya lo activó** (en una ronda anterior): si la curadora **bloquea en todas las "
+                "zonas que defiende** (el rival atacó cada una y no entró ninguno), recibes "
+                f"**+{HEALER_HEAL_AMOUNT} de vida**. Si alguna zona no la atacó o le entró un ataque, no cura.\n\n"
+                "Nunca dan energía y nunca superas tu vida máxima. Son tu carta de remontada cuando el rival "
+                "ya ha completado su combo."
+            )
+
+        with st.expander(f"⚡ Varias cartas en el mismo turno"):
+            st.markdown(
+                f"Con **{MAX_ENERGY} de energía** puedes jugar **3 cartas de coste 1** a la vez y repartir sus "
+                "zonas. Ninguna zona se repite: ni dentro de una carta ni entre cartas distintas del mismo "
+                "turno. Cada zona admite 1 ataque y 1 defensa tuyos por turno (como mucho 3 ataques y 3 "
+                "defensas). Lo que sobre, no hace falta usarlo."
             )
 
     with tab_demo:
@@ -712,7 +741,7 @@ def render_tutorial(catalog_dicts: list[dict]) -> None:
                     with info_col:
                         quien = "Tú jugaste" if step["actor"] == "tú" else "El rival jugó"
                         st.markdown(f"**{quien}:** {card_dict['name']}")
-                        st.caption(f"{card_dict['atk']} ATK / {card_dict['defense']} DEF · Zona: {step['zone']}")
+                        st.caption(f"{card_dict['atk']} ATK / {card_dict['defense']} DEF · {step['zone']}")
         with hp_col:
             st.markdown("**Vida en este momento**")
             st.progress(max(0.0, step["hp_a"] / 50), text=f"Tú: {step['hp_a']} / 50 HP")
@@ -884,16 +913,6 @@ def _flash_energy_spend(player_key: str, amount: int) -> None:
     fx[player_key] = fx.get(player_key, 0) + amount
 
 
-def _store_zone_report(match, turn_resolved: int, combo_before: dict) -> None:
-    """Guarda, por jugador, qué zonas del Combo Tripartito sumó en el turno
-    recién resuelto (para la etiqueta "NUEVA" del panel de combo de
-    render_arena). Ligado a esta partida por id(match)."""
-    report = {"match_id": id(match), "turn": turn_resolved}
-    for k, pl in (("a", match.player_a), ("b", match.player_b)):
-        report[k] = {"combo_new": sorted({z.value for z in pl.zones_damaged} - set(combo_before.get(k, [])))}
-    st.session_state["zone_report"] = report
-
-
 def _end_turn_with_fx(match, timed_out: bool = False) -> None:
     """end_turn() + encola el aviso de DAÑO recibido por cada jugador (HP
     antes vs. después) para que render_arena lo muestre igual que el gasto
@@ -905,18 +924,8 @@ def _end_turn_with_fx(match, timed_out: bool = False) -> None:
         "a": max(0, match.player_a.energy - match.player_a.energy_spent_this_turn),
         "b": max(0, match.player_b.energy - match.player_b.energy_spent_this_turn),
     }
-    # Zonas del combo ANTES de resolver, para marcar la "NUEVA" de la ronda.
-    turn_resolved = match.turn_number
-    combo_before = {
-        "a": sorted(z.value for z in match.player_a.zones_damaged),
-        "b": sorted(z.value for z in match.player_b.zones_damaged),
-    }
     try:
         end_turn(match, timed_out=timed_out)
-        try:
-            _store_zone_report(match, turn_resolved, combo_before)
-        except Exception as e:  # el informe es solo visual: nunca romper el turno
-            print(f"[ZONE_REPORT] fallo: {e!r}")
     finally:
         _fx_begin()
         fx = st.session_state.setdefault("hp_fx", {})
@@ -1952,7 +1961,7 @@ st.markdown(
         text-align: center; font-size: 0.74rem; font-weight: 700; color: #fff;
         background: rgba(0, 0, 0, 0.78); border: 1px solid rgba(255, 200, 0, 0.6);
         border-radius: 999px; padding: 1px 9px; margin: 0 auto; width: fit-content;
-        white-space: nowrap; pointer-events: none;
+        max-width: 96%; white-space: normal; line-height: 1.25; pointer-events: none;
         box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
     }
     .card-sel-chip.ready { border-color: #2fb344; box-shadow: 0 0 8px rgba(47, 179, 68, 0.6); }
@@ -2686,38 +2695,37 @@ st.markdown(
     }
     .combo-hud-count b { color: #fff; font-size: 1.1em; margin-left: 2px; }
     .combo-hud-zones { display: flex; align-items: center; flex-wrap: nowrap; gap: 4px; }
+    /* Chips de zona del Combo Tripartito: SOLO 2 estados, derivados 1:1 del
+       array zones_affected del motor — sin transiciones ni animaciones, para
+       que una zona afectada nunca cambie de color, parpadee ni desaparezca. */
     .cz {
         padding: 2px 6px; border-radius: 999px; font-weight: 700;
         border: 1px solid transparent;
-        transition: background 0.3s ease;
+        transition: none; animation: none;
     }
-    .cz.ok {
-        background: rgba(40, 200, 90, 0.85); border-color: #8cffa0; color: #fff;
+    /* Afectada (en zones_affected): verde fijo, igual desde que se toca hasta el final. */
+    .combo-hud .cz.aff {
+        background: #1f9d4c; border-color: #8cffa0; color: #fff;
         text-shadow: 0 1px 1px rgba(0, 0, 0, 0.5);
     }
-    .cz.todo {
+    /* Todavía no afectada. */
+    .combo-hud .cz.todo {
         background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.18);
         color: rgba(255, 255, 255, 0.42); font-weight: 600;
     }
-    /* Zona sumada en la última ronda: destello verde breve en vez de texto
-       extra (mantiene la cápsula compacta). */
-    .cz.new { animation: cz-new 1.1s ease-in-out 3; }
-    @keyframes cz-new {
-        0%, 100% { box-shadow: 0 0 0 rgba(140, 255, 160, 0); }
-        50% { box-shadow: 0 0 12px rgba(140, 255, 160, 1); }
-    }
+    /* Marca pequeña de la ÚLTIMA ronda (⚔ entró / 🛡 bloqueado): solo texto,
+       nunca cambia el color de la zona. */
+    .cz-mark { margin-left: 3px; font-size: 0.85em; opacity: 0.9; }
     /* 3/3: la cápsula entera en dorado con brillo pulsante + cartel
        compacto encima (posición absoluta: no ensancha la cápsula). */
-    .combo-hud.is-done {
-        background: linear-gradient(90deg, rgba(90, 50, 0, 0.92), rgba(40, 24, 0, 0.92));
-        border-color: #ffd54a;
-        animation: combo-glow 1.6s ease-in-out infinite;
-    }
-    .combo-hud.is-done .combo-hud-count {
+    /* Ronda en que salta un combo: solo el borde de la cápsula y el cartel;
+       los chips de zona NO cambian (siguen en su verde fijo). */
+    .combo-hud.is-done { border-color: #ffd54a; }
+    /* Combo Tripartito ya cobrado: el contador queda en dorado fijo (3/3 ✓+3). */
+    .combo-hud-count.claimed {
         background: linear-gradient(90deg, #ff8a00, #ffd54a); border-color: #fff3b0; color: #2a1600;
     }
-    .combo-hud.is-done .combo-hud-count b { color: #2a1600; }
-    .combo-hud.is-done .cz.ok { background: rgba(255, 200, 40, 0.9); border-color: #fff3b0; color: #2a1600; text-shadow: none; }
+    .combo-hud-count.claimed b { color: #2a1600; }
     @keyframes combo-glow {
         0%, 100% { box-shadow: 0 0 6px rgba(255, 200, 0, 0.45), 0 4px 14px rgba(0,0,0,0.55); }
         50% { box-shadow: 0 0 20px rgba(255, 210, 0, 0.95), 0 4px 14px rgba(0,0,0,0.55); }
@@ -3173,15 +3181,11 @@ ZONE_ICON = {"head": "🗣️", "torso": "👕", "legs": "🦵"}
 ZONE_NAME = {"head": "Cabeza", "torso": "Tronco", "legs": "Piernas"}
 
 
-def _card_zone_requirements(card_dict: dict) -> tuple[bool, bool]:
-    """(necesita_zona_ataque, necesita_zona_defensa) según las stats/habilidad
-    de la carta: 0 ATK no tiene nada que atacar; 0 DEF sin poción/contraataque
-    no tiene nada que defender (esas 2 habilidades sí usan la zona de defensa
-    aunque la carta no tenga DEF propio — ver pvp_engine._build_zone_maps)."""
-    ability = card_dict.get("ability", "none")
-    needs_atk = card_dict["atk"] > 0
-    needs_def = card_dict["defense"] > 0 or ability in ("heal_potion", "counter")
-    return needs_atk, needs_def
+def _card_zone_requirements(card_dict: dict) -> tuple[int, int]:
+    """(nº máx. de zonas de ATAQUE, nº máx. de zonas de DEFENSA) de la carta:
+    1 zona distinta por cada punto de ATK/DEF (tope 3, ver
+    pvp_engine.max_attack_zones / max_defense_zones)."""
+    return min(max(card_dict["atk"], 0), len(Zone)), min(max(card_dict["defense"], 0), len(Zone))
 
 
 def _selected_card(player_key: str) -> dict | None:
@@ -3201,13 +3205,75 @@ def _selected_cards(player_key: str) -> list[dict]:
 
 
 def _card_zones(player_key: str, card_id: str) -> dict:
-    return st.session_state[f"zones_{player_key}"].setdefault(card_id, {"atk": None, "def": None})
+    zones = st.session_state[f"zones_{player_key}"].setdefault(card_id, {"atk": [], "def": []})
+    for k in ("atk", "def"):  # sesiones abiertas con la versión de 1 zona por carta
+        if not isinstance(zones.get(k), list):
+            zones[k] = [zones[k]] if zones.get(k) else []
+    return zones
+
+
+def _zones_taken_by_others(player_key: str, card_id: str) -> dict[str, dict[str, str]]:
+    """Casillas ya ocupadas este turno por las OTRAS cartas elegidas:
+    {"atk": {zona: nombre_carta}, "def": {zona: nombre_carta}}. Regla de
+    zonas únicas por turno (pvp_engine.play_card): cada zona admite 1 ataque
+    y 1 defensa tuyos por turno, sumando todas tus cartas."""
+    taken: dict[str, dict[str, str]] = {"atk": {}, "def": {}}
+    for other in _selected_cards(player_key):
+        if other["id"] == card_id:
+            continue
+        oz = _card_zones(player_key, other["id"])
+        for k in ("atk", "def"):
+            for z in oz[k]:
+                taken[k].setdefault(z, other["name"])
+    return taken
+
+
+def _free_zones(player_key: str, card_dict: dict) -> tuple[int, int]:
+    """(casillas de ataque libres, de defensa libres) que la carta podría usar
+    todavía: 0 si la carta no tiene ese tipo, si no 3 − ocupadas por otras."""
+    n_atk, n_def = _card_zone_requirements(card_dict)
+    taken = _zones_taken_by_others(player_key, card_dict["id"])
+    return (len(Zone) - len(taken["atk"]) if n_atk else 0,
+            len(Zone) - len(taken["def"]) if n_def else 0)
 
 
 def _card_ready(player_key: str, card_dict: dict) -> bool:
-    needs_atk, needs_def = _card_zone_requirements(card_dict)
+    """Lista para jugar si marcó al menos una zona (se pueden dejar zonas sin
+    usar), si la carta no tiene ninguna zona que marcar (la 0/0) o si las
+    casillas que podría usar ya están todas ocupadas por tus otras cartas del
+    turno (te sobran ataques/defensas: no estás obligado a usarlos)."""
+    n_atk, n_def = _card_zone_requirements(card_dict)
+    if not n_atk and not n_def:
+        return True
     zones = _card_zones(player_key, card_dict["id"])
-    return (not needs_atk or zones["atk"] is not None) and (not needs_def or zones["def"] is not None)
+    if zones["atk"] or zones["def"]:
+        return True
+    return _free_zones(player_key, card_dict) == (0, 0)
+
+
+def _toggle_zone(player_key: str, card_dict: dict, kind: str, zone_value: str) -> None:
+    """Clic en una casilla: la marca o desmarca para la carta activa. Nunca
+    repite zona dentro de la misma carta NI con otra carta tuya del turno (esa
+    casilla está bloqueada); si la carta ya tiene todas sus zonas de ese tipo
+    marcadas, la más antigua se sustituye por la nueva."""
+    limit = _card_zone_requirements(card_dict)[0 if kind == "atk" else 1]
+    if limit <= 0:
+        return
+    chosen = _card_zones(player_key, card_dict["id"])[kind]
+    if zone_value in chosen:
+        chosen.remove(zone_value)
+        return
+    if zone_value in _zones_taken_by_others(player_key, card_dict["id"])[kind]:
+        return  # ocupada por otra carta tuya este turno
+    if len(chosen) >= limit:
+        chosen.pop(0)
+    chosen.append(zone_value)
+
+
+def _zones_chip(chosen: list, limit: int) -> str:
+    short = {"head": "Cab", "torso": "Tron", "legs": "Pier"}
+    names = ", ".join(short[z] for z in chosen) if chosen else "—"
+    return f"{names} ({len(chosen)}/{limit})"
 
 
 def _select_card(player_key: str, card_id: str) -> None:
@@ -3216,7 +3282,7 @@ def _select_card(player_key: str, card_id: str) -> None:
     sel = st.session_state[f"sel_cards_{player_key}"]
     if card_id not in sel:
         sel.append(card_id)
-        st.session_state[f"zones_{player_key}"][card_id] = {"atk": None, "def": None}
+        st.session_state[f"zones_{player_key}"][card_id] = {"atk": [], "def": []}
     st.session_state[f"active_card_{player_key}"] = card_id
 
 
@@ -3232,74 +3298,93 @@ def _deselect_card(player_key: str, card_id: str) -> None:
 
 
 def render_tactical_points(player_key: str, overlay: bool = False) -> None:
-    """Puntos tácticos estilo Waves Ducks: verde = zona PROPIA a defender,
-    rojo = zona del RIVAL a atacar.
+    """Puntos tácticos estilo Waves Ducks: verde = zonas PROPIAS a defender,
+    rojo = zonas del RIVAL a atacar. Reglas de zonas (pvp_engine.py):
+    la carta activa marca hasta ATK zonas rojas y hasta DEF zonas verdes,
+    todas DISTINTAS dentro de la carta (clic = marcar/desmarcar; si ya están
+    todas, la más antigua se sustituye). Se pueden dejar zonas sin marcar.
     overlay=True (modo Vs. Bot): 6 puntos circulares superpuestos sobre
     escenario.png dentro de render_arena — verdes junto a tu luchador
     (izquierda), rojos junto al rival (derecha); el CSS .arena-point-* del
     bloque de estilos los posiciona con position:absolute.
     overlay=False (Hotseat): la fila ancha de botones de siempre, debajo de
-    la mano — no hay una única imagen de fondo sobre la que superponerlos
-    cuando los DOS jugadores necesitan su propio juego de puntos a la vez.
-    En ambos casos, el grupo (verde/rojo) que la carta elegida no necesita
-    (ver _card_zone_requirements) se deshabilita — y sin carta elegida
-    todavía, los 2 grupos quedan deshabilitados: hay que elegir carta primero."""
+    la mano. Un grupo que la carta activa no puede usar (0 ATK o 0 DEF) se
+    deshabilita — y sin carta elegida todavía, los 2 grupos quedan
+    deshabilitados: hay que elegir carta primero."""
     # Selección múltiple: los puntos editan SOLO la carta activa (la última
-    # clicada); las zonas ya fijadas por las OTRAS cartas elegidas se marcan
-    # con un contorno discontinuo ("_used") para no perder de vista el plan.
+    # clicada). Las casillas ya ocupadas por las OTRAS cartas elegidas este
+    # turno quedan BLOQUEADAS (contorno discontinuo "_used" + deshabilitadas):
+    # cada zona admite 1 ataque y 1 defensa tuyos por turno.
     sel_card = _selected_card(player_key)
-    needs_atk, needs_def = _card_zone_requirements(sel_card) if sel_card else (False, False)
-    active_zones = _card_zones(player_key, sel_card["id"]) if sel_card else {"atk": None, "def": None}
-    used_by_others: dict[str, set] = {"atk": set(), "def": set()}
-    for other in _selected_cards(player_key):
-        if sel_card and other["id"] == sel_card["id"]:
-            continue
-        oz = _card_zones(player_key, other["id"])
-        for k in ("atk", "def"):
-            if oz[k]:
-                used_by_others[k].add(oz[k])
+    n_atk, n_def = _card_zone_requirements(sel_card) if sel_card else (0, 0)
+    active_zones = _card_zones(player_key, sel_card["id"]) if sel_card else {"atk": [], "def": []}
+    if sel_card:
+        taken_by = _zones_taken_by_others(player_key, sel_card["id"])
+    else:
+        taken_by = {"atk": {}, "def": {}}
+        for other in _selected_cards(player_key):
+            oz = _card_zones(player_key, other["id"])
+            for k in ("atk", "def"):
+                for z in oz[k]:
+                    taken_by[k].setdefault(z, other["name"])
+    used_by_others = {k: set(v) for k, v in taken_by.items()}
     specs = (
-        ("def", "🟢 Defender", "tactical-label-def", needs_def),
-        ("atk", "🔴 Atacar", "tactical-label-atk", needs_atk),
+        ("def", "🟢 Defender", "tactical-label-def", n_def),
+        ("atk", "🔴 Atacar", "tactical-label-atk", n_atk),
     )
 
-    def _set_zone(prefix: str, zone_value: str) -> None:
+    def _click(prefix: str, zone_value: str) -> None:
         if sel_card:
-            active_zones[prefix] = zone_value
+            _toggle_zone(player_key, sel_card, prefix, zone_value)
+
+    def _help(prefix: str, z: Zone, limit: int) -> str:
+        verb = "Defender" if prefix == "def" else "Atacar"
+        if z.value in taken_by[prefix] and z.value not in active_zones[prefix]:
+            return (f"{ZONE_NAME[z.value]} ya está ocupada por {taken_by[prefix][z.value]} este turno "
+                    f"(1 {'defensa' if prefix == 'def' else 'ataque'} por zona)")
+        if not sel_card:
+            return f"{verb} {ZONE_NAME[z.value]} — elige primero una carta"
+        if limit <= 0:
+            return f"{sel_card['name']} no puede {verb.lower()}"
+        n = len(active_zones[prefix])
+        return (f"{verb} {ZONE_NAME[z.value]} · {sel_card['name']}: {n}/{limit} zona(s) distintas "
+                f"(clic de nuevo para quitar)")
 
     if overlay:
-        for prefix, _label, _cls, needed in specs:
+        for prefix, _label, _cls, limit in specs:
             for z in ZONE_ORDER:
-                selected = active_zones[prefix] == z.value
+                selected = z.value in active_zones[prefix]
                 used = z.value in used_by_others[prefix]
                 point_key = f"pt_{prefix}_{player_key}_{z.value}"
                 with st.container(key=f"arena_point_{point_key}{'_used' if used else ''}"):
                     if st.button(
                         ZONE_ICON[z.value], key=point_key,
                         type="primary" if selected else "secondary",
-                        disabled=not needed,
-                        help=f"{'Defender' if prefix == 'def' else 'Atacar'} {ZONE_NAME[z.value]}",
+                        disabled=limit <= 0 or (used and not selected),
+                        help=_help(prefix, z, limit),
                     ):
-                        _set_zone(prefix, z.value)
+                        _click(prefix, z.value)
                         st.rerun()
         return
 
     col_def, col_atk = st.columns(2)
-    for col, (prefix, label_txt, label_cls, needed) in zip((col_def, col_atk), specs):
+    for col, (prefix, label_txt, label_cls, limit) in zip((col_def, col_atk), specs):
         with col:
-            st.markdown(f"<div class='tactical-label {label_cls}'>{label_txt}</div>", unsafe_allow_html=True)
+            counter = f" · {len(active_zones[prefix])}/{limit}" if limit > 0 else ""
+            st.markdown(f"<div class='tactical-label {label_cls}'>{label_txt}{counter}</div>", unsafe_allow_html=True)
             with st.container(key=f"tactical_{prefix}_{player_key}"):
                 for z in ZONE_ORDER:
-                    selected = active_zones[prefix] == z.value
+                    selected = z.value in active_zones[prefix]
                     used = z.value in used_by_others[prefix]
                     if st.button(
                         f"{ZONE_ICON[z.value]} {ZONE_NAME[z.value]}{' ◆' if used else ''}",
                         key=f"{prefix}_pt_{player_key}_{z.value}",
                         type="primary" if selected else "secondary",
                         width="stretch",
-                        disabled=not needed,
+                        disabled=limit <= 0 or (used and not selected),
+                        help=_help(prefix, z, limit),
                     ):
-                        _set_zone(prefix, z.value)
+                        _click(prefix, z.value)
                         st.rerun()
 
 
@@ -3393,53 +3478,72 @@ def render_arena(state: dict) -> None:
         )
 
     def zone_report_html(player_key: str, align: str) -> str:
-        """Panel minimalista bajo cada bando: SOLO el progreso del Combo
-        Tripartito, acumulativo durante toda la partida (motor:
-        zones_damaged / tripartite_claimed). Las 3 zonas siempre a la vista:
-        ✓ conseguida, atenuada pendiente, "NUEVA" si se sumó en la última
-        ronda; a 3/3 se marca "¡Combo activado!"."""
-        rep = st.session_state.get("zone_report")
-        if not rep or rep.get("match_id") != id(match) or player_key not in rep:
-            rep = None
-        p_state = state[f"player_{player_key}"]
-        done = set(p_state["zones_damaged"])
-        new_zones = set(rep[player_key].get("combo_new", [])) if rep else set()
-        claimed = p_state["tripartite_claimed"]
+        """Marcador del Combo Tripartito bajo cada bando para quien ATACA
+        (`player_key`). FUENTE ÚNICA: el array `zones_affected` que devuelve el
+        motor en get_match_state() — el mismo conjunto que usa
+        pvp_engine._resolve_direction para decidir el combo:
+        - cada chip de zona tiene solo 2 estados: verde fijo si la zona está en
+          zones_affected (desde la ronda en que se tocó hasta el final de la
+          partida) o gris si no; nada de lo que pase en la ronda actual
+          (bloqueos, combos) cambia ese color;
+        - el contador «🔥 X/3» es len(zones_affected), siempre (también con el
+          combo ya cobrado: «3/3 ✓+3»);
+        - la última ronda solo añade una marca de texto: ⚔ entró / 🛡 bloqueado."""
+        pst = state[f"player_{player_key}"]
+        last = pst.get("last_turn") or {}
+        hits, blocked = last.get("hits", {}), last.get("blocked", {})
+        affected = [z for z in ("head", "torso", "legs") if z in set(pst.get("zones_affected", []))]
+        claimed = bool(pst.get("tripartite_claimed", False))
+        if claimed and len(affected) != 3:  # nunca debería pasar: el motor solo cobra con las 3
+            print(f"[COMBO_HUD] incoherencia {player_key}: claimed con zones_affected={affected}")
+        specials = last.get("combos", [])
+        tri_now = last.get("tripartite", False)
         short = {"head": "Cab.", "torso": "Tron.", "legs": "Pier."}
         zone_chips = []
         for z in ("head", "torso", "legs"):
             # Nombre completo + abreviado: el CSS muestra uno u otro según el
             # ancho de ventana (ver @media de .combo-hud).
             label = f"<span class='cz-full'>{ZONE_NAME[z]}</span><span class='cz-short'>{short[z]}</span>"
-            if z in done:
-                cls = "cz ok new" if z in new_zones else "cz ok"
-                zone_chips.append(f"<span class='{cls}'>✓ {label}</span>")
+            if hits.get(z):
+                mark = "<span class='cz-mark' title='Entró un ataque en la última ronda'>⚔</span>"
+            elif blocked.get(z):
+                mark = "<span class='cz-mark' title='Bloqueado en la última ronda'>🛡</span>"
             else:
-                zone_chips.append(f"<span class='cz todo'>{label}</span>")
-        # player_key = quién ATACA (de quién es el combo). Cada cápsula se
-        # pinta bajo el personaje que RECIBE esos golpes (ver la llamada en
-        # render_arena): bajo ti, el combo del rival (las zonas de TU cuerpo
-        # que te ha dañado); bajo el rival, TU combo (las zonas de SU cuerpo
-        # que tú le has dañado). Pestaña roja = golpes que sufres; azul =
-        # golpes que das.
+                mark = ""
+            if z in affected:
+                zone_chips.append(f"<span class='cz aff' data-zone='{z}'>✓ {label}{mark}</span>")
+            else:
+                zone_chips.append(f"<span class='cz todo' data-zone='{z}'>{label}{mark}</span>")
+        # player_key = quién ATACA. Cada cápsula se pinta bajo el personaje que
+        # RECIBE esos golpes (ver la llamada en render_arena).
         if player_key == "a":
-            tag = "⚔️ GOLPES QUE LE HAS DADO"
-            tag_cls = "tag-dealt"
-            tip = "Zonas del rival que TÚ ya has dañado. Completa las 3 para tu Combo Tripartito (+3 de daño)."
-            banner_txt = "¡TU COMBO ACTIVADO!"
+            tag, tag_cls = "⚔️ TUS GOLPES", "tag-dealt"
+            tip = (f"Zonas del rival que has tocado (verde = afectada, se queda así toda la partida). Al tener "
+                   f"las 3 activas el Combo Tripartito: +{TRIPARTITE_COMBO_BONUS}, una vez por partida. "
+                   "⚔ / 🛡 = qué pasó en la última ronda.")
+            mine = True
         else:
-            tag = "💢 GOLPES RECIBIDOS"
-            tag_cls = "tag-received"
-            tip = "Zonas de TU cuerpo que el rival ya ha dañado. Si completa las 3, activa su Combo Tripartito (+3)."
-            banner_txt = "¡COMBO RIVAL!"
-        icon = "⚡" if claimed else "🔥"
-        banner = f"<span class='combo-hud-banner'>{banner_txt}</span>" if claimed else ""
-        done_cls = " is-done" if claimed else ""
+            tag, tag_cls = "💢 GOLPES RECIBIDOS", "tag-received"
+            tip = (f"Zonas de TU cuerpo que el rival ya ha tocado (verde = afectada). Con las 3 activa su "
+                   f"Combo Tripartito (+{TRIPARTITE_COMBO_BONUS}, una vez). ⚔ / 🛡 = última ronda.")
+            mine = False
+        if tri_now:
+            banner_txt = "¡TU COMBO TRIPARTITO!" if mine else "¡COMBO TRIPARTITO RIVAL!"
+        elif specials:
+            banner_txt = "¡TU COMBO ESPECIAL!" if mine else "¡COMBO ESPECIAL RIVAL!"
+        else:
+            banner_txt = ""
+        banner = f"<span class='combo-hud-banner'>{banner_txt}</span>" if banner_txt else ""
+        done_cls = " is-done" if banner_txt else ""
+        count_cls = "combo-hud-count claimed" if claimed else "combo-hud-count"
+        tri_txt = f"{len(affected)}/3" + (f" ✓+{TRIPARTITE_COMBO_BONUS}" if claimed else "")
         return (
-            f"<div class='combo-hud combo-hud-{align}{done_cls}' title='{tip}'>"
+            f"<div class='combo-hud combo-hud-{align}{done_cls}' data-affected='{','.join(affected)}' "
+            f"title='{html.escape(tip, quote=True)}'>"
             f"<span class='combo-hud-tag {tag_cls}'>{tag}</span>"
             f"{banner}"
-            f"<span class='combo-hud-count'>{icon}<span class='combo-word'> COMBO</span> <b>{len(done)}/3</b></span>"
+            f"<span class='{count_cls}'>🔥<span class='combo-word'> COMBO</span> <b>{tri_txt}</b>"
+            f" · ⚔️ <b>{last.get('damage_dealt', 0)}</b></span>"
             f"<span class='combo-hud-zones'>{''.join(zone_chips)}</span>"
             f"</div>"
         )
@@ -3619,7 +3723,10 @@ def _format_log_entry(line: str, name_a: str, name_b: str) -> str:
         side_class, side_icon = "log-side-b", "🔴"
     else:
         side_class, side_icon = "log-side-neutral", "ℹ️"
-    if "inflige" in line or "Combo" in line:
+    if " · 🔴 " in line or line.startswith(("📊", "❤️", "🔥", "💥", "💚", "✖️", "🛡️")):
+        # Desglose por zona, totales y combos: ya traen sus propios iconos (🔴 ataques, 🔵 defensas, 💥 daño).
+        action_icon = ""
+    elif "inflige" in line or "Combo" in line:
         action_icon = "⚔️ "
     elif "cura" in line or "bloquea" in line or "contraataca" in line:
         action_icon = "🛡️ "
@@ -3641,31 +3748,14 @@ if state["log"]:
     if recent_lines:
         st.markdown(f'<div class="combat-feed">{recent_lines}</div>', unsafe_allow_html=True)
 
-def _describe_tactical_result(attacker, defender, atk_zone: Zone) -> str:
-    """Mensaje legible para el panel de Información, comparando la zona de
-    ataque elegida contra las zonas que el rival ya tiene defendidas este
-    turno (sus staged_plays, ya calculados vía bot_choose_plays antes de
-    llamar aquí). El daño REAL (piercing/potion/counter incluidos) lo calcula
-    igualmente pvp_engine.end_turn() justo después — esto es solo la lectura
-    rápida estilo Waves Ducks que pidió el equipo ("impacto"/"bloqueado")."""
-    defended = {sp.defense_zone for sp in defender.staged_plays}
-    atk_label = ZONE_NAME[atk_zone.value]
-    if atk_zone in defended:
-        return f"🎯 Atacaste {atk_label}: el rival defendía esa zona → ¡Ataque bloqueado!"
-    if defended:
-        other = ZONE_NAME[next(iter(defended)).value]
-        return f"🎯 Atacaste {atk_label}, el rival defendía {other} → ¡Impacto directo!"
-    return f"🎯 Atacaste {atk_label} sin encontrar defensa → ¡Impacto directo!"
-
-
 @st.dialog("⚠️ Carta deseleccionada", width="medium")
 def _show_zone_dialog(cards: list[dict]) -> None:
     """Popup modal centrado: explica que la(s) carta(s) se quitaron de la
     selección por no tener asignadas sus zonas, y que el turno NO ha pasado."""
     plural = len(cards) > 1
     st.markdown(
-        f"<div class='zone-dialog-lead'>No has elegido las zonas que "
-        f"{'necesitan estas cartas' if plural else 'necesita esta carta'}, así que "
+        f"<div class='zone-dialog-lead'>No has marcado ninguna zona para "
+        f"{'estas cartas' if plural else 'esta carta'}, así que "
         f"{'se han deseleccionado' if plural else 'se ha deseleccionado'} automáticamente.</div>",
         unsafe_allow_html=True,
     )
@@ -3683,8 +3773,9 @@ def _show_zone_dialog(cards: list[dict]) -> None:
     st.markdown(
         "<div class='zone-dialog-help'>"
         "✅ <b>El turno NO ha pasado</b>: replantea tu jugada con libertad.<br>"
-        "🔴 Elige la carta otra vez y marca su <b>zona de ataque</b> (puntos rojos, en el rival)"
-        " y/o 🟢 su <b>zona de defensa</b> (puntos verdes, en tu lado).<br>"
+        "🔴 Elige la carta otra vez y marca sus <b>zonas de ataque</b> (puntos rojos, en el rival:"
+        " tantas como su ATK, todas distintas) y/o 🟢 sus <b>zonas de defensa</b> (puntos verdes,"
+        " en tu lado: tantas como su DEF). Puedes dejar zonas sin marcar.<br>"
         "⏭️ O pulsa <b>Pasar Turno</b> para ceder el turno sin jugarla.<br>"
         "⏱️ <b>El reloj sigue corriendo:</b> si llega a 0 sin que juegues o pases, "
         "cuenta como inactividad."
@@ -3696,44 +3787,35 @@ def _show_zone_dialog(cards: list[dict]) -> None:
 
 
 def _missing_zones_text(player_key: str, card_dict: dict) -> str:
-    needs_atk, needs_def = _card_zone_requirements(card_dict)
-    zones = _card_zones(player_key, card_dict["id"])
-    missing = []
-    if needs_atk and zones["atk"] is None:
-        missing.append("zona de ataque 🔴")
-    if needs_def and zones["def"] is None:
-        missing.append("zona de defensa 🟢")
-    return "falta " + " y ".join(missing)
+    n_atk, n_def = _card_zone_requirements(card_dict)
+    opts = []
+    if n_atk:
+        opts.append(f"hasta {n_atk} zona(s) de ataque 🔴")
+    if n_def:
+        opts.append(f"hasta {n_def} zona(s) de defensa 🟢")
+    return "marca al menos una zona: " + " y/o ".join(opts)
 
 
 def _confirm_turn(player_key: str, ready_cards: list[dict], auto_resolve: bool) -> None:
     """Acción del botón PASAR TURNO. Nunca puede dejar el turno atascado:
-    1) juega una a una las cartas listas — una carta que no necesita zonas
-       (p.ej. la 0/0 Fox #27 · Feint) recibe Cabeza por defecto (su efecto
-       es 0, no cambia nada); si una carta falla por cualquier motivo, se
-       omite con un aviso y se siguen jugando las demás;
+    1) juega una a una las cartas listas con sus listas de zonas de ataque y
+       de defensa (el motor vuelve a validar la regla de zonas únicas por
+       carta); si una carta falla por cualquier motivo, se omite con un aviso
+       y se siguen jugando las demás;
     2) en Vs. Bot, el Bot responde y el turno SE RESUELVE SIEMPRE, aunque
        algo anterior haya fallado;
     3) la selección se limpia pase lo que pase."""
-    attack_zones: list[Zone] = []
     skipped: list[str] = []
     try:
         for card_dict in ready_cards:
             zc = _card_zones(player_key, card_dict["id"])
-            atk_zone_final = zc["atk"] or zc["def"] or Zone.HEAD.value
-            def_zone_final = zc["def"] or zc["atk"] or Zone.HEAD.value
             try:
-                play_card(
-                    match, player_key, card_dict["id"], Zone(atk_zone_final),
-                    defense_zone=Zone(def_zone_final),
-                )
+                play_card(match, player_key, card_dict["id"], list(zc["atk"]), list(zc["def"]))
             except Exception as e:  # EngineError, zona inválida, carta ya no en mano...
                 print(f"[CONFIRM] {card_dict['id']} omitida: {e!r}")
                 skipped.append(f"{card_dict['name']}: {e}")
                 continue
             _flash_energy_spend(player_key, card_dict["cost_energy"])
-            if _card_zone_requirements(card_dict)[0]:
-                attack_zones.append(Zone(atk_zone_final))
         # Pulsar el botón es SIEMPRE una jugada válida: nunca inactividad.
         pass_turn(match, player_key)
         if auto_resolve and match.status == MatchStatus.ONGOING:
@@ -3742,10 +3824,6 @@ def _confirm_turn(player_key: str, ready_cards: list[dict], auto_resolve: bool) 
                 _flash_energy_spend("b", match.player_b.energy_spent_this_turn)
             except Exception as e:
                 print(f"[CONFIRM] bot_choose_plays fallo: {e!r}")
-            attacker = match.player_a if player_key == "a" else match.player_b
-            defender = match.player_b if player_key == "a" else match.player_a
-            for atk_zone in attack_zones:
-                match.log.append(_describe_tactical_result(attacker, defender, atk_zone))
             _end_turn_with_fx(match)
             st.session_state.turn_start_time = time.time()
     except Exception as e:
@@ -3760,8 +3838,8 @@ def _confirm_turn(player_key: str, ready_cards: list[dict], auto_resolve: bool) 
 def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None:
     """Mano de 3 cartas: solo imagen, coste y tooltip de efecto al pasar el
     cursor (ℹ️ Info) — clicar una carta la SELECCIONA (no la juega al
-    instante); hace falta elegir también zona de ataque/defensa en
-    render_tactical_points() (solo las que la carta necesite — ver
+    instante); hace falta marcar también sus zonas de ataque/defensa en
+    render_tactical_points() (hasta ATK/DEF zonas distintas — ver
     _card_zone_requirements) y pulsar "✅ Pasar Turno" para resolver.
     auto_resolve=True (modo Vs. Bot): confirmar hace responder al Bot y
     resuelve el turno entero en un solo paso; en Hotseat la jugada solo queda
@@ -3840,7 +3918,8 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                 # quedar anclado a mitad/abajo (donde caería si el <div>
                 # fuese el 2º hijo, entre imagen y botón).
                 ability = card_dict.get("ability")
-                ability_line = f"<div>✨ {html.escape(ability)}</div>" if ability and ability != "none" else ""
+                ability_line = (f"<div>✨ {html.escape(card_type_label(card_dict))}</div>"
+                                if ability and ability != "none" else "")
                 desc_html = (
                     f"<div class='card-info-desc'>{html.escape(card_dict['description'])}</div>"
                     if card_dict.get("description")
@@ -3872,9 +3951,13 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
                     n_atk, n_def = _card_zone_requirements(card_dict)
                     parts = []
                     if n_atk:
-                        parts.append(f"🔴 {ZONE_NAME[zc['atk']] if zc['atk'] else '?'}")
+                        parts.append(f"🔴 {_zones_chip(zc['atk'], n_atk)}")
                     if n_def:
-                        parts.append(f"🟢 {ZONE_NAME[zc['def']] if zc['def'] else '?'}")
+                        parts.append(f"🟢 {_zones_chip(zc['def'], n_def)}")
+                    if not parts:
+                        parts.append("sin zonas")
+                    elif not (zc["atk"] or zc["def"]) and _free_zones(player_key, card_dict) == (0, 0):
+                        parts = ["sin casillas libres: se juega sin zonas"]
                     chip_cls = "card-sel-chip ready" if _card_ready(player_key, card_dict) else "card-sel-chip"
                     if is_active and not _card_ready(player_key, card_dict):
                         chip_cls += " pending"
@@ -3958,7 +4041,8 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
 
         if p["staged_plays"]:
             staged_txt = ", ".join(
-                f"{sp['card']['name']} → ataca {sp['zone']} / defiende {sp['defense_zone']}"
+                f"{sp['card']['name']} → ataca {', '.join(ZONE_NAME[z] for z in sp['attack_zones']) or '—'}"
+                f" / defiende {', '.join(ZONE_NAME[z] for z in sp['defense_zones']) or '—'}"
                 for sp in p["staged_plays"]
             )
             st.caption(f"Jugadas preparadas este turno: {staged_txt}")

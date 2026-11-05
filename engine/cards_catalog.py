@@ -34,7 +34,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from card_schema import CLEAN_STRIKE_BASE_DAMAGE, CLEAN_STRIKE_BONUS, Ability, Card, CardCategory, Element, Faction
+from card_schema import (
+    HEALER_HEAL_AMOUNT, SPECIAL_COMBO_BONUS, ZONE_HIT_DAMAGE, Ability, Card, CardCategory, Element, Faction,
+)
 
 ENGINE_DIR = Path(__file__).resolve().parent
 PVP_ROOT = ENGINE_DIR.parent
@@ -138,7 +140,7 @@ BASE_CARDS: list[Card] = [
         id="kr_cyber_guardian_0x2", name="Cyber-Kitsune Operative (Guardian)",
         faction=Faction.KURAMARUN, category=CardCategory.STANDARD, atk=0, defense=2,
         element=Element.ARCANE, description="Defensa Ligera — variante de guardia con escudo de energía.",
-        image_path="CARDS/KURAMARUN3-removebg-preview.png",
+        image_path="CARDS/KURAMARUN3estrecha.png",
     ),
     Card(
         id="tz_flora_fury_0x1", name="Flora-Fury: Terrasprout",
@@ -150,44 +152,53 @@ BASE_CARDS: list[Card] = [
 ]
 
 # --------------------------------------------------------------------------- #
-# Las 7 cartas ESPECIALES (coste 2) — revisión del creador del 03/11/2026
+# Las 7 cartas ESPECIALES (coste 2) — revisión del creador del 03/11/2026,
+# efectos definitivos de Sendo del 05/11/2026 (ver pvp_engine.py)
 # --------------------------------------------------------------------------- #
-# Stats fijadas por el creador. Ataque: 3/0, 2/0, 2/2, 1/0. Vida (femeninas): 0/3, 0/2, 1/1.
+# Stats fijadas por el creador. Ataque: 3/0, 2/0, 2/2, 1/0. Curación (femeninas): 0/3, 0/2, 1/1.
 SPECIAL_ATTACK_COMBOS = [(3, 0), (2, 0), (2, 2), (1, 0)]
 SPECIAL_GUARD_COMBOS = [(0, 3), (0, 2), (1, 1)]
-_CLEAN_TXT = (f"Golpe Limpio: si el rival no tiene defensa en la zona, hace {CLEAN_STRIKE_BASE_DAMAGE} + "
-              f"{CLEAN_STRIKE_BONUS} = {CLEAN_STRIKE_BASE_DAMAGE + CLEAN_STRIKE_BONUS} de daño. Si la bloquean, "
-              "el combo se anula y pega su ATK normal.")
 
 
-def _guard_txt(bonus: int) -> str:
-    return (f"Guardia Vital: si bloqueas del todo el ataque rival en su zona, recuperas +{bonus} de energía.")
+def _tri_txt(atk: int) -> str:
+    total = atk * ZONE_HIT_DAMAGE + SPECIAL_COMBO_BONUS
+    zonas = "la zona" if atk == 1 else f"las {atk} zonas"
+    return (f"Combo Especial: si impacta en {zonas} sin que le bloqueen ningún ataque, hace "
+            f"{ZONE_HIT_DAMAGE} por zona + {SPECIAL_COMBO_BONUS} = {total} de daño.")
+
+
+def _heal_txt(defense: int) -> str:
+    return (f"Curación: cuando el rival ya tiene su Combo Tripartito, si bloqueas sus ataques en todas las zonas "
+            f"que defiendes, recibes +{HEALER_HEAL_AMOUNT} de vida. Sin su combo, solo defiende.")
 
 
 SPECIAL_CARDS: list[Card] = [
-    # --- Ataque con plus de daño (Golpe Limpio) ----------------------------
+    # --- Ataque con Combo Especial (+3) -------------------------------------
     _nft_card("sp_fox_1468_3x0", "Fox #1468 · Ronin Executioner", 3, 0, 1468,
-              "Especial de ataque — samurái ronin que remata sin piedad. " + _CLEAN_TXT,
-              category=CardCategory.SPECIAL, ability=Ability.CLEAN_STRIKE, element=Element.FIRE),
+              "Especial de ataque — samurái ronin que remata sin piedad. " + _tri_txt(3),
+              category=CardCategory.SPECIAL, ability=Ability.TRIPARTITE_STRIKE, element=Element.FIRE),
     _nft_card("sp_fox_87_2x0", "Fox #87 · Crimson Goggles", 2, 0, 87,
-              "Especial de ataque — piloto carmesí que busca el hueco en la guardia. " + _CLEAN_TXT,
-              category=CardCategory.SPECIAL, ability=Ability.CLEAN_STRIKE, element=Element.FIRE),
+              "Especial de ataque — piloto carmesí que busca el hueco en la guardia. " + _tri_txt(2),
+              category=CardCategory.SPECIAL, ability=Ability.TRIPARTITE_STRIKE, element=Element.FIRE),
     _nft_card("sp_fox_1597_2x2", "Fox #1597 · Shadow Hat Duelist", 2, 2, 1597,
-              "Especial de ataque — duelista de las sombras, golpea y se cubre. " + _CLEAN_TXT,
-              category=CardCategory.SPECIAL, ability=Ability.CLEAN_STRIKE, element=Element.SHADOW),
+              "Especial de ataque — duelista de las sombras, golpea y se cubre. " + _tri_txt(2),
+              category=CardCategory.SPECIAL, ability=Ability.TRIPARTITE_STRIKE, element=Element.SHADOW),
     _nft_card("sp_fox_487_1x0", "Fox #487 · Neon Pounce", 1, 0, 487,
-              "Especial de ataque — salto de neón tan rápido que nadie lo ve venir. " + _CLEAN_TXT,
-              category=CardCategory.SPECIAL, ability=Ability.CLEAN_STRIKE, element=Element.AIR),
-    # --- Femeninas de Defensa / Vida (Guardia Vital) -----------------------
+              "Especial de ataque — salto de neón tan rápido que nadie lo ve venir. " + _tri_txt(1),
+              category=CardCategory.SPECIAL, ability=Ability.TRIPARTITE_STRIKE, element=Element.AIR),
+    # --- Femeninas de Curación ---------------------------------------------
     _nft_card("sp_fox_1281_0x3", "Fox #1281 · Moonshrine Guardian", 0, 3, 1281,
-              "Especial de vida — guardiana del santuario lunar. " + _guard_txt(2),
-              category=CardCategory.SPECIAL, ability=Ability.GUARD_ENERGY, element=Element.WATER, energy_bonus=2),
+              "Especial de curación — guardiana del santuario lunar. " + _heal_txt(3),
+              category=CardCategory.SPECIAL, ability=Ability.HEALER, element=Element.WATER,
+              heal_amount=HEALER_HEAL_AMOUNT),
     _nft_card("sp_fox_963_0x2", "Fox #963 · Blossom Ward", 0, 2, 963,
-              "Especial de vida — protectora de los cerezos. " + _guard_txt(1),
-              category=CardCategory.SPECIAL, ability=Ability.GUARD_ENERGY, element=Element.NATURE, energy_bonus=1),
+              "Especial de curación — protectora de los cerezos. " + _heal_txt(2),
+              category=CardCategory.SPECIAL, ability=Ability.HEALER, element=Element.NATURE,
+              heal_amount=HEALER_HEAL_AMOUNT),
     _nft_card("sp_fox_444_1x1", "Fox #444 · Sakura Medic", 1, 1, 444,
-              "Especial de vida — sanadora sakura que pica y protege. " + _guard_txt(1),
-              category=CardCategory.SPECIAL, ability=Ability.GUARD_ENERGY, element=Element.NATURE, energy_bonus=1),
+              "Especial de curación — sanadora sakura que pica y protege. " + _heal_txt(1),
+              category=CardCategory.SPECIAL, ability=Ability.HEALER, element=Element.NATURE,
+              heal_amount=HEALER_HEAL_AMOUNT),
 ]
 
 
@@ -200,12 +211,11 @@ def validate_catalog(cards: list[Card], check_files: bool = True) -> None:
     combinación ATK/DEF) + 7 especiales (coste 2, con sus stats y habilidades fijadas)."""
     specials = [c for c in cards if c.category == CardCategory.SPECIAL]
     cards = [c for c in cards if c.category != CardCategory.SPECIAL]
-    assert sorted((c.atk, c.defense) for c in specials if c.ability == Ability.CLEAN_STRIKE) == sorted(
+    assert sorted((c.atk, c.defense) for c in specials if c.ability == Ability.TRIPARTITE_STRIKE) == sorted(
         SPECIAL_ATTACK_COMBOS), "Especiales de ataque incorrectas"
-    assert sorted((c.atk, c.defense) for c in specials if c.ability == Ability.GUARD_ENERGY) == sorted(
-        SPECIAL_GUARD_COMBOS), "Especiales de vida incorrectas"
+    assert sorted((c.atk, c.defense) for c in specials if c.ability == Ability.HEALER) == sorted(
+        SPECIAL_GUARD_COMBOS), "Especiales de curación incorrectas"
     assert len(specials) == len(SPECIAL_ATTACK_COMBOS) + len(SPECIAL_GUARD_COMBOS)
-    assert sorted(c.energy_bonus for c in specials if c.ability == Ability.GUARD_ENERGY) == [1, 1, 2]
     for c in specials:
         assert c.cost_energy == 2, f"{c.id}: las especiales cuestan 2"
     for c in cards:
@@ -279,8 +289,8 @@ _PALETTES = {
     "balanced": ((40, 30, 100), (120, 100, 230)),
     Ability.LIFESTEAL: ((80, 0, 30), (220, 30, 80)),
     Ability.COMBO_STRIKE: ((70, 40, 0), (255, 170, 30)),
-    Ability.CLEAN_STRIKE: ((90, 10, 10), (255, 90, 40)),
-    Ability.GUARD_ENERGY: ((90, 20, 80), (255, 130, 210)),
+    Ability.TRIPARTITE_STRIKE: ((90, 10, 10), (255, 90, 40)),
+    Ability.HEALER: ((90, 20, 80), (255, 130, 210)),
 }
 
 
@@ -342,8 +352,10 @@ def generate_nft_card_image(card: Card, out_path: Path) -> None:
     if card.ability != Ability.NONE:
         label = {
             Ability.LIFESTEAL: "ROBO DE VIDA", Ability.COMBO_STRIKE: "COMBO SIMULTÁNEO",
-            Ability.CLEAN_STRIKE: f"GOLPE LIMPIO {CLEAN_STRIKE_BASE_DAMAGE}+{CLEAN_STRIKE_BONUS}",
-            Ability.GUARD_ENERGY: f"GUARDIA +{card.energy_bonus} ENERGÍA",
+            Ability.TRIPARTITE_STRIKE: (
+                f"COMBO ESPECIAL {card.atk * ZONE_HIT_DAMAGE + SPECIAL_COMBO_BONUS}"
+            ),
+            Ability.HEALER: f"CURACIÓN +{HEALER_HEAL_AMOUNT} VIDA",
         }.get(card.ability, "ESPECIAL")
         d.rounded_rectangle([x0 + 70, 352, x1 - 70, 380], radius=10, fill=dark + (235,), outline=gold, width=2)
         _text_center(d, (W // 2, 366), label, 16, stroke_w=2)

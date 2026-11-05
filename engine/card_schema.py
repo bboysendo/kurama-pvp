@@ -5,12 +5,28 @@ Basado en PVP_Rules/PVP KURAMARUN....md, con la revisión del creador del
 02/11/2026: unicidad total — 16 cartas BASE, una por cada combinación ATK/DEF
 de 0 a 3 (ataque 3/3..0/0 y su inverso defensivo), sin repeticiones. Revisión
 del 03/11/2026: las 16 base cuestan SIEMPRE 1 de energía y se añaden 7 cartas
-ESPECIALES de coste 2 (4 de Golpe Limpio y 3 femeninas de Guardia Vital, ver
-Ability). Una especial puede compartir ATK/DEF con una base: la unicidad se
-mide por (ATK, DEF, habilidad). Coste de energía 1-2, zonas de impacto
-Cabeza/Tronco/Piernas, daño real = max(0, ATK atacante - DEF rival). Ver ese documento para la justificación completa de cada regla; este
-módulo solo modela la ESTRUCTURA de una carta, no la lógica de combate (eso
-vive en pvp_engine.py).
+ESPECIALES de coste 2. Una especial puede compartir ATK/DEF con una base: la
+unicidad se mide por (ATK, DEF, habilidad).
+
+Reglas DEFINITIVAS de Sendo (05/11/2026) — sistema de ZONAS MÚLTIPLES:
+- ATK y DEF ya no son "puntos de daño": son NÚMERO DE ZONAS. Una carta de
+  ATK N marca hasta N zonas de ataque DISTINTAS (nunca 2 ataques de la misma
+  carta en la misma zona); igual con DEF y las zonas de defensa. Tampoco se
+  repiten zonas entre cartas distintas del mismo turno: cada zona admite 1
+  ataque y 1 defensa tuyos por turno. Se pueden dejar zonas sin usar.
+- Cada ataque que entra en una zona quita ZONE_HIT_DAMAGE (5). Cada defensa
+  del rival en esa zona anula UN ataque.
+- Combo Tripartito: cada zona del rival donde entra un ataque queda AFECTADA
+  (se acumula entre turnos); al completar las 3 zonas se suma
+  +TRIPARTITE_COMBO_BONUS (3) UNA SOLA VEZ por partida.
+- Especiales de ataque (TRIPARTITE_STRIKE): si TODOS sus ataques entran (usa
+  todas sus zonas y ninguno es bloqueado) suman +SPECIAL_COMBO_BONUS (3),
+  repetible cada vez: 3/0 -> 18, 2/0 -> 13, 1/0 -> 8 (5 + 3). Se acumula
+  con el +3 del Combo Tripartito si coinciden.
+- Curadoras (HEALER) 0/3, 0/2, 1/1: sin el Combo Tripartito del RIVAL
+  activado solo defienden. Con él activado, si bloquean en TODAS las zonas
+  que defienden, el jugador recibe +HEALER_HEAL_AMOUNT (3) de vida.
+La lógica de combate vive en pvp_engine.py.
 
 Este módulo es puro Python (sin dependencias externas) para poder importarse
 tanto desde el generador de catálogo, el motor de combate, el conector
@@ -67,28 +83,35 @@ class CardCategory(str, Enum):
 
 class Ability(str, Enum):
     """Habilidad especial. Las 16 cartas base no llevan ninguna (solo stats);
-    las 7 especiales llevan CLEAN_STRIKE o GUARD_ENERGY. El resto se conserva
-    por si se asigna a alguna carta más adelante."""
+    las 7 especiales llevan TRIPARTITE_STRIKE o HEALER."""
 
     NONE = "none"
-    # Especiales de ATAQUE (coste 2): si su ATK entra entero porque el rival NO tiene defensa en esa
-    # zona, el golpe hace CLEAN_STRIKE_BASE_DAMAGE + CLEAN_STRIKE_BONUS (10 + 3 = 13) en vez de su ATK.
-    # Si el rival la bloquea (cualquier DEF en esa zona), el combo se anula: daño normal ATK − DEF.
-    CLEAN_STRIKE = "clean_strike"
-    # Especiales FEMENINAS de Defensa/Vida (coste 2): si el rival ataca su zona de defensa y el bloqueo
-    # es TOTAL (0 daño en esa zona), el jugador recupera `energy_bonus` de energía (sin pasar de MAX_ENERGY).
-    GUARD_ENERGY = "guard_energy"
-    LIFESTEAL = "lifesteal"       # Cura al atacante según el daño que hace en su zona
-    COMBO_STRIKE = "combo_strike"  # +daño si ese turno se dañan 2 o 3 zonas a la vez
-    HEAL_POTION = "heal_potion"   # (sin cartas) Bloquea la zona y convierte el daño en HP
-    PIERCING = "piercing"         # (sin cartas) Ignora la defensa rival de esa zona
-    COUNTER = "counter"           # (sin cartas) Devuelve daño si el rival no ataca esa zona
+    # Especiales de ATAQUE (3/0, 2/0, 2/2, 1/0 — coste 2): Combo Especial. Si usa TODAS sus zonas
+    # de ataque y NINGUNO de sus ataques es bloqueado: +SPECIAL_COMBO_BONUS (3) al daño base, cada vez.
+    TRIPARTITE_STRIKE = "tripartite_strike"
+    # Especiales de CURACIÓN (0/3, 0/2, 1/1 — coste 2): si cubren TODAS sus zonas de defensa,
+    # el jugador recibe +HEALER_HEAL_AMOUNT (3) de vida SOLO si el rival ya activó su Combo Tripartito
+    # y la curadora bloquea en todas las zonas que defiende. Si no, solo defiende. Nunca da energía.
+    HEALER = "healer"
+    # Habilidades heredadas del sistema anterior (1 zona por carta). Ninguna carta las lleva y el
+    # motor de zonas múltiples NO les da efecto: se conservan solo para poder leer datos antiguos.
+    LIFESTEAL = "lifesteal"
+    COMBO_STRIKE = "combo_strike"
+    HEAL_POTION = "heal_potion"
+    PIERCING = "piercing"
+    COUNTER = "counter"
+
+    @classmethod
+    def _missing_(cls, value):
+        # Nombres antiguos (catálogos/partidas guardados antes del 05/11/2026).
+        legacy = {"clean_strike": cls.TRIPARTITE_STRIKE, "guard_energy": cls.HEALER}
+        return legacy.get(value)
 
 
 BASE_CARD_COST = 1      # Las 16 cartas base: coste FIJO de 1 (revisión del 03/11/2026)
 SPECIAL_CARD_COST = 2   # Las 7 especiales (y las habilidades antiguas poción/perforante/counter)
 SPECIAL_COST_ABILITIES = frozenset({
-    Ability.CLEAN_STRIKE, Ability.GUARD_ENERGY, Ability.HEAL_POTION, Ability.PIERCING, Ability.COUNTER,
+    Ability.TRIPARTITE_STRIKE, Ability.HEALER, Ability.HEAL_POTION, Ability.PIERCING, Ability.COUNTER,
 })
 
 
@@ -120,7 +143,7 @@ class Card:
     heal_amount: int = 0
     # Solo relevante para ability=COUNTER: daño que devuelve si el rival no ataca esa zona.
     counter_damage: int = 0
-    # Solo relevante para ability=GUARD_ENERGY: energía que recupera al bloquear del todo un ataque.
+    # Heredado de la antigua Guardia Vital (energía al bloquear): ya sin efecto en el motor.
     energy_bonus: int = 0
     cost_energy: int = field(default=0)  # se recalcula siempre en __post_init__
     # Token del NFT (GAMENFT/fox_<id>.png) usado como ilustración, si aplica.
@@ -182,20 +205,18 @@ HAND_SIZE = 3            # Cartas robadas por turno
 STARTING_ENERGY = 3      # Energía inicial (sección 2.2)
 MAX_ENERGY = 3           # Tope ABSOLUTO del acumulador de energía: nunca puede superar 3
 ENERGY_PER_TURN = 1      # Energía ganada por turno subsiguiente (sin pasar de MAX_ENERGY)
-# Gasto máximo por turno = el tope de energía (3): permite jugar hasta 3 cartas
-# de coste 1 en las 3 zonas a la vez (necesario para el Combo Simultáneo de 3
-# zonas). Antes era 2 (sección 2.2 del documento original).
+# Gasto máximo por turno = el tope de energía (3): con 3 de energía puedes jugar
+# 3 cartas de coste 1 en el mismo turno, repartiendo sus zonas sin solaparse
+# (1 ataque y 1 defensa por zona y turno). Antes era 2 (sección 2.2).
 MAX_ENERGY_SPEND_PER_TURN = MAX_ENERGY
 TURN_TIMER_SECONDS = 30   # Temporizador por turno (antes 20s: poco para elegir varias cartas y sus zonas)
 INACTIVITY_LIMIT = 3       # Turnos SEGUIDOS sin jugar ninguna carta => derrota por inactividad
 MATCHMAKING_SECONDS = 60  # Búsqueda de rival humano antes de asignar un BOT
-TRIPARTITE_COMBO_BONUS = 3     # +3 HP de daño extra al completar las 3 zonas
-# Cartas especiales COMBO_STRIKE: daño extra (una vez por turno) si ese mismo
-# turno el jugador daña 2 o 3 zonas distintas del rival a la vez.
-SIMULTANEOUS_COMBO_BONUS = {2: 2, 3: 4}
-# Especiales de Golpe Limpio (CLEAN_STRIKE): daño de un golpe que entra sin ninguna defensa.
-CLEAN_STRIKE_BASE_DAMAGE = 10
-CLEAN_STRIKE_BONUS = 3          # «plus de regalo»: 10 + 3 = 13 en total
-CRITICAL_COMBO_DAMAGE = 20     # Daño directo de ataque pesado en combo máximo
+# --- Reglas definitivas de zonas (Sendo, 05/11/2026) ---
+NUM_ZONES = 3                  # Cabeza, Tronco, Piernas: máximo de zonas que puede marcar una carta
+ZONE_HIT_DAMAGE = 5            # Daño base de cada ataque que entra en una zona
+TRIPARTITE_COMBO_BONUS = 3     # +3 UNA vez por partida al tener afectadas (tocadas) las 3 zonas del rival
+SPECIAL_COMBO_BONUS = 3        # +3 de una especial de ataque si TODOS sus ataques entran (repetible)
+HEALER_HEAL_AMOUNT = 3         # +3 de vida de una curadora (combo rival activo + bloquea en todas sus zonas)
 CASHOUT_BATTLE_REQUIREMENT = 300  # Batallas PvP acumuladas para poder retirar fondos
 FREE_DAILY_MATCH_LIMIT = 10        # Límite diario de partidas para usuarios Free
