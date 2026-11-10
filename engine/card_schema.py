@@ -202,7 +202,7 @@ BASE_HP_BY_RARITY: dict[NFTRarity, int] = {
 # Tamaño del mazo: las 16 cartas base + las 7 especiales, todas en cada partida (antes 16).
 DECK_SIZE = 23
 HAND_SIZE = 3            # Cartas robadas por turno
-STARTING_ENERGY = 3      # Energía inicial (sección 2.2)
+STARTING_ENERGY = 2      # Energía inicial: ambos jugadores arrancan con 2 (el tope sigue en MAX_ENERGY)
 MAX_ENERGY = 3           # Tope ABSOLUTO del acumulador de energía: nunca puede superar 3
 ENERGY_PER_TURN = 1      # Energía ganada por turno subsiguiente (sin pasar de MAX_ENERGY)
 # Gasto máximo por turno = el tope de energía (3): con 3 de energía puedes jugar

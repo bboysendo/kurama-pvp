@@ -37,8 +37,7 @@ PVP/
   y su inverso defensivo 2/3, 1/3, 0/3, 1/2, 0/2, 0/1. Ninguna carta ni combinación se repite en el catálogo, el mazo
   (16 cartas = el set completo) ni la mano. 10 usan los artes de `CARDS/` (Raging Earthquake = 1/2) y 6 usan zorros NFT
   de `GAMENFT/`. No hay cartas especiales repetibles.
-- **Modo Free**: sin ELO, sin cristales y sin $KUR. **Competitivo / Retos 1v1**: los NFT con cristales
-  (hoy: rareza Épica o Legendaria) ganan +35 ELO en vez de +25 y +3 $KUR extra al ganar.
+- **Cristales, acceso y modos**: ver "Economía y reglas de negocio" más abajo (reglas definitivas 10/11/2026).
 
 ## Cómo jugar en local
 
@@ -59,3 +58,36 @@ Abre el enlace que imprime Streamlit (normalmente `http://localhost:8501`). La w
 - **Cristales reales**: `CRYSTAL_RARITIES` en `blockchain_connector.py` usa la rareza placeholder; sustituir por el dato real de cristales cuando exista.
 - **Ejecución real de comisiones/recompensas en KUR**: `compute_match_economy()` solo calcula importes; moverlos on-chain debe hacerlo el backend con custodia de claves que ya tengáis (igual que hace kasman con su pool de KAS), nunca este conector de lectura.
 - **Energía/turnos síncronos**: el documento de reglas tiene un par de puntos ambiguos (tope de gasto vs. acumulación de energía, exactamente cómo se resuelve "combo máximo") resueltos con un criterio explícito y comentado en `pvp_engine.py` — fácil de ajustar si el equipo de diseño quiso decir otra cosa.
+
+## Economía y reglas de negocio (servidor, sin contratos) — `engine/economy_rules.py`
+
+Libro mayor interno en Python puro (sin Streamlit ni web3): saldos $KUR / $KUSD, cristales, Elo,
+cupo diario Free, histórico de combates, escrow de retos y comisión de la casa. Validado con
+`python engine/test_economy_rules.py`. Todas las cifras son constantes al principio del módulo.
+Reglas definitivas (10/11/2026):
+
+| Regla | Dónde |
+|---|---|
+| **Acceso**: NFT **o** 300 combates totales (Free + Competitivo, histórico) → desbloquea Competitivo, depósitos y retiradas. Sin acceso solo quedan las 10 Free diarias (el camino hacia los 300) | `Account.access_unlocked` · `access_status(w)` · `deposit()` / `withdraw()` |
+| **Free con cristales** (solo NFT): apuesta 1 💎 cada uno; gana → cristales en juego, +20 Elo, +3 $KUR; pierde → −10 Elo y su cristal; 60 s sin rival real → Bot (aporta el otro cristal) | `create_challenge(w, ChallengeKind.FREE)` (la variante la decide el NFT) · `process_expired()` · `report_result()` |
+| **Free sin cristales** (solo SIN NFT): 10 al día (UTC), sin apuesta ni $KUR, ±10 Elo; 60 s sin rival real → Bot | ídem · `free_ranked_remaining(w)` |
+| **Competitivo** ($KUR / $KUSD): ilimitado, sin cristales, escrow, ganador = bote − 10 %, empate = reembolso, ±25 Elo. **Cero bots**: a los 60 s la búsqueda se relanza (`Challenge.relaunches`) hasta que acepte un jugador real o el creador cancele | `create_challenge(w, ChallengeKind.MONEY, stake, Currency.KUR \| KUSD)` |
+| Lista pública: cada cuenta ve solo los retos que puede aceptar (su variante de Free, o los competitivos) | `visible_challenges(viewer, kind=None)` |
+| Cristales del runner / evolución de rareza 20·50·100 | `grant_crystals()` · `evolve_nft()` |
+| Saldo traído de la wallet por el servidor (no es depósito del usuario, no pasa el control de acceso) | `sync_balance()` |
+
+En el dashboard: panel de acceso (🔓/🔒 + progreso hacia 300) con **💼 Depositar / Retirar**, el
+Competitivo y "🤝 Retos 1v1" van por el escrow del libro mayor, y en "🛠️ Configuración" hay un campo
+de pruebas para fijar los combates jugados. Hotseat es práctica local sin economía. Como no hay
+backend multijugador, los "jugadores reales" de la lista son cuentas simuladas (`sim:*`) cuyas
+jugadas mueve el equipo local; aun así el libro mayor nunca asigna un bot en Competitivo.
+
+### Minimarket (para Milton)
+
+- Publicar: `list_item(vendedor, tipo, cantidad, precio_kusd)` — el ítem queda en escrow.
+- Comprar: `buy_listing(comprador, listing_id)` — cobra $KUSD, la casa se queda el 10 % (`HOUSE_FEE_PCT`), el vendedor recibe el 90 %.
+- Retirar: `cancel_listing(vendedor, listing_id)` · Listar: `open_listings(tipo)`.
+- `crystals` viene registrado (cualquiera con cristales puede venderlos). Para un ítem nuevo:
+  `register_item_type("skin", take=fn_quitar, give=fn_entregar, requires_unlock=True)` — con
+  `requires_unlock=True` solo venden cuentas con NFT o con 300 combates.
+- Comisiones acumuladas: `server.house` · auditoría de cada movimiento: `server.journal` · persistencia: `to_json()` / `EconomyServer.from_json()`.

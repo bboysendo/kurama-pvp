@@ -50,7 +50,7 @@ REGLAS DEFINITIVAS DE COMBATE (Sendo, 05/11/2026) — sistema de zonas múltiple
 Resto de reglas (sin cambios):
 - Turno síncrono: las dos direcciones de daño se calculan sobre el mismo
   estado de inicio de turno y la vida se aplica a la vez (posible empate).
-- Energía: empieza en STARTING_ENERGY (3); al cerrar el turno se resta lo
+- Energía: empieza en STARTING_ENERGY (2); al cerrar el turno se resta lo
   gastado y se recupera +ENERGY_PER_TURN, sin superar nunca MAX_ENERGY (3).
 - Mazo y mano: unicidad total — nunca dos cartas iguales ni dos con la
   misma combinación (ATK, DEF, habilidad) (build_deck_from_pool / _draw).

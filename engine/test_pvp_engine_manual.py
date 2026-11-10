@@ -56,6 +56,7 @@ assert ZONE_HIT_DAMAGE == 5 and TRIPARTITE_COMBO_BONUS == 3 and SPECIAL_COMBO_BO
 # ================= Regla 1: zonas únicas por carta =================
 m = start_match([mk("x", 0, 0)] * 30, [mk("y", 0, 0)] * 30, hp_a=50, hp_b=50, seed=1)
 m.player_a.hand = [mk("a3", 3, 0), mk("d3", 0, 3), mk("h21", 2, 1)]
+m.player_a.energy = 3  # este bloque prueba zonas con 3 cartas (energía inicial real = 2)
 print("repetir zona:", must_fail(play_card, m, "a", "a3", [H, H, T], []))
 print("más zonas que ATK:", must_fail(play_card, m, "a", "h21", [H, T, L], []))
 print("más zonas que DEF:", must_fail(play_card, m, "a", "h21", [H], [H, T]))
@@ -241,7 +242,7 @@ def heal_duel(a_plays, b_healer, b_zones, a_combo=True, b_hp=40, b_combo=False):
 # 1) Combo rival activo + bloquea en TODAS sus zonas -> +3 de vida (las 3 curadoras).
 m, e0 = heal_duel([(mk("a3", 3, 0), ALL)], mk("hl", 0, 3, HEAL), ALL)
 assert m.player_b.hp == 43, m.player_b.hp                        # 0 daño (todo bloqueado) + 3
-assert m.player_b.energy == 2, m.player_b.energy                 # 3 - 2 (coste) + 1: NUNCA energía extra
+assert m.player_b.energy == 1, m.player_b.energy                 # 2 (inicial) - 2 (coste) + 1: NUNCA energía extra
 assert any("+3 de vida" in l and "Combo Tripartito rival activo" in l for l in m.log)
 m, _ = heal_duel([(mk("a2", 2, 0), [H, T])], mk("hl", 0, 2, HEAL), [H, T])
 assert m.player_b.hp == 43, m.player_b.hp
@@ -264,7 +265,7 @@ assert m.player_b.hp == 35 and any("no defendió ninguna zona" in l for l in m.l
 
 # 3) SIN el Combo Tripartito del rival: solo defiende (bloquea), nada de vida ni de energía.
 m, e0 = heal_duel([(mk("a3", 3, 0), ALL)], mk("hl", 0, 3, HEAL), ALL, a_combo=False)
-assert m.player_b.hp == 40 and m.player_b.energy == 2, (m.player_b.hp, m.player_b.energy)
+assert m.player_b.hp == 40 and m.player_b.energy == 1, (m.player_b.hp, m.player_b.energy)  # 2 - 2 + 1
 assert any("solo defiende" in l for l in m.log)
 assert m.player_a.last_turn.blocked == {"head": 1, "torso": 1, "legs": 1}        # pero bloquea como cualquiera
 # Es el combo del RIVAL el que cuenta: que el dueño de la curadora tenga el suyo no sirve.
@@ -297,6 +298,7 @@ assert m.player_a.energy == 1, m.player_a.energy                 # 3 - 3 + 1
 assert m.player_b.hp == 50 - 10, m.player_b.hp                   # 3 ataques, Cabeza bloqueada; sin Tripartito
 m = start_match([mk("x", 0, 0)] * 30, [mk("y", 0, 0)] * 30, hp_a=50, hp_b=50, seed=5)
 m.player_a.hand = [mk("sp", 3, 0, TRI), mk("c1", 1, 0), mk("c2", 1, 1)]
+m.player_a.energy = 3  # turno con el tope lleno (la energía inicial real es 2)
 play_card(m, "a", "sp", ALL, [])                                 # coste 2
 must_fail(play_card, m, "a", "c1", [H], [])                       # Cabeza ya la ataca la especial
 play_card(m, "a", "c1", [], [])                                  # sin zonas libres: se juega sin marcar
@@ -332,14 +334,18 @@ print("snapshot OK")
 
 # --- Energía: el acumulador nunca supera MAX_ENERGY y se recupera +1 por turno ---
 m = start_match([mk("e", 1, 0)] * 30, [mk("f", 0, 1)] * 30, hp_a=999, hp_b=999, seed=20)
-assert m.player_a.energy == 3
+assert m.player_a.energy == 2 and m.player_b.energy == 2  # energía inicial = 2 para ambos
 m.player_a.hand = [mk("s2", 2, 0, TRI), mk("c1", 1, 0), mk("c0", 0, 1)]
 play_card(m, "a", "s2", [H, T], [])
-play_card(m, "a", "c1", [L], [])
+try:  # 2 + 1 > 2 de energía inicial: no se puede
+    play_card(m, "a", "c1", [L], [])
+    raise AssertionError("debió fallar por energía")
+except EngineError:
+    pass
 end_turn(m)
 assert m.player_a.energy == 1, m.player_a.energy
 end_turn(m); assert m.player_a.energy == 2
-end_turn(m); end_turn(m); assert m.player_a.energy == 3
+end_turn(m); end_turn(m); assert m.player_a.energy == 3  # tope MAX_ENERGY
 print("energy spend/regen OK")
 
 # --- Inactividad: SOLO cuando se agota el tiempo sin actuar 3 turnos seguidos ---

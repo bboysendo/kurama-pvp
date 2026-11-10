@@ -43,16 +43,31 @@ if str(_MARKETPLACE_DIR) not in sys.path:
 import kurama_theme  # noqa: E402
 import marketplace_app  # noqa: E402  (MARKETPLACE/ — ver render_marketplace_panel() más abajo)
 
+from economy_rules import (  # noqa: E402  (reglas de acceso / cristales / retos — servidor)
+    ACCESS_BATTLES_REQUIRED,
+    BOT,
+    CHALLENGE_EXPIRY_SECONDS,
+    CRYSTAL_ELO_LOSS,
+    CRYSTAL_ELO_WIN,
+    CRYSTAL_STAKE,
+    CRYSTAL_WIN_KUR_REWARD,
+    FREE_DAILY_RANKED_LIMIT,
+    FREE_RANKED_ELO_LOSS,
+    FREE_RANKED_ELO_WIN,
+    HOUSE_FEE_PCT,
+    MONEY_ELO_LOSS,
+    MONEY_ELO_WIN,
+    ChallengeKind,
+    ChallengeStatus,
+    Currency,
+    EconomyError,
+    EconomyServer,
+)
 from blockchain_connector import (
-    CRYSTAL_ELO_WIN_BONUS,
-    CRYSTAL_KUR_WIN_BONUS,
     DECK_STAT_BUFF_PCT,
-    MATCH_FEE_PCT,
     BlockchainConnector,
     apply_nft_buffs_to_deck,
     compute_base_hp,
-    compute_challenge_payout,
-    compute_match_economy,
     derive_placeholder_rarity,
     has_crystals,
 )
@@ -203,8 +218,11 @@ def init_state() -> None:
     # leen y escriben estas mismas claves (mismo key= en el widget de la
     # barra lateral; la de arriba son botones que las fijan y hacen
     # st.rerun() antes de que ese widget se instancie, igual que panel_mode).
-    if "match_mode" not in st.session_state:
-        st.session_state.match_mode = "free"
+    if not st.session_state.get("match_mode"):
+        # Streamlit borra el estado del widget de Modo mientras no se dibuja
+        # (durante la partida): se recupera el último modo elegido para no
+        # devolver a Free a quien venía de jugar Competitivo.
+        st.session_state.match_mode = st.session_state.get("_match_mode_keep") or "free"
     if "opponent_choice" not in st.session_state:
         st.session_state.opponent_choice = "Bot" if st.session_state.vs_bot else "Hotseat (2 jugadores locales)"
     if st.session_state.pop("_force_opponent_bot", False):
@@ -216,13 +234,24 @@ def init_state() -> None:
         # Deja esta bandera y el próximo rerun la aplica aquí, bien arriba,
         # antes de que ese widget exista.
         st.session_state.opponent_choice = "Bot"
+    if st.session_state.pop("_force_mode_competitive", False):
+        # "🤝 Retos 1v1" publica un reto competitivo y salta a Batalla: el
+        # modo se fija aquí, antes de que exista el widget de Modo.
+        st.session_state.match_mode = "competitive"
+    st.session_state["_match_mode_keep"] = st.session_state.match_mode
     # Búsqueda de rival humano (matchmaking) antes de caer a BOT, Reto 1v1
     # activo y si ya se acreditó la recompensa/pozo de la partida en curso —
     # ver render_bot_challenges_feed / render_challenges_panel más abajo.
     st.session_state.setdefault("matchmaking_start", None)
-    st.session_state.setdefault("active_challenge", None)
     st.session_state.setdefault("match_economy_mode", None)
     st.session_state.setdefault("match_reward_settled", False)
+    # Libro mayor (economy_rules.EconomyServer): acceso NFT/300 combates,
+    # cristales del jugador, cupo diario Free, escrow de retos, bots (solo
+    # Free), Elo y premios.
+    st.session_state.setdefault("economy", EconomyServer())
+    st.session_state.setdefault("own_challenge_id", None)     # reto propio abierto (Free o Competitivo)
+    st.session_state.setdefault("match_challenge_id", None)   # reto de la partida en curso
+    st.session_state.setdefault("sim_challenge_meta", {})     # nombre/Fox de los retadores simulados
     # Selección táctica de la ronda actual — SELECCIÓN MÚLTIPLE: varias
     # cartas a la vez mientras su coste total quepa en la energía del turno.
     #   sel_cards_{pk}:   ids elegidos, en orden de selección (orden de juego)
@@ -236,7 +265,131 @@ def init_state() -> None:
         st.session_state.setdefault(f"zones_{_pk}", {})
 
 
-def equipped_has_crystals(connector: BlockchainConnector, wallet_address: str) -> bool:
+def econ_server() -> EconomyServer:
+    return st.session_state.economy
+
+
+def player_crystals(wallet_address: str) -> int:
+    """Cristales del JUGADOR (pertenecen a la cuenta, no al NFT)."""
+    return econ_server().account(wallet_address).crystals
+
+
+def player_has_crystals(wallet_address: str) -> bool:
+    return player_crystals(wallet_address) > 0
+
+
+def sync_economy(connector: BlockchainConnector, wallet_address: str) -> None:
+    """Vuelca en el libro mayor lo que vive en la wallet (simulada o real):
+    sus NFT (deciden el acceso y la variante de Free) y su saldo $KUR. Es un
+    ajuste de servidor, no un depósito del usuario (ver sync_balance)."""
+    econ = econ_server()
+    econ.set_nfts(wallet_address, connector.owned_token_ids(wallet_address))
+    econ.sync_balance(wallet_address, Currency.KUR, connector.kur_balance(wallet_address))
+
+
+def push_kur(connector: BlockchainConnector, wallet_address: str) -> None:
+    """Tras cualquier movimiento del libro mayor (escrow, premio, depósito,
+    retiro) se refleja el saldo $KUR resultante en la wallet."""
+    if connector.simulated_backend is not None:
+        connector.simulated_backend.seed_wallet(
+            wallet_address, connector.owned_token_ids(wallet_address),
+            econ_server().account(wallet_address).balances[Currency.KUR.value],
+        )
+
+
+def player_has_nft(wallet_address: str) -> bool:
+    return econ_server().account(wallet_address).has_nft
+
+
+CRYSTAL_SELECTOR_OPTIONS = [0, 1, 2, 3, 4, 5]
+
+
+def crystal_status_text(wallet_address: str) -> tuple[str, bool]:
+    """(texto, ok) — qué variante de Free le toca a la cuenta y si puede jugarla."""
+    econ = econ_server()
+    n = player_crystals(wallet_address)
+    if player_has_nft(wallet_address):
+        if n >= CRYSTAL_STAKE:
+            return f"💎 {n} cristal{'es' if n != 1 else ''} · Free con cristales: apuestas {CRYSTAL_STAKE} por partida", True
+        return "⚠️ Con NFT el Free se juega con cristales: necesitas al menos 1 💎", False
+    left = econ.free_ranked_remaining(wallet_address)
+    extra = " (sin NFT los cristales no se usan en PvP)" if n else ""
+    return f"🎟️ Free sin cristales: {left}/{FREE_DAILY_RANKED_LIMIT} partidas hoy{extra}", left > 0
+
+
+def render_crystal_selector(wallet_address: str) -> None:
+    """Saldo de cristales del jugador (panel izquierdo). El valor mostrado
+    es SIEMPRE el del libro mayor (los cristales se apuestan y se ganan en
+    Free con cristales); el selector 0-5 es una herramienta de pruebas que
+    fija ese saldo al pulsarlo, nunca lo pisa en cada rerun."""
+    n = player_crystals(wallet_address)
+    options = sorted(set(CRYSTAL_SELECTOR_OPTIONS) | {n})
+    st.session_state["player_crystals_widget"] = n
+
+    def _store_crystals() -> None:
+        v = st.session_state.get("player_crystals_widget")
+        if v is not None:  # volver a pulsar el valor activo lo deselecciona: se ignora
+            econ_server().set_crystals(wallet_address, int(v))
+
+    text, ok = crystal_status_text(wallet_address)
+    with st.container(key="crystal_selector"):
+        st.markdown("<div class='crystal-sel-title'>💎 CRISTALES DEL JUGADOR</div>", unsafe_allow_html=True)
+        st.segmented_control(
+            "Cristales del jugador",
+            options=options,
+            key="player_crystals_widget",
+            on_change=_store_crystals,
+            label_visibility="collapsed",
+            help="Saldo de cristales (pulsar fija el saldo — herramienta de pruebas). "
+                 f"Con NFT: Free con cristales, apuestas {CRYSTAL_STAKE} 💎 por partida. "
+                 f"Sin NFT: Free sin cristales, {FREE_DAILY_RANKED_LIMIT} partidas al día. "
+                 "El Competitivo no usa cristales.",
+        )
+        st.markdown(
+            f"<div class='crystal-sel-status {'unlimited' if ok else 'limited'}'>{text}</div>",
+            unsafe_allow_html=True,
+        )
+
+
+def render_access_panel(connector: BlockchainConnector, wallet_address: str) -> None:
+    """Requisito general de acceso (NFT o 300 combates) + depósito/retirada
+    de $KUR, que solo funcionan con la cuenta desbloqueada."""
+    econ = econ_server()
+    status = econ.access_status(wallet_address)
+    with st.container(key="access_panel"):
+        if status["unlocked_by"] == "nft":
+            st.success("🔓 Acceso completo (tienes NFT): Competitivo, depósitos y retiradas.")
+        elif status["unlocked_by"] == "battles":
+            st.success(f"🔓 Acceso completo ({status['battles_total']} combates): "
+                       "Competitivo, depósitos y retiradas.")
+        else:
+            done = status["battles_total"]
+            st.warning(
+                f"🔒 Sin NFT y con {done}/{ACCESS_BATTLES_REQUIRED} combates: Competitivo, depósitos y "
+                f"retiradas bloqueados. Juega tus {FREE_DAILY_RANKED_LIMIT} Free diarias para llegar a "
+                f"{ACCESS_BATTLES_REQUIRED} (o consigue un NFT)."
+            )
+            st.progress(min(1.0, done / ACCESS_BATTLES_REQUIRED))
+        with st.expander("💼 Depositar / Retirar $KUR"):
+            amount = st.number_input("Importe ($KUR)", min_value=0.0, value=10.0, step=5.0, key="cash_amount")
+            c_dep, c_wd = st.columns(2)
+            dep = c_dep.button("⬇️ Depositar", key="cash_deposit", width="stretch",
+                               disabled=not status["unlocked"])
+            wd = c_wd.button("⬆️ Retirar", key="cash_withdraw", width="stretch",
+                             disabled=not status["unlocked"])
+            if not status["unlocked"]:
+                st.caption(f"🔒 Necesitas un NFT o {ACCESS_BATTLES_REQUIRED} combates para mover fondos.")
+            if dep or wd:
+                try:
+                    (econ.deposit if dep else econ.withdraw)(wallet_address, Currency.KUR, amount)
+                except EconomyError as e:
+                    st.error(f"⚠️ {e}")
+                else:
+                    push_kur(connector, wallet_address)
+                    st.rerun()
+
+
+def _legacy_equipped_has_crystals(connector: BlockchainConnector, wallet_address: str) -> bool:
     """¿El Maestro equipado es un NFT con cristales (Épico/Legendario)? Solo
     se usa en modo Competitivo y en Retos 1v1 — en Free los cristales no
     existen (ni se muestran ni cuentan)."""
@@ -414,9 +567,9 @@ TUTORIAL_STEPS = [
         "zone": None,
         "text": (
             "Tú y el rival empezáis con la misma vida (depende de vuestra rareza de NFT — "
-            f"aquí usamos 50 HP de ejemplo) y {HAND_SIZE} cartas en la mano. Tienes "
-            f"{MAX_ENERGY} de energía (el máximo): cada carta que juegas resta su coste y cada turno "
-            f"recuperas +{ENERGY_PER_TURN}. En cada carta, **cada punto de ATK es una zona que puedes "
+            f"aquí usamos 50 HP de ejemplo) y {HAND_SIZE} cartas en la mano. Empiezas con "
+            f"{STARTING_ENERGY} de energía (el máximo es {MAX_ENERGY}): cada carta que juegas resta su coste y "
+            f"cada turno recuperas +{ENERGY_PER_TURN}. En cada carta, **cada punto de ATK es una zona que puedes "
             "atacar y cada punto de DEF una zona que puedes defender** (Cabeza, Tronco o Piernas), "
             "siempre zonas distintas dentro de la misma carta."
         ),
@@ -806,10 +959,17 @@ def render_marketplace_panel(connector: BlockchainConnector, wallet_address: str
 # --------------------------------------------------------------------------- #
 def _reset_match_mode_if_empty() -> None:
     if st.session_state.get("match_mode") is None:
-        st.session_state.match_mode = "free"
+        st.session_state.match_mode = st.session_state.get("_match_mode_keep") or "free"
+    st.session_state["_match_mode_keep"] = st.session_state.match_mode
 
 
 def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, card_pool: list[Card]) -> None:
+    # Re-fijar la clave antes del widget: Streamlit borra el estado de un
+    # widget que no se dibuja (durante la partida) y al volver al lobby el
+    # selector salía sin ninguna opción marcada.
+    st.session_state["match_mode"] = (
+        st.session_state.get("match_mode") or st.session_state.get("_match_mode_keep") or "free"
+    )
     with st.container(key="battle_mode_bar"):
         st.segmented_control(
             "Modo",
@@ -834,33 +994,42 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
             # dibuje sus botones nativos de +/- al enfocarlo — en una columna
             # angosta (como dentro de nft_action_col) el contenedor no tiene
             # los ~150px que esos botones necesitan y quedan recortados.
+            acc = econ_server().account(wallet_address)
+            if not acc.access_unlocked:
+                st.warning(
+                    f"🔒 Competitivo bloqueado: necesitas un NFT o {ACCESS_BATTLES_REQUIRED} combates "
+                    f"(llevas {acc.battles_total})."
+                )
+                return
             stake = st.number_input(
                 "Apuesta en KUR", min_value=0.0, value=10.0, step=1.0, key="navbar_stake"
             )
-            crystals = equipped_has_crystals(connector, wallet_address)
-            economy = compute_match_economy(st.session_state.match_mode, stake, crystals=crystals)
-            # Bote real (ambos jugadores igualan la apuesta) y comisión sobre
-            # ESE bote, no sobre la apuesta de uno solo — mismo cálculo que
-            # la liquidación final (ver "state['status'] != ONGOING" más
-            # abajo), para que la estimación de antes de jugar coincida con
-            # lo que de verdad se acredita al ganar.
+            # Bote real (ambos jugadores igualan la apuesta) y comisión de la
+            # casa sobre ESE bote — mismo cálculo que economy_rules.report_result.
             pot = stake * 2
-            fee = round(pot * MATCH_FEE_PCT, 2)
-            premio = round(pot - fee + economy.crystal_kur_bonus, 2)
-            crystal_txt = (
-                f" (incluye 💎 +{CRYSTAL_KUR_WIN_BONUS:.0f} KUR y +{CRYSTAL_ELO_WIN_BONUS} ELO por cristales)"
-                if crystals else ""
-            )
+            fee = round(pot * HOUSE_FEE_PCT, 2)
             st.caption(
-                f"Victoria: +{economy.win_elo} ELO · +{premio:.2f} KUR "
-                f"(bote {pot:.2f} − comisión {fee:.2f}) · "
-                f"Derrota: {economy.loss_elo} ELO{crystal_txt}"
+                f"Victoria: +{MONEY_ELO_WIN} Elo · +{pot - fee:.2f} KUR (bote {pot:.2f} − comisión "
+                f"{HOUSE_FEE_PCT:.0%}) · Derrota: {MONEY_ELO_LOSS} Elo y tu apuesta · Sin cristales y sin "
+                f"límite diario · CERO bots: si nadie acepta en {CHALLENGE_EXPIRY_SECONDS} s se relanza "
+                f"la búsqueda · Elo {acc.elo}"
             )
         else:
-            # Modo Free: partida de práctica — sin ELO, sin cristales y sin
-            # $KUR en juego (petición del creador: esos datos solo existen
-            # en modo Competitivo).
-            st.caption("Modo Free: partida de práctica, sin apuestas ni ranking.")
+            acc = econ_server().account(wallet_address)
+            if acc.has_nft:
+                st.caption(
+                    f"💎 Free con cristales: apuestas {CRYSTAL_STAKE} 💎 (tienes {acc.crystals}) · "
+                    f"Victoria: te llevas los cristales en juego, +{CRYSTAL_ELO_WIN} Elo y "
+                    f"+{CRYSTAL_WIN_KUR_REWARD:.0f} $KUR · Derrota: {CRYSTAL_ELO_LOSS} Elo y pierdes tu cristal · "
+                    f"{CHALLENGE_EXPIRY_SECONDS} s sin rival real → Bot · Elo {acc.elo}"
+                )
+            else:
+                left = econ_server().free_ranked_remaining(wallet_address)
+                st.caption(
+                    f"🎟️ Free sin cristales: te quedan {left}/{FREE_DAILY_RANKED_LIMIT} hoy · "
+                    f"Victoria +{FREE_RANKED_ELO_WIN} Elo · Derrota {FREE_RANKED_ELO_LOSS} Elo · sin $KUR · "
+                    f"{CHALLENGE_EXPIRY_SECONDS} s sin rival real → Bot · Elo {acc.elo}"
+                )
 
 
 # --------------------------------------------------------------------------- #
@@ -943,7 +1112,7 @@ def _end_turn_with_fx(match, timed_out: bool = False) -> None:
 def _launch_match(
     connector: BlockchainConnector, wallet_address: str, card_pool: list[Card],
     name_b: str, hp_b: int | None = None, rival_avatar_id: int | None = None,
-    stake_kur: float = 0.0,
+    stake_kur: float = 0.0, challenge_id: int | None = None,
 ) -> None:
     """Arranca una partida ya resuelta de oponente (Bot, Hotseat o rival de
     Reto 1v1) — usado tanto por 🔥 NUEVA PARTIDA como por el desenlace de
@@ -966,10 +1135,10 @@ def _launch_match(
     # ver la liquidación en el bloque "state['status'] != ONGOING" más abajo.
     st.session_state["match_stake"] = stake_kur
     st.session_state["match_reward_settled"] = False
-    # Cristales del Maestro con el que se lanza la partida (Épico/Legendario):
-    # se fija aquí para que cambiar de Maestro a mitad de partida no altere
-    # la liquidación. Solo se aplican en Competitivo / Retos 1v1.
-    st.session_state["match_crystals"] = has_crystals(rarity)
+    # Reto del libro mayor (economy_rules) al que pertenece esta partida —
+    # Free con/sin cristales o Competitivo: se liquida (Elo, cristales,
+    # $KUR, bote) al terminar. None en Hotseat (práctica local sin economía).
+    st.session_state["match_challenge_id"] = challenge_id
     # El rival/BOT no tiene "wallet" propia que consultar, así que su marco
     # no puede leer un equipped_token_id real — antes caía siempre al Fox
     # fijo DEFAULT_GAMENFT_ID (gamenft_avatar_path), por lo que el combate
@@ -1000,14 +1169,27 @@ def render_new_match_button(connector: BlockchainConnector, wallet_address: str,
                 f"supera tu saldo disponible ({balance:.2f} $KUR)."
             )
         elif st.session_state.opponent_choice == "Bot":
-            # Free/Competitivo publican nuestro propio reto en la columna
-            # de la derecha (render_bot_challenges_feed) hasta
-            # MATCHMAKING_SECONDS, luego cae a BOT; Hotseat ya tiene un
-            # rival local conocido, no necesita buscar.
-            st.session_state["matchmaking_start"] = time.time()
-            st.rerun()
+            # Publica nuestro propio reto en el libro mayor y en la columna
+            # de la derecha (render_bot_challenges_feed). Free: a los 60 s
+            # sin rival real -> Bot. Competitivo: a los 60 s se relanza, nunca
+            # Bot (apuesta en escrow hasta que alguien acepte o cancelemos).
+            # Hotseat ya tiene un rival local conocido, no necesita buscar.
+            try:
+                if is_competitive:
+                    ch = econ_server().create_challenge(wallet_address, ChallengeKind.MONEY, stake, Currency.KUR)
+                    push_kur(connector, wallet_address)
+                else:
+                    ch = econ_server().create_challenge(wallet_address, ChallengeKind.FREE)
+            except EconomyError as e:
+                st.error(f"⚠️ {e}")
+            else:
+                st.session_state["own_challenge_id"] = ch.id
+                st.session_state["matchmaking_start"] = ch.created_at
+                st.rerun()
         else:
-            _launch_match(connector, wallet_address, card_pool, name_b="Jugador B", stake_kur=stake)
+            # Hotseat: práctica local entre dos personas en el mismo equipo,
+            # sin economía (no mueve Elo, cristales ni $KUR).
+            _launch_match(connector, wallet_address, card_pool, name_b="Jugador B")
             st.rerun()
 
 
@@ -1026,58 +1208,112 @@ def render_new_match_button(connector: BlockchainConnector, wallet_address: str,
 # función que usa el selector de Maestro propio) en vez de un pool de
 # rarezas aparte, para no tener dos fuentes de verdad.
 #
-# Cada reto de bot vive en st.session_state.bot_challenges con su propio
-# expires_at (time.time() real, no una cuenta en el cliente): el temporizador
-# que se ve SÍ descuenta en vivo (JS actualiza la etiqueta/barra cada 250ms a
-# partir de ese valor), y al llegar a 0 un botón oculto fuerza un rerun real
-# que _refresh_bot_challenges() usa para descartar ese reto y generar uno
-# nuevo random. Nuestro propio reto (matchmaking_start) usa el mismo
-# mecanismo de timer_specs/botón oculto para su cuenta de MATCHMAKING_SECONDS
-# — al llegar a 0 se asigna un Bot automáticamente (_launch_match con
-# name_b="Bot"); "❌ Cancelar Reto" o aceptar el reto de otro rival de la
-# lista detienen la búsqueda propia (ambos fijan matchmaking_start a None).
+# Todos los retos (propio y ajenos, Free y Competitivo) viven en el libro
+# mayor (economy_rules) con su expires_at real: el temporizador descuenta en
+# vivo (JS cada 250ms) y al llegar a 0 un botón oculto fuerza un rerun que
+# llama a process_expired():
+#   - Free (con o sin cristales): 60 s sin retador real -> partida vs Bot.
+#   - Competitivo: 60 s sin retador real -> se RELANZA la búsqueda; nunca Bot.
+# "Cancelar Reto" o aceptar el reto de otro jugador retiran el propio y
+# devuelven lo apostado (cristal, oportunidad del día o $KUR en escrow).
 # --------------------------------------------------------------------------- #
 SIMULATED_BOT_NAME_POOL = [
     "KitsuneMaster_99", "ShadowKitsune", "CyberFox_X", "KitsuneRogue", "FireFox_99",
     "NightVixen", "PhantomFox", "BlazeKitsune", "FrostFox_7", "VoidKitsune",
+    "EmberTail", "MoonVixen", "RoninFox_21", "SakuraKit", "StormKitsune", "AshFox_88",
 ]
 BOT_CHALLENGE_COUNT = 5
+# Simulación de jugadores reales (prototipo sin backend multijugador):
+# probabilidad de que un jugador simulado acepte NUESTRO reto competitivo en
+# cada ventana de 60 s. Si no acepta nadie, la búsqueda se relanza; jamás
+# entra un bot en Competitivo.
+SIM_ACCEPT_OWN_MONEY_PROB = 0.35
 
 
-def _new_bot_challenge(rng: random.Random, taken_names: set[str], taken_ids: set[int]) -> dict:
-    st.session_state["_bot_challenge_seq"] = st.session_state.get("_bot_challenge_seq", 0) + 1
-    available_names = [n for n in SIMULATED_BOT_NAME_POOL if n not in taken_names] or SIMULATED_BOT_NAME_POOL
-    all_ids = list_gamenft_ids()
-    available_ids = [i for i in all_ids if i not in taken_ids] or all_ids
-    gamenft_id = rng.choice(available_ids)
-    duration = rng.randint(30, 60)
-    return {
-        "id": st.session_state["_bot_challenge_seq"],
-        "name": rng.choice(available_names),
-        "gamenft_id": gamenft_id,
-        "rarity": derive_placeholder_rarity(gamenft_id),
-        "duration_s": duration,
-        "expires_at": time.time() + duration,
-        "stake_kur": float(rng.randint(5, 50)),  # solo se muestra en modo Competitivo
-    }
+def _sim_meta(rng: random.Random, name: str) -> dict:
+    ids = list_gamenft_ids()
+    gid = rng.choice(ids) if ids else rng.randrange(1600)
+    return {"name": name, "gamenft_id": gid, "rarity": derive_placeholder_rarity(gid)}
 
 
-def _refresh_bot_challenges() -> None:
-    """Descarta los retos ya expirados (expires_at real contra time.time())
-    y rellena hasta BOT_CHALLENGE_COUNT con nuevos random — llamada al
-    principio de cada render del panel, cubre tanto la expiración real como
-    el hueco que deja un "Aceptar Reto"."""
+def _settle_offscreen_sim_matches(rng: random.Random) -> None:
+    """Partidas de jugadores simulados contra el bot (Free): se liquidan
+    fuera de pantalla para que sus retos salgan de la lista."""
+    econ = econ_server()
+    for ch in list(econ.challenges.values()):
+        if ch.status == ChallengeStatus.VS_BOT.value and ch.creator.startswith("sim:"):
+            econ.report_result(ch.id, rng.choice([ch.creator, BOT]))
+
+
+def _refresh_sim_challenges(wallet_address: str, competitive: bool) -> list:
+    """Lista pública de retos de jugadores reales que `wallet_address` puede
+    aceptar (economy_rules.visible_challenges). Sin backend multijugador en
+    este prototipo, esos jugadores son cuentas simuladas (sim:*) del mismo
+    libro mayor, creadas con la MISMA variante que le toca al jugador:
+      - Free con NFT    -> retadores con NFT y cristales (apuestan 1 💎)
+      - Free sin NFT    -> retadores sin NFT (Free sin cristales)
+      - Competitivo     -> retadores con NFT y saldo, apuesta en $KUR
+    Sus retos Free que nadie acepta en 60 s juegan contra un bot (fuera de
+    pantalla); sus retos competitivos que expiran se relanzan, y para que la
+    lista rote el jugador simulado se cansa y lo cancela tras un relanzamiento."""
+    econ = econ_server()
     rng = random.Random()
-    now = time.time()
-    challenges = [c for c in st.session_state.get("bot_challenges", []) if c["expires_at"] > now]
-    taken_names = {c["name"] for c in challenges}
-    taken_ids = {c["gamenft_id"] for c in challenges}
-    while len(challenges) < BOT_CHALLENGE_COUNT:
-        new = _new_bot_challenge(rng, taken_names, taken_ids)
-        taken_names.add(new["name"])
-        taken_ids.add(new["gamenft_id"])
-        challenges.append(new)
-    st.session_state.bot_challenges = challenges
+    econ.process_expired()
+    _settle_offscreen_sim_matches(rng)
+    kind = ChallengeKind.MONEY if competitive else econ.account(wallet_address).free_kind
+    if competitive:
+        for ch in list(econ.challenges.values()):
+            if (ch.creator.startswith("sim:") and ch.kind == ChallengeKind.MONEY.value
+                    and ch.status == ChallengeStatus.OPEN.value and ch.relaunches >= 1):
+                econ.cancel_challenge(ch.creator, ch.id)
+    meta = st.session_state.sim_challenge_meta
+    visible = econ.visible_challenges(wallet_address, kind)
+    tries = 0
+    while len(visible) < BOT_CHALLENGE_COUNT and tries < 40:
+        tries += 1
+        name = rng.choice(SIMULATED_BOT_NAME_POOL)
+        sim_wallet = f"sim:{name.lower()}"
+        if econ.open_challenge_of(sim_wallet):
+            continue
+        m = _sim_meta(rng, name)
+        try:
+            if kind is ChallengeKind.MONEY:
+                econ.set_nfts(sim_wallet, [m["gamenft_id"]])
+                econ.sync_balance(sim_wallet, Currency.KUR, 500.0)
+                ch = econ.create_challenge(sim_wallet, ChallengeKind.MONEY, float(rng.randint(5, 50)), Currency.KUR)
+            elif kind is ChallengeKind.CRYSTAL:
+                econ.set_nfts(sim_wallet, [m["gamenft_id"]])
+                econ.set_crystals(sim_wallet, rng.randint(1, 5))
+                ch = econ.create_challenge(sim_wallet, ChallengeKind.FREE)
+            else:
+                econ.set_nfts(sim_wallet, [])
+                ch = econ.create_challenge(sim_wallet, ChallengeKind.FREE)
+        except EconomyError:
+            continue  # p.ej. simulado sin NFT que ya agotó sus 10 de hoy
+        age = rng.randint(0, 30)  # publicado hace un rato: temporizadores variados
+        ch.created_at -= age
+        ch.expires_at -= age
+        meta[ch.id] = m
+        visible = econ.visible_challenges(wallet_address, kind)
+    return visible
+
+
+def _sim_accepts_own_money_challenge(own_ch) -> None:
+    """Simulación: en cada relanzamiento de NUESTRO reto competitivo, a veces
+    llega un jugador real (simulado, con NFT y saldo) y lo acepta."""
+    econ = econ_server()
+    rng = random.Random()
+    if rng.random() >= SIM_ACCEPT_OWN_MONEY_PROB:
+        return
+    name = rng.choice(SIMULATED_BOT_NAME_POOL)
+    sim_wallet = f"sim:{name.lower()}"
+    if econ.open_challenge_of(sim_wallet):
+        econ.cancel_challenge(sim_wallet, econ.open_challenge_of(sim_wallet).id)
+    m = _sim_meta(rng, name)
+    econ.set_nfts(sim_wallet, [m["gamenft_id"]])
+    econ.sync_balance(sim_wallet, Currency.KUR, max(500.0, own_ch.stake))
+    econ.accept_challenge(sim_wallet, own_ch.id)
+    st.session_state.sim_challenge_meta[own_ch.id] = m
 
 
 def _render_challenge_row(gamenft_id: int | None, name_html: str, detail_html: str, timer_id: str, pct: int):
@@ -1105,31 +1341,77 @@ def _render_challenge_row(gamenft_id: int | None, name_html: str, detail_html: s
     return btn_col
 
 
+def _challenge_stake_html(ch) -> str:
+    if ch.kind == ChallengeKind.MONEY.value:
+        return f"<div class='challenge-rival-stake'>💰 Apuesta: {ch.stake:.2f} ${ch.currency}</div>"
+    if ch.kind == ChallengeKind.CRYSTAL.value:
+        return f"<div class='challenge-rival-stake'>💎 Apuesta {CRYSTAL_STAKE} cristal</div>"
+    return "<div class='challenge-rival-stake'>🎟️ Free sin cristales</div>"
+
+
 def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: str, card_pool: list[Card]) -> None:
-    _refresh_bot_challenges()
     now = time.time()
     timer_specs = []
     with st.container(key="bot_challenges_feed"):
         st.subheader("🔍 RETOS DISPONIBLES EN TIEMPO REAL")
 
-        matchmaking_start = st.session_state.get("matchmaking_start")
-        if matchmaking_start is not None:
-            remaining = max(0.0, MATCHMAKING_SECONDS - (now - matchmaking_start))
-            if remaining <= 0:
-                # Nadie "aceptó" nuestro propio reto a tiempo: igual que la
-                # vieja render_matchmaking_search, se asigna un Bot solo —
-                # con la misma apuesta que se venía mostrando en la tarjeta.
+        notice = st.session_state.get("challenge_notice")
+        if notice and time.time() < notice["until"]:
+            st.info(notice["text"])
+        elif notice:
+            st.session_state.pop("challenge_notice", None)
+        econ = econ_server()
+        is_competitive = st.session_state.match_mode == "competitive"
+        own_id = st.session_state.get("own_challenge_id")
+        own_ch = econ.challenges.get(own_id) if own_id is not None else None
+
+        if own_ch is not None and own_ch.status == ChallengeStatus.OPEN.value and \
+                (own_ch.kind == ChallengeKind.MONEY.value) != is_competitive:
+            # Cambió de modo con un reto abierto del otro modo: se retira y
+            # se reembolsa (cristal, oportunidad del día o apuesta).
+            econ.cancel_challenge(wallet_address, own_ch.id)
+            push_kur(connector, wallet_address)
+            st.session_state["own_challenge_id"] = own_ch = None
+            st.session_state["matchmaking_start"] = None
+            st.session_state["challenge_notice"] = {
+                "text": "Reto retirado al cambiar de modo: se te ha devuelto lo apostado.",
+                "until": time.time() + 8,
+            }
+
+        if own_ch is not None:
+            econ.process_expired()
+            seen_id, seen_n = st.session_state.get("own_relaunch_seen", (None, 0))
+            seen_n = seen_n if seen_id == own_ch.id else 0
+            if own_ch.kind == ChallengeKind.MONEY.value and own_ch.relaunches > seen_n \
+                    and own_ch.status == ChallengeStatus.OPEN.value:
+                st.session_state["own_relaunch_seen"] = (own_ch.id, own_ch.relaunches)
+                _sim_accepts_own_money_challenge(own_ch)
+            if own_ch.status in (ChallengeStatus.VS_BOT.value, ChallengeStatus.MATCHED.value):
+                # Free: 60 s sin rival real -> Bot. Competitivo: solo MATCHED
+                # (un jugador real aceptó); el libro mayor jamás asigna bots ahí.
                 st.session_state["matchmaking_start"] = None
-                stake = st.session_state.get("navbar_stake", 10.0) if st.session_state.match_mode == "competitive" else 0.0
-                _launch_match(connector, wallet_address, card_pool, name_b="Bot", stake_kur=stake)
+                st.session_state["own_challenge_id"] = None
+                if own_ch.status == ChallengeStatus.VS_BOT.value:
+                    _launch_match(connector, wallet_address, card_pool, name_b="Bot", challenge_id=own_ch.id)
+                else:
+                    m = st.session_state.sim_challenge_meta.get(own_ch.id) or _sim_meta(random.Random(), own_ch.opponent)
+                    _launch_match(
+                        connector, wallet_address, card_pool, name_b=m["name"],
+                        hp_b=compute_base_hp(m["rarity"]), rival_avatar_id=m["gamenft_id"],
+                        stake_kur=own_ch.stake, challenge_id=own_ch.id,
+                    )
                 st.rerun()
+            if own_ch.status != ChallengeStatus.OPEN.value:
+                st.session_state["matchmaking_start"] = st.session_state["own_challenge_id"] = None
+                st.rerun()
+
+            remaining = max(0.0, own_ch.expires_at - now)
             own_rarity = resolve_equipped_rarity(connector, wallet_address)
-            pct = max(5, int(remaining / MATCHMAKING_SECONDS * 100))
-            own_stake_html = (
-                f"<div class='challenge-rival-stake'>💰 Apuesta: "
-                f"{st.session_state.get('navbar_stake', 10.0):.2f} $KUR"
-                f"{' · 💎' if has_crystals(own_rarity) else ''}</div>"
-                if st.session_state.match_mode == "competitive" else ""
+            pct = max(5, int(remaining / CHALLENGE_EXPIRY_SECONDS * 100))
+            relaunch_html = (
+                f"<div class='challenge-rival-stake'>🔁 Búsqueda relanzada {own_ch.relaunches} "
+                f"ve{'z' if own_ch.relaunches == 1 else 'ces'} · sin bots</div>"
+                if own_ch.kind == ChallengeKind.MONEY.value and own_ch.relaunches else ""
             )
             with st.container(key="challenge_row_own"):
                 btn_col = _render_challenge_row(
@@ -1138,68 +1420,85 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
                     f"<div class='challenge-rival-nft'>{rarity_label(own_rarity)} · "
                     f"HP {compute_base_hp(own_rarity)} · "
                     f"<span id='challenge-seconds-own'>{int(remaining)}</span>s</div>"
-                    f"{own_stake_html}",
+                    f"{_challenge_stake_html(own_ch)}{relaunch_html}",
                     "own", pct,
                 )
                 with btn_col, st.container(key="cancel_own_challenge_wrap"):
                     if st.button("Cancelar Reto", key="cancel_own_challenge"):
+                        if own_ch.status == ChallengeStatus.OPEN.value:
+                            econ.cancel_challenge(wallet_address, own_ch.id)  # devuelve lo apostado
+                            push_kur(connector, wallet_address)
                         st.session_state["matchmaking_start"] = None
+                        st.session_state["own_challenge_id"] = None
                         st.rerun()
             timer_specs.append(
-                {"id": "own", "remainingMs": remaining * 1000, "totalMs": MATCHMAKING_SECONDS * 1000}
+                {"id": "own", "remainingMs": remaining * 1000, "totalMs": CHALLENGE_EXPIRY_SECONDS * 1000}
             )
 
-        is_competitive = st.session_state.match_mode == "competitive"
-        balance = connector.kur_balance(wallet_address) if is_competitive else 0.0
-        bot_stake_html = (
-            "<div class='challenge-rival-stake'>💰 Apuesta: {stake:.2f} $KUR</div>"
-            if is_competitive else ""
-        )
-        for ch in st.session_state.bot_challenges:
-            remaining = max(0.0, ch["expires_at"] - now)
-            pct = max(5, int(remaining / ch["duration_s"] * 100))
-            insufficient = is_competitive and ch["stake_kur"] > balance
-            with st.container(key=f"challenge_row_{ch['id']}"):
+        acc = econ.account(wallet_address)
+        if is_competitive and not acc.access_unlocked:
+            st.caption(
+                f"🔒 Competitivo bloqueado: necesitas un NFT o {ACCESS_BATTLES_REQUIRED} combates "
+                f"(llevas {acc.battles_total})."
+            )
+            visible = []
+        else:
+            visible = _refresh_sim_challenges(wallet_address, is_competitive)
+            if not visible:
+                st.caption("Ahora mismo no hay retos abiertos de tu modalidad.")
+        meta = st.session_state.sim_challenge_meta
+        can_free, why_free = econ.can_play_free(wallet_address)
+        balance = acc.balances[Currency.KUR.value]
+        for ch in visible:
+            m = meta.get(ch.id, {"name": ch.creator, "gamenft_id": None, "rarity": NFTRarity.NONE})
+            remaining = max(0.0, ch.expires_at - now)
+            pct = max(5, int(remaining / CHALLENGE_EXPIRY_SECONDS * 100))
+            tid = f"c{ch.id}"
+            if is_competitive:
+                blocked_label = "🚫 Sin saldo" if ch.stake > balance else None
+            else:
+                blocked_label = None if can_free else (
+                    f"🎟️ 0/{FREE_DAILY_RANKED_LIMIT} hoy" if not acc.has_nft else "💎 Sin cristales")
+            with st.container(key=f"challenge_row_{tid}"):
                 btn_col = _render_challenge_row(
-                    ch["gamenft_id"],
-                    f"<div class='challenge-rival-name'>🦊 {ch['name']}</div>",
-                    f"<div class='challenge-rival-nft'>Fox #{ch['gamenft_id']} · "
-                    f"{rarity_label(ch['rarity'])} · HP {compute_base_hp(ch['rarity'])} · "
-                    f"<span id='challenge-seconds-{ch['id']}'>{int(remaining)}</span>s</div>"
-                    f"{bot_stake_html.format(stake=ch['stake_kur'])}",
-                    str(ch["id"]), pct,
+                    m["gamenft_id"],
+                    f"<div class='challenge-rival-name'>🦊 {m['name']}</div>",
+                    f"<div class='challenge-rival-nft'>Fox #{m['gamenft_id']} · "
+                    f"{rarity_label(m['rarity'])} · HP {compute_base_hp(m['rarity'])} · "
+                    f"<span id='challenge-seconds-{tid}'>{int(remaining)}</span>s</div>"
+                    f"{_challenge_stake_html(ch)}",
+                    tid, pct,
                 )
                 with btn_col:
                     accepted = st.button(
-                        "🚫 Sin saldo" if insufficient else "Aceptar Reto",
-                        key=f"accept_challenge_{ch['id']}", disabled=insufficient,
-                    )
-                if insufficient and accepted:
-                    # No debería poder dispararse con el botón ya
-                    # deshabilitado — queda igual como respaldo.
-                    accepted = False
-                if insufficient:
-                    st.warning(
-                        f"⚠️ No tienes suficiente $KUR para aceptar este reto "
-                        f"(Requiere {ch['stake_kur']:.2f} $KUR)."
+                        blocked_label or "Aceptar Reto", key=f"accept_challenge_{tid}",
+                        disabled=blocked_label is not None,
                     )
                 if accepted:
-                    st.session_state.bot_challenges = [
-                        c for c in st.session_state.bot_challenges if c["id"] != ch["id"]
-                    ]
-                    st.session_state["matchmaking_start"] = None  # deja de buscar nuestro propio reto
-                    st.session_state.vs_bot = True
-                    st.session_state["_force_opponent_bot"] = True
-                    _launch_match(
-                        connector, wallet_address, card_pool,
-                        name_b=ch["name"], hp_b=compute_base_hp(ch["rarity"]),
-                        rival_avatar_id=ch["gamenft_id"],
-                        stake_kur=ch["stake_kur"] if st.session_state.match_mode == "competitive" else 0.0,
-                    )
-                    st.rerun()
+                    try:
+                        if own_ch is not None and own_ch.status == ChallengeStatus.OPEN.value:
+                            econ.cancel_challenge(wallet_address, own_ch.id)
+                        econ.accept_challenge(wallet_address, ch.id)
+                    except EconomyError as e:
+                        st.error(f"⚠️ {e}")
+                    else:
+                        push_kur(connector, wallet_address)
+                        st.session_state["matchmaking_start"] = None
+                        st.session_state["own_challenge_id"] = None
+                        st.session_state.vs_bot = True
+                        st.session_state["_force_opponent_bot"] = True
+                        _launch_match(
+                            connector, wallet_address, card_pool,
+                            name_b=m["name"], hp_b=compute_base_hp(m["rarity"]),
+                            rival_avatar_id=m["gamenft_id"], challenge_id=ch.id,
+                            stake_kur=ch.stake,
+                        )
+                        st.rerun()
             timer_specs.append(
-                {"id": str(ch["id"]), "remainingMs": remaining * 1000, "totalMs": ch["duration_s"] * 1000}
+                {"id": tid, "remainingMs": remaining * 1000, "totalMs": CHALLENGE_EXPIRY_SECONDS * 1000}
             )
+        if not is_competitive and not can_free:
+            st.caption(f"⚠️ {why_free}")
 
         with st.container(key="bot_challenges_refresh_trigger"):
             st.button("↻", key="bot_challenges_refresh_btn")
@@ -1237,64 +1536,66 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
 
 
 # --------------------------------------------------------------------------- #
-# Panel "🤝 Retos 1v1": apuesta 1v1 directa en $KUR (sección pedida por el
-# equipo de pruebas, separada del flujo Free/Competitivo de arriba). Al
-# lanzar el reto se descuenta el pozo de la wallet y se arranca la partida de
-# inmediato contra un rival que iguala la apuesta (sin backend de
-# matchmaking real entre wallets en este prototipo local, el rival es un
-# Bot); el pago (90% del pozo total, 10% de comisión) se liquida al terminar
-# la partida — ver el bloque "state['status'] != ONGOING" más abajo.
+# Panel "🤝 Retos 1v1": atajo para publicar un reto COMPETITIVO directo en
+# $KUR. Es exactamente el mismo reto del libro mayor que "⚔️ LANZAR RETO" en
+# modo Competitivo: requiere NFT o 300 combates, la apuesta queda en escrow,
+# el ganador se lleva el bote menos la comisión de la casa y, si nadie lo
+# acepta en 60 s, la búsqueda se relanza — jamás se juega contra un bot.
 # --------------------------------------------------------------------------- #
 def render_challenges_panel(connector: BlockchainConnector, wallet_address: str, card_pool: list[Card]) -> None:
     st.title("🤝 Retos 1v1")
     st.caption(
-        "Define el pozo de apuesta en $KUR. Al aceptar el rival, el ganador se lleva el pozo "
-        "total con una deducción del 10% de comisión para la sala."
+        f"Reto competitivo directo en $KUR contra un jugador real. El ganador se lleva el bote "
+        f"(las dos apuestas) menos un {HOUSE_FEE_PCT:.0%} de comisión. Sin bots: si nadie acepta en "
+        f"{CHALLENGE_EXPIRY_SECONDS} s, la búsqueda se relanza hasta que alguien acepte o lo canceles."
     )
-
-    active = st.session_state.get("active_challenge")
-    if active is not None:
-        payout = compute_challenge_payout(active["stake_kur"])
-        st.info(
-            f"Reto en curso contra {active['rival_name']}: pozo total {payout.pool_kur:.0f} $KUR "
-            f"(comisión {payout.fee_kur:.2f} $KUR) · si ganas te llevas {payout.payout_kur:.2f} $KUR."
+    econ = econ_server()
+    acc = econ.account(wallet_address)
+    if not acc.access_unlocked:
+        st.warning(
+            f"🔒 Bloqueado: necesitas un NFT o {ACCESS_BATTLES_REQUIRED} combates (llevas {acc.battles_total})."
         )
-        if st.button("⚔️ Ir a la partida", key="challenge_goto_battle", type="primary"):
+        return
+
+    own_id = st.session_state.get("own_challenge_id")
+    own_ch = econ.challenges.get(own_id) if own_id is not None else None
+    if own_ch is not None and own_ch.status == ChallengeStatus.OPEN.value:
+        st.info(
+            f"Ya tienes un reto abierto ({_challenge_stake_html(own_ch).split('>', 1)[1].rsplit('<', 1)[0]}). "
+            "Síguelo o cancélalo en ⚔️ Modo Batalla."
+        )
+        if st.button("⚔️ Ir a Modo Batalla", key="challenge_goto_battle", type="primary"):
             st.session_state.panel_mode = PANEL_OPTIONS[0]
             st.rerun()
         return
 
-    kur_balance = connector.kur_balance(wallet_address)
+    kur_balance = acc.balances[Currency.KUR.value]
     st.caption(f"Tu balance: {kur_balance:,.2f} $KUR")
     stake = st.number_input(
-        "Pozo de apuesta por jugador ($KUR)", min_value=1.0, value=100.0, step=10.0, key="challenge_stake"
+        "Apuesta por jugador ($KUR)", min_value=1.0, value=100.0, step=10.0, key="challenge_stake"
     )
-    payout = compute_challenge_payout(stake)
+    pot = stake * 2
+    fee = round(pot * HOUSE_FEE_PCT, 2)
     st.caption(
-        f"Pozo total: {payout.pool_kur:.0f} $KUR · comisión 10%: {payout.fee_kur:.2f} $KUR · "
-        f"el ganador se lleva: {payout.payout_kur:.2f} $KUR"
+        f"Bote: {pot:.0f} $KUR · comisión {HOUSE_FEE_PCT:.0%}: {fee:.2f} $KUR · "
+        f"el ganador se lleva: {pot - fee:.2f} $KUR · Elo +{MONEY_ELO_WIN} / {MONEY_ELO_LOSS}"
     )
-    if equipped_has_crystals(connector, wallet_address):
-        st.caption(
-            f"💎 Tu Maestro tiene cristales: si ganas, +{CRYSTAL_KUR_WIN_BONUS:.0f} $KUR extra "
-            f"y +{CRYSTAL_ELO_WIN_BONUS} ELO."
-        )
     insufficient = kur_balance < stake
     if insufficient:
-        st.warning("Balance insuficiente para este pozo.")
+        st.warning("Balance insuficiente para esta apuesta.")
     if st.button(
-        "⚔️ Lanzar reto (buscar rival)", key="challenge_launch", type="primary", disabled=insufficient,
+        "⚔️ Lanzar reto (buscar rival real)", key="challenge_launch", type="primary", disabled=insufficient,
     ):
-        connector.simulated_backend.seed_wallet(
-            wallet_address, connector.owned_token_ids(wallet_address), kur_balance - stake
-        )
-        st.session_state.active_challenge = {"stake_kur": stake, "rival_name": "Rival (Reto 1v1)"}
-        st.session_state.vs_bot = True
-        st.session_state.opponent_choice = "Bot"
-        _launch_match(
-            connector, wallet_address, card_pool,
-            name_b="Rival (Reto 1v1)", hp_b=compute_base_hp(NFTRarity.NONE),
-        )
+        try:
+            ch = econ.create_challenge(wallet_address, ChallengeKind.MONEY, stake, Currency.KUR)
+        except EconomyError as e:
+            st.error(f"⚠️ {e}")
+            return
+        push_kur(connector, wallet_address)
+        st.session_state["own_challenge_id"] = ch.id
+        st.session_state["matchmaking_start"] = ch.created_at
+        st.session_state["opponent_choice"] = "Bot"  # = matchmaking online (en Competitivo nunca cae a bot)
+        st.session_state["_force_mode_competitive"] = True
         st.session_state.panel_mode = PANEL_OPTIONS[0]
         st.rerun()
 
@@ -1349,6 +1650,8 @@ def render_wallet_and_nft_bar(
             w2.metric("NFTs", len(owned))
             w3.metric("Balance $KUR", f"{kur_balance:,.2f}")
             st.caption("No se encontraron imágenes en GAMENFT/ — jugarás con el HP base por defecto (sin NFT).")
+            render_crystal_selector(wallet_address)
+            render_access_panel(connector, wallet_address)
             render_new_match_button(connector, wallet_address, card_pool)
             render_battle_mode_bar(connector, wallet_address, card_pool)
             return
@@ -1385,8 +1688,9 @@ def render_wallet_and_nft_bar(
                     st.metric("Rareza", rarity_label(rarity))
                     st.metric("HP base", compute_base_hp(rarity))
                     st.metric("Buff mazo", f"+{buff_pct:.0%}" if buff_pct else "—")
-                    if st.session_state.match_mode == "competitive":
-                        st.metric("Cristales", crystals_label(has_crystals(rarity)))
+            with nft_col:
+                render_crystal_selector(wallet_address)
+                render_access_panel(connector, wallet_address)
             with action_col.container(key="nft_action_col"):
                 render_new_match_button(connector, wallet_address, card_pool)
                 render_battle_mode_bar(connector, wallet_address, card_pool)
@@ -1420,6 +1724,7 @@ def render_wallet_config_expander(connector: BlockchainConnector, wallet_address
                 )
 
         st.divider()
+        st.divider()
         st.caption("Recargar wallet de prueba con otros NFTs/KUR:")
         new_ids = st.text_input(
             "Token IDs (separados por coma)", value=",".join(str(i) for i in owned), key="battle_wallet_ids"
@@ -1427,7 +1732,13 @@ def render_wallet_config_expander(connector: BlockchainConnector, wallet_address
         new_kur = st.number_input(
             "$KUR simulado", min_value=0.0, value=float(kur_balance), step=10.0, key="battle_wallet_kur"
         )
+        econ = econ_server()
+        new_battles = st.number_input(
+            f"Combates jugados (pruebas · {ACCESS_BATTLES_REQUIRED} desbloquean sin NFT)", min_value=0,
+            value=int(econ.account(wallet_address).battles_total), step=50, key="battle_wallet_battles",
+        )
         if st.button("💾 Actualizar wallet simulada", width="stretch", key="battle_wallet_update"):
+            econ.set_battles(wallet_address, int(new_battles))
             try:
                 ids = [int(x.strip()) for x in new_ids.split(",") if x.strip()]
             except ValueError:
@@ -1476,6 +1787,7 @@ cards_by_id = {c.id: c for c in catalog}
 # mismo st.session_state.connector / .wallet_address, nunca se desincroniza.
 connector: BlockchainConnector = st.session_state.connector
 current_wallet_address = st.session_state.wallet_address
+sync_economy(connector, current_wallet_address)
 st.session_state.vs_bot = st.session_state.opponent_choice == "Bot"
 
 # Tema compartido con el Marketplace (../kurama_theme.py): fondo oscuro,
@@ -1709,7 +2021,13 @@ st.markdown(
            -415px. NO reducir el ancho de la arena para "arreglar" el
            scroll: eso descuadra a los Maestros NFT de las esquinas, que
            quedan encima de los luchadores del centro. */
-        margin: -305px auto 0; /* -340px + ~35px de la fila de iconos de zona (_render_zone_badges) que ya no existe */
+        /* -305px -> -225px: con las cartas ~28% más pequeñas (208x312 ->
+           150x225) el panel mide ~87px menos de alto; se sube menos sobre
+           el escenario para que su borde inferior quede donde estaba y el
+           superior ya no tape a los luchadores ni a las cápsulas del
+           Combo Tripartito (que además quedan libres a los lados porque el
+           panel pasa de ~706px a ~500px de ancho). */
+        margin: -225px auto 0;
         background: rgba(10, 10, 14, 0.6);
         border: 1px solid rgba(255, 255, 255, 0.14);
         border-radius: 16px;
@@ -1722,19 +2040,20 @@ st.markdown(
         gap: 0.15rem !important;
     }
     [class*="st-key-battle_hand_overlay"] [data-testid="stHorizontalBlock"] {
-        gap: 0.35rem !important;
+        gap: 0.2rem !important;
     }
     [class*="st-key-battle_hand_overlay"] [data-testid="stColumn"] {
-        flex: 0 0 228px !important;
-        width: 228px !important;
-        max-width: 228px !important;
-        min-width: 228px !important;
+        flex: 0 0 158px !important;
+        width: 158px !important;
+        max-width: 158px !important;
+        min-width: 158px !important;
     }
     [class*="st-key-battle_hand_overlay"] img {
-        /* 8% más chicas que la versión anterior (226x339) para bajar el
-           alto total del panel sin perder la sensación de carta grande. */
-        width: 208px !important;
-        height: 312px !important;
+        /* ~28% más pequeñas que la versión anterior (208x312) y columnas
+           más juntas (228px/0.35rem -> 158px/0.2rem): la mano ya no se
+           mete bajo las cápsulas del Combo Tripartito de las esquinas. */
+        width: 150px !important;
+        height: 225px !important;
     }
     /* "Pasar Turno" siempre por encima del marco/zoom de la carta elegida
        (que sube con z-index 100, ver card_glow_sel más abajo) y con aire
@@ -2050,6 +2369,50 @@ st.markdown(
         font-weight: 600;
         color: rgba(220, 220, 220, 0.65);
         margin-left: 0.1rem;
+    }
+    /* Selector global de cristales del jugador (panel izquierdo, ver
+       render_crystal_selector): caja propia bien visible, botones 0-5 a
+       todo el ancho y estado en verde (ilimitado) o ámbar (10 al día). */
+    [class*="st-key-crystal_selector"] {
+        border: 1px solid rgba(64, 200, 255, 0.55);
+        background: rgba(64, 200, 255, 0.08);
+        border-radius: 12px;
+        padding: 0.55rem 0.7rem 0.5rem;
+        margin-top: 0.4rem;
+        gap: 0.35rem !important;
+        box-shadow: 0 0 12px rgba(64, 200, 255, 0.18);
+    }
+    .crystal-sel-title {
+        font-weight: 900; font-size: 0.85rem; letter-spacing: 0.06em; color: #8fd8ff;
+    }
+    [class*="st-key-crystal_selector"] [data-testid="stButtonGroup"] > div,
+    [class*="st-key-crystal_selector"] [data-testid="stButtonGroup"] [role="radiogroup"],
+    [class*="st-key-crystal_selector"] [data-testid="stButtonGroup"] > div > div {
+        width: 100%; display: flex; flex-wrap: nowrap;
+    }
+    /* Streamlit da -16px de margen inferior a cada markdown: tapaba el título. */
+    [class*="st-key-crystal_selector"] [data-testid="stMarkdownContainer"] {
+        margin-bottom: 0 !important;
+    }
+    [class*="st-key-crystal_selector"] :is(button[data-variant="segmented_control"],
+                                           button[data-testid^="stBaseButton-segmented_control"]) {
+        flex: 1 1 0; min-width: 0; font-weight: 800; font-size: 1rem;
+        background: rgba(8, 8, 14, 0.75) !important; color: #cfefff !important;
+        border-color: rgba(64, 200, 255, 0.35) !important;
+    }
+    [class*="st-key-crystal_selector"] :is(button[data-variant="segmented_control"][aria-checked="true"],
+                                           button[data-testid="stBaseButton-segmented_controlActive"]) {
+        background: linear-gradient(135deg, #1aa7e0, #40c8ff) !important; color: #00131d !important;
+        border-color: #8fe3ff !important; box-shadow: 0 0 10px rgba(64, 200, 255, 0.7);
+    }
+    .crystal-sel-status {
+        font-size: 0.8rem; font-weight: 700; padding: 0.2rem 0.55rem; border-radius: 8px;
+    }
+    .crystal-sel-status.unlimited {
+        color: #8cffa0; background: rgba(47, 179, 68, 0.15); border: 1px solid rgba(47, 179, 68, 0.6);
+    }
+    .crystal-sel-status.limited {
+        color: #ffd27a; background: rgba(255, 140, 0, 0.12); border: 1px solid rgba(255, 179, 71, 0.6);
     }
     /* Reproductor de música de fondo en la navbar: discreto, no todo el
        ancho de la columna que Streamlit le da por defecto. */
@@ -2660,7 +3023,10 @@ st.markdown(
         50% { transform: scaleX(-1) translateY(-8px); }
     }
     .arena-portal {
-        position: absolute; top: 10%; height: 60%; object-fit: contain;
+        /* 10%/60% -> 28%/42%: Maestros laterales ~30% más pequeños para
+           dejar ver el altar y el fondo; el borde inferior se mantiene al
+           70% (siguen "apoyados" en la misma altura del escenario). */
+        position: absolute; top: 28%; height: 42%; object-fit: contain;
         filter: drop-shadow(0 6px 10px rgba(0,0,0,0.6));
         border-radius: 10px;
         border: 2px solid rgba(255,255,255,0.15);
@@ -2851,12 +3217,15 @@ st.markdown(
     /* top en 20/40/60% para caer dentro del rango vertical real del avatar
        (.arena-portal: top 10% + height 60% => ocupa del 10% al 70%), antes
        24/50/78% dejaba el punto de "legs" por debajo del personaje. */
-    [class*="st-key-arena_point_pt_def_a_head"]  { left: 26%; top: 20%; }
-    [class*="st-key-arena_point_pt_def_a_torso"] { left: 26%; top: 40%; }
-    [class*="st-key-arena_point_pt_def_a_legs"]  { left: 26%; top: 60%; }
-    [class*="st-key-arena_point_pt_atk_a_head"]  { left: 74%; top: 20%; }
-    [class*="st-key-arena_point_pt_atk_a_torso"] { left: 74%; top: 40%; }
-    [class*="st-key-arena_point_pt_atk_a_legs"]  { left: 74%; top: 60%; }
+    /* 42/58/73%: alineados con cabeza, torso y piernas de los luchadores
+       centrales de escenario.png (antes 20/40/60%, a la altura de los
+       Maestros laterales, que quedaba por encima de los luchadores). */
+    [class*="st-key-arena_point_pt_def_a_head"]  { left: 26%; top: 42%; }
+    [class*="st-key-arena_point_pt_def_a_torso"] { left: 26%; top: 58%; }
+    [class*="st-key-arena_point_pt_def_a_legs"]  { left: 26%; top: 73%; }
+    [class*="st-key-arena_point_pt_atk_a_head"]  { left: 74%; top: 42%; }
+    [class*="st-key-arena_point_pt_atk_a_torso"] { left: 74%; top: 58%; }
+    [class*="st-key-arena_point_pt_atk_a_legs"]  { left: 74%; top: 73%; }
 
     /* Elementos flotantes nativos de Streamlit (menú hamburguesa, footer
        "Made with Streamlit", botón "Manage app"/deploy y el avatar de
@@ -2978,7 +3347,7 @@ st.markdown(
     }
     /* Botón ✕ (deseleccionar SOLO esta carta) en la esquina superior
        derecha de la imagen elevada. right: alineado con el borde derecho
-       real de la imagen (centrada dentro de su columna): 208px de ancho en
+       real de la imagen (centrada dentro de su columna): 150px de ancho en
        el panel flotante (Vs. Bot), min(416px, 100%) en Hotseat. */
     [class*="st-key-battle_hand"] [class*="st-key-desel_"] {
         position: absolute !important;
@@ -2988,7 +3357,7 @@ st.markdown(
         width: auto !important;
     }
     [class*="st-key-battle_hand_overlay"] [class*="st-key-desel_"] {
-        right: calc(50% - 104px - 12px);
+        right: calc(50% - 75px - 12px);
     }
     [class*="st-key-battle_hand"] [class*="st-key-desel_"] .stButton button,
     [class*="st-key-battle_hand"] [class*="st-key-desel_"] button {
@@ -3266,6 +3635,12 @@ def _toggle_zone(player_key: str, card_dict: dict, kind: str, zone_value: str) -
     if zone_value in _zones_taken_by_others(player_key, card_dict["id"])[kind]:
         return  # ocupada por otra carta tuya este turno
     if len(chosen) >= limit:
+        if limit > 1:
+            # Carta de 2-3 zonas ya completa: NO se sustituye en silencio la
+            # más antigua (parecía que el ataque/defensa "no se registraba");
+            # hay que desmarcar una antes. Con 1 sola zona sí se cambia
+            # directamente (comportamiento tipo radio, intuitivo).
+            return
         chosen.pop(0)
     chosen.append(zone_value)
 
@@ -3338,17 +3713,18 @@ def render_tactical_points(player_key: str, overlay: bool = False) -> None:
             _toggle_zone(player_key, sel_card, prefix, zone_value)
 
     def _help(prefix: str, z: Zone, limit: int) -> str:
-        verb = "Defender" if prefix == "def" else "Atacar"
-        if z.value in taken_by[prefix] and z.value not in active_zones[prefix]:
-            return (f"{ZONE_NAME[z.value]} ya está ocupada por {taken_by[prefix][z.value]} este turno "
-                    f"(1 {'defensa' if prefix == 'def' else 'ataque'} por zona)")
-        if not sel_card:
-            return f"{verb} {ZONE_NAME[z.value]} — elige primero una carta"
-        if limit <= 0:
-            return f"{sel_card['name']} no puede {verb.lower()}"
-        n = len(active_zones[prefix])
-        return (f"{verb} {ZONE_NAME[z.value]} · {sel_card['name']}: {n}/{limit} zona(s) distintas "
-                f"(clic de nuevo para quitar)")
+        # Etiqueta mínima y fija: solo acción + zona (sin nombres de carta,
+        # contadores ni explicaciones — el estado ya se ve en el color/borde).
+        return f"{'Defender' if prefix == 'def' else 'Atacar'} {ZONE_NAME[z.value]}"
+
+    def _disabled(prefix: str, z: Zone, limit: int) -> bool:
+        selected = z.value in active_zones[prefix]
+        if selected:
+            return False  # siempre se puede desmarcar
+        if limit <= 0 or z.value in used_by_others[prefix]:
+            return True
+        # Carta de 2-3 zonas ya completa: hay que desmarcar antes de elegir otra.
+        return limit > 1 and len(active_zones[prefix]) >= limit
 
     if overlay:
         for prefix, _label, _cls, limit in specs:
@@ -3360,7 +3736,7 @@ def render_tactical_points(player_key: str, overlay: bool = False) -> None:
                     if st.button(
                         ZONE_ICON[z.value], key=point_key,
                         type="primary" if selected else "secondary",
-                        disabled=limit <= 0 or (used and not selected),
+                        disabled=_disabled(prefix, z, limit),
                         help=_help(prefix, z, limit),
                     ):
                         _click(prefix, z.value)
@@ -3377,11 +3753,11 @@ def render_tactical_points(player_key: str, overlay: bool = False) -> None:
                     selected = z.value in active_zones[prefix]
                     used = z.value in used_by_others[prefix]
                     if st.button(
-                        f"{ZONE_ICON[z.value]} {ZONE_NAME[z.value]}{' ◆' if used else ''}",
+                        f"{ZONE_ICON[z.value]} {_help(prefix, z, limit)}",
                         key=f"{prefix}_pt_{player_key}_{z.value}",
                         type="primary" if selected else "secondary",
                         width="stretch",
-                        disabled=limit <= 0 or (used and not selected),
+                        disabled=_disabled(prefix, z, limit),
                         help=_help(prefix, z, limit),
                     ):
                         _click(prefix, z.value)
@@ -3542,8 +3918,7 @@ def render_arena(state: dict) -> None:
             f"title='{html.escape(tip, quote=True)}'>"
             f"<span class='combo-hud-tag {tag_cls}'>{tag}</span>"
             f"{banner}"
-            f"<span class='{count_cls}'>🔥<span class='combo-word'> COMBO</span> <b>{tri_txt}</b>"
-            f" · ⚔️ <b>{last.get('damage_dealt', 0)}</b></span>"
+            f"<span class='{count_cls}'>🔥<span class='combo-word'> COMBO</span> <b>{tri_txt}</b></span>"
             f"<span class='combo-hud-zones'>{''.join(zone_chips)}</span>"
             f"</div>"
         )
@@ -3627,55 +4002,43 @@ if state["status"] != MatchStatus.ONGOING.value:
     # match_reward_settled (el script entero se re-ejecuta en cada rerun
     # mientras se muestra el banner de victoria/derrota).
     if not st.session_state.match_reward_settled:
-        active_challenge = st.session_state.get("active_challenge")
-        if active_challenge is not None:
-            payout = compute_challenge_payout(active_challenge["stake_kur"])
-            balance = connector.kur_balance(current_wallet_address)
-            if state["status"] == MatchStatus.PLAYER_A_WINS.value:
-                crystal_bonus = CRYSTAL_KUR_WIN_BONUS if st.session_state.get("match_crystals") else 0.0
-                new_balance = balance + payout.payout_kur + crystal_bonus
-                crystal_txt = (
-                    f" 💎 +{crystal_bonus:.0f} $KUR y +{CRYSTAL_ELO_WIN_BONUS} ELO extra por cristales."
-                    if crystal_bonus else ""
-                )
-                st.success(
-                    f"🏆 ¡Ganaste el reto! +{payout.payout_kur:.2f} $KUR "
-                    f"(comisión {payout.fee_kur:.2f} $KUR).{crystal_txt}"
-                )
-            elif state["status"] == MatchStatus.DRAW.value:
-                new_balance = balance + active_challenge["stake_kur"]
-                st.info("🤝 Reto empatado: se te devuelve tu apuesta.")
+        mcid = st.session_state.get("match_challenge_id")
+        econ_ch = econ_server().challenges.get(mcid) if mcid is not None else None
+        if econ_ch is not None and econ_ch.status in (ChallengeStatus.MATCHED.value, ChallengeStatus.VS_BOT.value):
+            acc = econ_server().account(current_wallet_address)
+            kur0, elo0, cry0 = acc.balances["KUR"], acc.elo, acc.crystals
+            winner = {
+                MatchStatus.PLAYER_A_WINS.value: current_wallet_address,
+                MatchStatus.PLAYER_B_WINS.value: econ_ch.opponent if econ_ch.creator == acc.wallet else econ_ch.creator,
+            }.get(state["status"])
+            econ_server().report_result(econ_ch.id, winner)
+            push_kur(connector, current_wallet_address)
+            d_kur, d_elo, d_cry = round(acc.balances["KUR"] - kur0, 2), acc.elo - elo0, acc.crystals - cry0
+            won = state["status"] == MatchStatus.PLAYER_A_WINS.value
+            draw = state["status"] == MatchStatus.DRAW.value
+            parts = [f"📈 Elo {d_elo:+d} (ahora {acc.elo})"]
+            if econ_ch.kind == ChallengeKind.MONEY.value:
+                pot = econ_ch.stake * 2
+                if won:
+                    parts.append(f"💰 +{d_kur:.2f} $KUR (bote {pot:.2f} − comisión {pot * HOUSE_FEE_PCT:.2f})")
+                elif draw:
+                    parts.append(f"🤝 Empate: se te devuelven {econ_ch.stake:.2f} $KUR")
+                else:
+                    parts.append(f"💸 Pierdes tu apuesta de {econ_ch.stake:.2f} $KUR")
+            elif econ_ch.kind == ChallengeKind.CRYSTAL.value:
+                if won:
+                    parts.append(f"💎 +{d_cry + CRYSTAL_STAKE} cristales en juego (neto {d_cry:+d}) · "
+                                 f"+{d_kur:.0f} $KUR")
+                elif draw:
+                    parts.append("💎 Empate: recuperas tu cristal")
+                else:
+                    parts.append(f"💎 Pierdes tu cristal apostado (−{CRYSTAL_STAKE})")
             else:
-                new_balance = balance
-                st.error(f"💀 Perdiste el reto: -{active_challenge['stake_kur']:.0f} $KUR.")
-            connector.simulated_backend.seed_wallet(
-                current_wallet_address, connector.owned_token_ids(current_wallet_address), new_balance
-            )
-            st.session_state.active_challenge = None
-        elif st.session_state.get("match_economy_mode") == "competitive" and state["status"] == MatchStatus.PLAYER_A_WINS.value:
-            # Bote real = la apuesta del reto aceptado (o la fijada en
-            # "Apuesta en KUR" si la partida la lanzamos nosotros) por los 2
-            # jugadores que la igualan — antes se acreditaba un bonus
-            # aleatorio de 3-5 $KUR sin relación alguna con la apuesta real
-            # mostrada en la tarjeta del reto, el bug reportado.
-            stake = st.session_state.get("match_stake", 0.0)
-            crystals = bool(st.session_state.get("match_crystals"))
-            economy = compute_match_economy("competitive", stake, crystals=crystals)
-            pot = stake * 2
-            fee = round(pot * MATCH_FEE_PCT, 2)
-            reward = round(pot - fee + economy.crystal_kur_bonus, 2)
-            balance = connector.kur_balance(current_wallet_address)
-            connector.simulated_backend.seed_wallet(
-                current_wallet_address, connector.owned_token_ids(current_wallet_address), balance + reward
-            )
-            crystal_txt = (
-                f" 💎 Cristales: +{economy.crystal_kur_bonus:.0f} $KUR y +{CRYSTAL_ELO_WIN_BONUS} ELO extra."
-                if crystals else ""
-            )
-            st.success(
-                f"🏆 ¡Victoria en Modo Competitivo! +{economy.win_elo} ELO · Recompensa: +{reward:.2f} $KUR "
-                f"(Bote: {pot:.2f} $KUR - Comisión: {fee:.2f} $KUR).{crystal_txt}"
-            )
+                parts.append(f"🎟️ Free sin cristales · quedan "
+                             f"{econ_server().free_ranked_remaining(current_wallet_address)}/{FREE_DAILY_RANKED_LIMIT} hoy")
+            parts.append(f"⚔️ Combates: {acc.battles_total}")
+            (st.success if won else st.info)(" · ".join(parts))
+        st.session_state["match_challenge_id"] = None
         st.session_state.match_reward_settled = True
 
     banner = {
@@ -3702,7 +4065,6 @@ if state["status"] != MatchStatus.ONGOING.value:
         st.success(banner)
     if st.button("🔄 Jugar otra partida", type="primary"):
         st.session_state.match = None
-        st.session_state.active_challenge = None
         st.session_state.match_reward_settled = False
         st.rerun()
 
@@ -3790,10 +4152,10 @@ def _missing_zones_text(player_key: str, card_dict: dict) -> str:
     n_atk, n_def = _card_zone_requirements(card_dict)
     opts = []
     if n_atk:
-        opts.append(f"hasta {n_atk} zona(s) de ataque 🔴")
+        opts.append(f"🔴 hasta {n_atk}")
     if n_def:
-        opts.append(f"hasta {n_def} zona(s) de defensa 🟢")
-    return "marca al menos una zona: " + " y/o ".join(opts)
+        opts.append(f"🟢 hasta {n_def}")
+    return "marca al menos una zona (" + " · ".join(opts) + ")"
 
 
 def _confirm_turn(player_key: str, ready_cards: list[dict], auto_resolve: bool) -> None:
@@ -4011,7 +4373,11 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
         hand_cost_min = min((c["cost_energy"] for c in p["hand"]), default=0)
         if incomplete_cards:
             st.caption(
-                "⚠️ " + " · ".join(f"{c['name']}: {_missing_zones_text(player_key, c)}" for c in incomplete_cards)
+                "⚠️ " + " · ".join(
+                    (f"#{sel_ids.index(c['id']) + 1} " if len(selected_cards) > 1 else "")
+                    + _missing_zones_text(player_key, c).capitalize()
+                    for c in incomplete_cards
+                )
             )
         elif p["hand"] and hand_cost_min > remaining_energy:
             st.caption(
@@ -4040,10 +4406,10 @@ def render_hand(player_key: str, label: str, auto_resolve: bool = False) -> None
             st.rerun()
 
         if p["staged_plays"]:
-            staged_txt = ", ".join(
-                f"{sp['card']['name']} → ataca {', '.join(ZONE_NAME[z] for z in sp['attack_zones']) or '—'}"
-                f" / defiende {', '.join(ZONE_NAME[z] for z in sp['defense_zones']) or '—'}"
-                for sp in p["staged_plays"]
+            staged_txt = " · ".join(
+                f"#{i} ⚔️ {', '.join(ZONE_NAME[z] for z in sp['attack_zones']) or '—'}"
+                f" 🛡️ {', '.join(ZONE_NAME[z] for z in sp['defense_zones']) or '—'}"
+                for i, sp in enumerate(p["staged_plays"], 1)
             )
             st.caption(f"Jugadas preparadas este turno: {staged_txt}")
 
