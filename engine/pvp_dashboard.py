@@ -310,8 +310,9 @@ def crystal_status_text(wallet_address: str) -> tuple[str, bool]:
     n = player_crystals(wallet_address)
     if player_has_nft(wallet_address):
         if n >= CRYSTAL_STAKE:
-            return f"💎 {n} cristal{'es' if n != 1 else ''} · Free con cristales: apuestas {CRYSTAL_STAKE} por partida", True
-        return "⚠️ Con NFT el Free se juega con cristales: necesitas al menos 1 💎", False
+            return (f"💎 Tienes {n} · cada reto gasta {CRYSTAL_STAKE} "
+                    f"(al lanzar: {n} → {n - CRYSTAL_STAKE})"), True
+        return f"⚠️ Sin cristales: necesitas al menos {CRYSTAL_STAKE} 💎 para lanzar un reto Free", False
     left = econ.free_ranked_remaining(wallet_address)
     extra = " (sin NFT los cristales no se usan en PvP)" if n else ""
     return f"🎟️ Free sin cristales: {left}/{FREE_DAILY_RANKED_LIMIT} partidas hoy{extra}", left > 0
@@ -332,8 +333,36 @@ def render_crystal_selector(wallet_address: str) -> None:
             econ_server().set_crystals(wallet_address, int(v))
 
     text, ok = crystal_status_text(wallet_address)
+    econ = econ_server()
+    has_nft = player_has_nft(wallet_address)
+    # ¿Hay un reto Free con cristales nuestro en curso? Su cristal ya salió
+    # del saldo (retenido al lanzar) y se consumirá al jugarse.
+    own = econ.challenges.get(st.session_state.get("own_challenge_id")) \
+        or econ.challenges.get(st.session_state.get("match_challenge_id"))
+    staked = 0
+    if own is not None and own.kind == ChallengeKind.CRYSTAL.value and own.status in (
+        ChallengeStatus.OPEN.value, ChallengeStatus.MATCHED.value, ChallengeStatus.VS_BOT.value
+    ):
+        staked = (own.entries.get(econ.account(wallet_address).wallet) or {}).get("crystals", 0)
     with st.container(key="crystal_selector"):
         st.markdown("<div class='crystal-sel-title'>💎 CRISTALES DEL JUGADOR</div>", unsafe_allow_html=True)
+        if has_nft:
+            # Stock visual: cada gema = 1 cristal disponible; la siguiente
+            # que se gastará al lanzar va marcada; la retenida en un reto en
+            # curso aparece aparte como "en juego".
+            slots = max(len(CRYSTAL_SELECTOR_OPTIONS) - 1, n)
+            gems = "".join(
+                f"<span class='crystal-gem {'next' if i == n - 1 and not staked else 'on' if i < n else 'off'}'>💎</span>"
+                for i in range(slots)
+            )
+            if staked:
+                gems += f"<span class='crystal-gem staked' title='Cristal apostado en el reto en curso'>💎</span>"
+            label = (f"{n} disponible{'s' if n != 1 else ''}"
+                     + (f" · {staked} en juego (se consume)" if staked else ""))
+            st.markdown(
+                f"<div class='crystal-stock'>{gems}</div><div class='crystal-stock-label'>{label}</div>",
+                unsafe_allow_html=True,
+            )
         st.segmented_control(
             "Cristales del jugador",
             options=options,
@@ -341,7 +370,7 @@ def render_crystal_selector(wallet_address: str) -> None:
             on_change=_store_crystals,
             label_visibility="collapsed",
             help="Saldo de cristales (pulsar fija el saldo — herramienta de pruebas). "
-                 f"Con NFT: Free con cristales, apuestas {CRYSTAL_STAKE} 💎 por partida. "
+                 f"Con NFT: Free con cristales, cada partida gasta {CRYSTAL_STAKE} 💎 (no se recupera). "
                  f"Sin NFT: Free sin cristales, {FREE_DAILY_RANKED_LIMIT} partidas al día. "
                  "El Competitivo no usa cristales.",
         )
@@ -358,15 +387,16 @@ def render_access_panel(connector: BlockchainConnector, wallet_address: str) -> 
     status = econ.access_status(wallet_address)
     with st.container(key="access_panel"):
         if status["unlocked_by"] == "nft":
-            st.success("🔓 Acceso completo (tienes NFT): Competitivo, depósitos y retiradas.")
+            st.success("🔓 Acceso completo (tienes NFT): Competitivo, depósitos, retiradas "
+                       "y compraventa en el market de ítems.")
         elif status["unlocked_by"] == "battles":
             st.success(f"🔓 Acceso completo ({status['battles_total']} combates): "
-                       "Competitivo, depósitos y retiradas.")
+                       "Competitivo, depósitos, retiradas y compraventa en el market de ítems.")
         else:
             done = status["battles_total"]
             st.warning(
-                f"🔒 Sin NFT y con {done}/{ACCESS_BATTLES_REQUIRED} combates: Competitivo, depósitos y "
-                f"retiradas bloqueados. Juega tus {FREE_DAILY_RANKED_LIMIT} Free diarias para llegar a "
+                f"🔒 Sin NFT y con {done}/{ACCESS_BATTLES_REQUIRED} combates: Competitivo, depósitos, "
+                f"retiradas y compraventa en el market bloqueados. Juega tus {FREE_DAILY_RANKED_LIMIT} Free diarias para llegar a "
                 f"{ACCESS_BATTLES_REQUIRED} (o consigue un NFT)."
             )
             st.progress(min(1.0, done / ACCESS_BATTLES_REQUIRED))
@@ -1018,10 +1048,10 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
             acc = econ_server().account(wallet_address)
             if acc.has_nft:
                 st.caption(
-                    f"💎 Free con cristales: apuestas {CRYSTAL_STAKE} 💎 (tienes {acc.crystals}) · "
-                    f"Victoria: te llevas los cristales en juego, +{CRYSTAL_ELO_WIN} Elo y "
-                    f"+{CRYSTAL_WIN_KUR_REWARD:.0f} $KUR · Derrota: {CRYSTAL_ELO_LOSS} Elo y pierdes tu cristal · "
-                    f"{CHALLENGE_EXPIRY_SECONDS} s sin rival real → Bot · Elo {acc.elo}"
+                    f"💎 Free con cristales: apuestas {CRYSTAL_STAKE} cristal (tienes {acc.crystals}). "
+                    f"Victoria: +{CRYSTAL_ELO_WIN} Elo y +{CRYSTAL_WIN_KUR_REWARD:.0f} $KUR. "
+                    f"Derrota: {CRYSTAL_ELO_LOSS} Elo y pierdes el cristal. "
+                    f"{CHALLENGE_EXPIRY_SECONDS} s sin rival real -> Lucha contra Bot."
                 )
             else:
                 left = econ_server().free_ranked_remaining(wallet_address)
@@ -1345,7 +1375,7 @@ def _challenge_stake_html(ch) -> str:
     if ch.kind == ChallengeKind.MONEY.value:
         return f"<div class='challenge-rival-stake'>💰 Apuesta: {ch.stake:.2f} ${ch.currency}</div>"
     if ch.kind == ChallengeKind.CRYSTAL.value:
-        return f"<div class='challenge-rival-stake'>💎 Apuesta {CRYSTAL_STAKE} cristal</div>"
+        return f"<div class='challenge-rival-stake'>💎 Apuesta {CRYSTAL_STAKE} cristal (se consume)</div>"
     return "<div class='challenge-rival-stake'>🎟️ Free sin cristales</div>"
 
 
@@ -2405,6 +2435,15 @@ st.markdown(
         background: linear-gradient(135deg, #1aa7e0, #40c8ff) !important; color: #00131d !important;
         border-color: #8fe3ff !important; box-shadow: 0 0 10px rgba(64, 200, 255, 0.7);
     }
+    .crystal-stock { display: flex; flex-wrap: wrap; gap: 0.25rem; font-size: 1.15rem; line-height: 1; }
+    .crystal-gem { transition: opacity .2s, filter .2s; }
+    .crystal-gem.off { opacity: 0.18; filter: grayscale(1); }
+    .crystal-gem.on { filter: drop-shadow(0 0 4px rgba(64, 200, 255, 0.8)); }
+    .crystal-gem.next { filter: drop-shadow(0 0 6px #ffd27a); animation: crystal-pulse 1.4s ease-in-out infinite; }
+    .crystal-gem.staked { margin-left: 0.4rem; padding-left: 0.4rem; border-left: 1px dashed rgba(255, 210, 122, 0.6);
+                          filter: drop-shadow(0 0 6px #ff8c00); animation: crystal-pulse 0.9s ease-in-out infinite; }
+    @keyframes crystal-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.18); } }
+    .crystal-stock-label { font-size: 0.72rem; font-weight: 700; color: #8fd8ff; letter-spacing: 0.03em; }
     .crystal-sel-status {
         font-size: 0.8rem; font-weight: 700; padding: 0.2rem 0.55rem; border-radius: 8px;
     }
@@ -4027,12 +4066,12 @@ if state["status"] != MatchStatus.ONGOING.value:
                     parts.append(f"💸 Pierdes tu apuesta de {econ_ch.stake:.2f} $KUR")
             elif econ_ch.kind == ChallengeKind.CRYSTAL.value:
                 if won:
-                    parts.append(f"💎 +{d_cry + CRYSTAL_STAKE} cristales en juego (neto {d_cry:+d}) · "
-                                 f"+{d_kur:.0f} $KUR")
+                    parts.append(f"💰 +{d_kur:.0f} $KUR · 💎 cristal gastado (−{CRYSTAL_STAKE}, "
+                                 f"te quedan {acc.crystals})")
                 elif draw:
-                    parts.append("💎 Empate: recuperas tu cristal")
+                    parts.append(f"💎 Empate: cristal gastado (−{CRYSTAL_STAKE}, te quedan {acc.crystals})")
                 else:
-                    parts.append(f"💎 Pierdes tu cristal apostado (−{CRYSTAL_STAKE})")
+                    parts.append(f"💎 Pierdes el cristal apostado (−{CRYSTAL_STAKE}, te quedan {acc.crystals})")
             else:
                 parts.append(f"🎟️ Free sin cristales · quedan "
                              f"{econ_server().free_ranked_remaining(current_wallet_address)}/{FREE_DAILY_RANKED_LIMIT} hoy")

@@ -6,26 +6,32 @@ límite diario, escrow de retos y comisiones de la casa vive en este libro
 mayor interno (`EconomyServer`). Es Python puro (sin Streamlit ni web3) para
 poder ejecutarlo en el backend real, en tests o embebido en el dashboard.
 
-Reglas DEFINITIVAS (revisión 10/11/2026):
+Reglas DEFINITIVAS (revisión 11/11/2026):
 
 1. REQUISITO GENERAL DE ACCESO — NFT o experiencia
    - Una cuenta está DESBLOQUEADA si tiene al menos un NFT o si acumula
      ACCESS_BATTLES_REQUIRED (300) combates en total (histórico, sumando
      Free —con o sin cristales, también contra bots— y Competitivo).
-   - Sin desbloqueo: bloqueados los DEPÓSITOS, las RETIRADAS y los combates
-     COMPETITIVOS. Lo único que puede jugar una cuenta sin NFT y con menos de
+   - ACCESO COMPLETO = Competitivo + depósitos + retiradas + COMPRAVENTA en
+     el market de ítems (publicar y comprar; ver minimarket más abajo).
+   - Sin desbloqueo: bloqueados los DEPÓSITOS, las RETIRADAS, los combates
+     COMPETITIVOS y la compraventa en el market. Lo único que puede jugar una cuenta sin NFT y con menos de
      300 combates son sus 10 partidas Free diarias sin cristales: es el
      camino para llegar a los 300 (si también se bloqueasen, nunca podría
      desbloquearse nadie sin NFT).
 
 2. MODO FREE
    a) CON CRISTALES (ChallengeKind.CRYSTAL) — EXCLUSIVO de cuentas con NFT.
-      Cada jugador apuesta CRYSTAL_STAKE (1) cristal propio (escrow).
-      Gana: se lleva todos los cristales en juego, +CRYSTAL_ELO_WIN (20) Elo
-      y +CRYSTAL_WIN_KUR_REWARD (3) $KUR. Pierde: CRYSTAL_ELO_LOSS (-10) Elo
-      y pierde su cristal. Empate: cada uno recupera su cristal.
-      Sin retador real en CHALLENGE_EXPIRY_SECONDS (60 s) -> BOT, que aporta
-      el otro cristal.
+      Cada partida GASTA exactamente CRYSTAL_STAKE (1) cristal propio: se
+      retiene al lanzar/aceptar el reto y se CONSUME al jugarse, pase lo que
+      pase. Los cristales NO se acumulan en un bote ni se roban al rival.
+      Victoria: +CRYSTAL_ELO_WIN (20) Elo y +CRYSTAL_WIN_KUR_REWARD (3) $KUR
+      (el cristal gastado no se recupera). Derrota: CRYSTAL_ELO_LOSS (-10) Elo
+      y pierde el cristal apostado. Empate: Elo sin cambios y el cristal
+      también se consume (se jugó la partida). Solo si el reto se CANCELA
+      antes de jugarse se devuelve el cristal.
+      Sin retador real en CHALLENGE_EXPIRY_SECONDS (60 s) -> BOT, con las
+      mismas recompensas/penalizaciones (el bot no apuesta cristales).
    b) SIN CRISTALES (ChallengeKind.FREE) — EXCLUSIVO de cuentas SIN NFT.
       FREE_DAILY_RANKED_LIMIT (10) oportunidades al día (UTC). No se apuesta
       nada ni se gana $KUR. Gana +10 Elo, pierde -10 Elo.
@@ -71,7 +77,7 @@ CHALLENGE_EXPIRY_SECONDS = 60           # búsqueda de retador real (Free -> bot
 ACCESS_BATTLES_REQUIRED = 300           # combates totales (Free + Competitivo) para desbloquear sin NFT
 
 # Free con cristales (solo NFT)
-CRYSTAL_STAKE = 1                       # cristales que apuesta cada jugador (y el bot)
+CRYSTAL_STAKE = 1                       # cristales que gasta cada jugador por partida (se consumen)
 CRYSTAL_WIN_KUR_REWARD = 3.0            # $KUR al ganar
 CRYSTAL_ELO_WIN, CRYSTAL_ELO_LOSS = 20, -10
 
@@ -178,7 +184,7 @@ class Challenge:
     # Lo que cada participante humano aportó al entrar, para poder reembolsar
     # exactamente: {"wallet": {"crystals": n, "free_slot": bool, "stake": x}}
     entries: dict = field(default_factory=dict)
-    bot_crystals: int = 0               # cristal aportado por el bot (Free con cristales)
+    bot_crystals: int = 0               # OBSOLETO (siempre 0): el bot ya no apuesta cristales
     relaunches: int = 0                 # Competitivo: veces que se relanzó la búsqueda
 
 
@@ -217,8 +223,7 @@ class EconomyServer:
         self.listings: dict[int, Listing] = {}
         self.house: dict[str, float] = {Currency.KUR.value: 0.0, Currency.KUSD.value: 0.0}
         self.rewards_paid_kur = 0.0          # $KUR emitidos como premio de Free con cristales
-        self.crystals_from_bots = 0          # cristales que aportaron bots derrotados
-        self.crystals_to_bots = 0            # cristales de jugadores que se quedó un bot
+        self.crystals_consumed = 0           # cristales gastados en partidas Free con cristales
         self.nft_rarity: dict[int, str] = {}  # rarezas evolucionadas (override del placeholder)
         self.journal: list[dict] = []        # auditoría de cada movimiento
         self._ids = itertools.count(1)
@@ -227,7 +232,7 @@ class EconomyServer:
             "crystals",
             take=self._take_crystals,
             give=lambda acc, n: setattr(acc, "crystals", acc.crystals + n),
-            requires_unlock=False,  # vender cristales es su uso previsto
+            requires_unlock=True,  # toda compraventa del market exige acceso completo
         )
 
     # ------------------------------------------------------------------ util
@@ -280,6 +285,7 @@ class EconomyServer:
             "can_play_free": ok_free,
             "free_block_reason": why_free,
             "can_play_competitive": acc.access_unlocked,
+            "can_trade_market": acc.access_unlocked,
             "crystals": acc.crystals,
         }
 
@@ -547,8 +553,6 @@ class EconomyServer:
                 self._log("challenge_relaunch", id=ch.id, relaunches=ch.relaunches)
             else:
                 ch.status, ch.opponent = ChallengeStatus.VS_BOT.value, BOT
-                if ch.kind == ChallengeKind.CRYSTAL.value:
-                    ch.bot_crystals = CRYSTAL_STAKE  # el bot aporta el otro cristal
                 self._log("challenge_vs_bot", id=ch.id)
             changed.append(ch)
         return changed
@@ -583,22 +587,17 @@ class EconomyServer:
                     e["stake"] = 0.0
             elo_win, elo_loss = MONEY_ELO_WIN, MONEY_ELO_LOSS
         elif kind is ChallengeKind.CRYSTAL:
-            if win is None:  # empate: cada humano recupera su cristal; el del bot desaparece
-                for w in humans:
-                    self._refund_entry(ch, w)
-            else:
-                pot = sum(e["crystals"] for e in ch.entries.values()) + ch.bot_crystals
-                if win == BOT:
-                    self.crystals_to_bots += pot - ch.bot_crystals
-                else:
-                    acc = self.account(win)
-                    acc.crystals += pot
-                    self.crystals_from_bots += ch.bot_crystals
-                    self._log("crystals", wallet=win, delta=pot, reason=f"premio reto #{ch.id}")
-                    self.rewards_paid_kur = _money(self.rewards_paid_kur + CRYSTAL_WIN_KUR_REWARD)
-                    self._balance_move(acc, Currency.KUR, CRYSTAL_WIN_KUR_REWARD, f"premio cristales reto #{ch.id}")
-                for e in ch.entries.values():
+            # Se juega la partida -> el cristal de cada humano se CONSUME
+            # (gane, pierda o empate). No hay bote ni se transfieren cristales.
+            for w, e in ch.entries.items():
+                if e["crystals"]:
+                    self.crystals_consumed += e["crystals"]
+                    self._log("crystals_consumed", wallet=w, amount=e["crystals"], reason=f"reto #{ch.id}")
                     e["crystals"] = 0
+            if win is not None and win != BOT:
+                acc = self.account(win)
+                self.rewards_paid_kur = _money(self.rewards_paid_kur + CRYSTAL_WIN_KUR_REWARD)
+                self._balance_move(acc, Currency.KUR, CRYSTAL_WIN_KUR_REWARD, f"premio Free con cristales reto #{ch.id}")
             elo_win, elo_loss = CRYSTAL_ELO_WIN, CRYSTAL_ELO_LOSS
         else:  # FREE sin cristales: solo Elo
             elo_win, elo_loss = FREE_RANKED_ELO_WIN, FREE_RANKED_ELO_LOSS
@@ -622,8 +621,9 @@ class EconomyServer:
     def register_item_type(self, name: str, take: Callable[[Account, int], None],
                            give: Callable[[Account, int], None], requires_unlock: bool = True) -> None:
         """Punto de enganche para nuevos ítems del minimarket (Milton): cómo se
-        retiran del vendedor (escrow) y cómo se entregan. `requires_unlock`:
-        si el vendedor necesita NFT o 300 combates."""
+        retiran del vendedor (escrow) y cómo se entregan. La compraventa
+        (publicar y comprar) exige SIEMPRE acceso completo (NFT o 300
+        combates); `requires_unlock` se mantiene por compatibilidad."""
         self._item_types[name] = _ItemType(take=take, give=give, requires_unlock=requires_unlock)
 
     def list_item(self, wallet: str, item_type: str, quantity: int, price_kusd: float) -> Listing:
@@ -633,8 +633,7 @@ class EconomyServer:
             raise EconomyError("Cantidad y precio deben ser mayores que 0.")
         acc = self.account(wallet)
         it = self._item_types[item_type]
-        if it.requires_unlock:
-            self._require_access(acc, "Venta")
+        self._require_access(acc, "Venta en el market")
         it.take(acc, quantity)
         lst = Listing(id=next(self._ids), seller=acc.wallet, item_type=item_type,
                       quantity=int(quantity), price_kusd=_money(price_kusd))
@@ -660,6 +659,7 @@ class EconomyServer:
             raise EconomyError(f"El anuncio #{lst.id} ya no está activo ({lst.status}).")
         if lst.seller == buyer.wallet:
             raise EconomyError("No puedes comprar tu propio anuncio.")
+        self._require_access(buyer, "Compra en el market")
         fee = _money(lst.price_kusd * HOUSE_FEE_PCT)
         self._balance_move(buyer, Currency.KUSD, -lst.price_kusd, f"compra anuncio #{lst.id}")
         self._balance_move(self.account(lst.seller), Currency.KUSD, lst.price_kusd - fee, f"venta anuncio #{lst.id}")
@@ -685,7 +685,7 @@ class EconomyServer:
             "challenges": {k: asdict(v) for k, v in self.challenges.items()},
             "listings": {k: asdict(v) for k, v in self.listings.items()},
             "house": self.house, "rewards_paid_kur": self.rewards_paid_kur,
-            "crystals_from_bots": self.crystals_from_bots, "crystals_to_bots": self.crystals_to_bots,
+            "crystals_consumed": self.crystals_consumed,
             "nft_rarity": self.nft_rarity, "journal": self.journal,
         })
 
@@ -699,8 +699,7 @@ class EconomyServer:
                         for k, v in d["challenges"].items()}
         s.listings = {int(k): Listing(**v) for k, v in d["listings"].items()}
         s.house, s.rewards_paid_kur = d["house"], d["rewards_paid_kur"]
-        s.crystals_from_bots = d.get("crystals_from_bots", 0)
-        s.crystals_to_bots = d.get("crystals_to_bots", 0)
+        s.crystals_consumed = d.get("crystals_consumed", 0)
         s.nft_rarity = {int(k): v for k, v in d["nft_rarity"].items()}
         s.journal = d["journal"]
         s._ids = itertools.count(max([0, *s.challenges, *s.listings]) + 1)

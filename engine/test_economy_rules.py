@@ -114,33 +114,39 @@ s.accept_challenge("bea", ch.id)
 assert s.account("bea").crystals == 2
 s.report_result(ch.id, "ana")
 a, b = s.account("ana"), s.account("bea")
-assert a.crystals == 4 and b.crystals == 2            # ana se lleva los 2 en juego; bea pierde el suyo
+assert a.crystals == 2 and b.crystals == 2            # cada uno gasta 1: nadie se lleva el cristal del rival
+assert s.crystals_consumed == 2
 assert a.balances["KUR"] == CRYSTAL_WIN_KUR_REWARD == 3.0 and b.balances["KUR"] == 0.0
 assert a.elo == ELO_START + 20 and b.elo == ELO_START - 10
 assert (CRYSTAL_ELO_WIN, CRYSTAL_ELO_LOSS, CRYSTAL_STAKE) == (20, -10, 1)
 # ilimitado mientras haya cristales (más que el cupo diario)
+s.set_crystals("ana", 20); s.set_crystals("bea", 20); elo_a = a.elo
 for _ in range(15):
     ch = s.create_challenge("ana", FREE); s.accept_challenge("bea", ch.id); s.report_result(ch.id, None)
-assert a.crystals == 4 and b.crystals == 2            # empate: cada uno recupera su cristal
-# cancelar devuelve el cristal
+assert a.crystals == 5 and b.crystals == 5            # empate: el cristal también se consume (1 por partida)
+assert a.elo == elo_a                                 # ...pero el Elo no cambia
+# sin cristales ya no puede lanzar
+s.set_crystals("ana", 0); assert "Necesitas al menos 1" in must_fail(s.create_challenge, "ana", FREE)
+# cancelar ANTES de jugar devuelve el cristal
+s.set_crystals("ana", 4)
 ch = s.create_challenge("ana", FREE); assert a.crystals == 3
 s.cancel_challenge("ana", ch.id); assert a.crystals == 4
-print("free con cristales: solo NFT, apuesta 1, gana bote + 20 Elo + 3 KUR, pierde -10 OK")
+print("free con cristales: solo NFT, gasta 1 por partida, gana +20 Elo + 3 KUR, pierde -10 OK")
 
 # ---- 60 s sin retador real -> BOT, que aporta el otro cristal ----
 s, clk = new(); nft(s, "ana", 2)
 ch = s.create_challenge("ana", FREE)
 clk.advance(CHALLENGE_EXPIRY_SECONDS - 1); s.process_expired(); assert ch.status == OPEN
 clk.advance(1); s.process_expired()
-assert ch.status == VS_BOT and ch.opponent == BOT and ch.bot_crystals == 1
+assert ch.status == VS_BOT and ch.opponent == BOT and ch.bot_crystals == 0   # el bot no apuesta
 s.report_result(ch.id, "ana")
-assert s.account("ana").crystals == 3 and s.account("ana").balances["KUR"] == 3.0
-assert s.account("ana").elo == ELO_START + 20 and s.crystals_from_bots == 1
+assert s.account("ana").crystals == 1 and s.account("ana").balances["KUR"] == 3.0   # 2 - 1 gastado
+assert s.account("ana").elo == ELO_START + 20 and s.crystals_consumed == 1
 ch = s.create_challenge("ana", FREE); clk.advance(60); s.process_expired(); s.report_result(ch.id, BOT)
-assert s.account("ana").crystals == 2 and s.account("ana").elo == ELO_START + 10 and s.crystals_to_bots == 1
-ch = s.create_challenge("ana", FREE); clk.advance(60); s.process_expired(); s.report_result(ch.id, None)
-assert s.account("ana").crystals == 2                  # empate vs bot: recupera el suyo
-print("free con cristales: 60 s -> bot (aporta cristal), premio/penalización iguales OK")
+assert s.account("ana").crystals == 0 and s.account("ana").elo == ELO_START + 10 and s.crystals_consumed == 2
+assert s.account("ana").balances["KUR"] == 3.0       # derrota: sin $KUR
+assert "Necesitas al menos 1" in must_fail(s.create_challenge, "ana", FREE)
+print("free con cristales: 60 s -> bot, mismas recompensas (+20/+3 KUR, -10 y cristal) OK")
 
 # ============ 2b. FREE SIN CRISTALES: solo sin NFT, 10/día ============
 s, clk = new()
@@ -222,7 +228,7 @@ assert ch.status == ChallengeStatus.CANCELLED.value
 assert not any(c.kind == MONEY.value and c.opponent == BOT for c in s.challenges.values())
 print("competitivo: ilimitado, sin cristales, escrow 10 % casa, 60 s -> relanza, CERO bots OK")
 
-# ============ Cristales: runner, evolución y minimarket (sin cambios) ============
+# ============ Cristales: runner, evolución y minimarket (compraventa = acceso completo) ============
 s, clk = new()
 assert s.grant_crystals("alice", "runner_objective") == 5 and s.grant_crystals("alice", "runner_monster") == 6
 must_fail(s.grant_crystals, "alice", "regalo", 5); must_fail(s.grant_crystals, "alice", "runner_monster", 0)
@@ -232,14 +238,21 @@ assert s.evolve_nft("alice", common_id) == NFTRarity.RARE
 assert s.evolve_nft("alice", common_id) == NFTRarity.EPIC
 assert s.evolve_nft("alice", common_id) == NFTRarity.LEGENDARY and s.account("alice").crystals == 0
 assert "rareza máxima" in must_fail(s.evolve_nft, "alice", common_id)
-s.grant_crystals("vende", "runner_monster", 30)       # sin NFT: puede vender cristales
+s.grant_crystals("vende", "runner_monster", 30)       # sin NFT y < 300 combates: NO puede vender
+assert "Venta en el market bloqueado" in must_fail(s.list_item, "vende", "crystals", 10, 20.0)
+assert not s.access_status("vende")["can_trade_market"]
+s.set_battles("vende", ACCESS_BATTLES_REQUIRED)       # 300 combates -> acceso completo
+assert s.access_status("vende")["can_trade_market"]
+s.sync_balance("pobre", Currency.KUSD, 50)
+lst = s.list_item("vende", "crystals", 10, 20.0)
+assert "Compra en el market bloqueado" in must_fail(s.buy_listing, "pobre", lst.id)  # comprar también exige acceso
 nft(s, "compra"); s.deposit("compra", Currency.KUSD, 50)
-lst = s.list_item("vende", "crystals", 10, 20.0); s.buy_listing("compra", lst.id)
+s.buy_listing("compra", lst.id)
 assert s.account("vende").balances["KUSD"] == 18.0 and s.house["KUSD"] == 20.0 * HOUSE_FEE_PCT
 inv = {}
 s.register_item_type("skin", take=lambda acc, n: inv.__setitem__(acc.wallet, inv.get(acc.wallet, 0) - n),
                      give=lambda acc, n: inv.__setitem__(acc.wallet, inv.get(acc.wallet, 0) + n))
-assert "Venta bloqueado" in must_fail(s.list_item, "vende", "skin", 1, 5.0)
+assert "Venta en el market bloqueado" in must_fail(s.list_item, "sinacceso", "skin", 1, 5.0)
 print("cristales: runner, evolución 20/50/100 y minimarket OK")
 
 # ===================== Otras validaciones =====================
@@ -331,7 +344,11 @@ for cur in ("KUR", "KUSD"):
 crystals_total = (sum(a.crystals for a in s.accounts.values())
                   + sum(l.quantity for l in s.listings.values() if l.status == "open")
                   + sum(e["crystals"] for c in s.challenges.values() for e in c.entries.values()))
-assert crystals_total == 10 * 40 + s.crystals_from_bots - s.crystals_to_bots, crystals_total
+assert crystals_total == 10 * 40 - s.crystals_consumed, crystals_total
+for c in s.challenges.values():
+    if c.status == "settled": assert all(e["crystals"] == 0 for e in c.entries.values())
+assert not any(l.status == "sold" and not s.account(l.buyer).access_unlocked for l in s.listings.values())
+assert not any(not s.account(l.seller).access_unlocked for l in s.listings.values())
 print(f"conservación de $KUR/$KUSD y cristales en 6000 operaciones aleatorias OK "
       f"(casa: {s.house['KUR']:.2f} KUR · {s.house['KUSD']:.2f} KUSD)")
 

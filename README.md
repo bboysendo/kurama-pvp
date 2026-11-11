@@ -64,12 +64,12 @@ Abre el enlace que imprime Streamlit (normalmente `http://localhost:8501`). La w
 Libro mayor interno en Python puro (sin Streamlit ni web3): saldos $KUR / $KUSD, cristales, Elo,
 cupo diario Free, histórico de combates, escrow de retos y comisión de la casa. Validado con
 `python engine/test_economy_rules.py`. Todas las cifras son constantes al principio del módulo.
-Reglas definitivas (10/11/2026):
+Reglas definitivas (11/11/2026):
 
 | Regla | Dónde |
 |---|---|
-| **Acceso**: NFT **o** 300 combates totales (Free + Competitivo, histórico) → desbloquea Competitivo, depósitos y retiradas. Sin acceso solo quedan las 10 Free diarias (el camino hacia los 300) | `Account.access_unlocked` · `access_status(w)` · `deposit()` / `withdraw()` |
-| **Free con cristales** (solo NFT): apuesta 1 💎 cada uno; gana → cristales en juego, +20 Elo, +3 $KUR; pierde → −10 Elo y su cristal; 60 s sin rival real → Bot (aporta el otro cristal) | `create_challenge(w, ChallengeKind.FREE)` (la variante la decide el NFT) · `process_expired()` · `report_result()` |
+| **Acceso**: NFT **o** 300 combates totales (Free + Competitivo, histórico) → **acceso completo**: Competitivo, depósitos, retiradas y **compraventa en el market de ítems**. Sin acceso solo quedan las 10 Free diarias (el camino hacia los 300) | `Account.access_unlocked` · `access_status(w)` (`can_trade_market`) · `deposit()` / `withdraw()` · `list_item()` / `buy_listing()` |
+| **Free con cristales** (solo NFT): cada partida **gasta 1 💎** (se consume siempre; no hay bote ni se roban cristales del rival); gana → +20 Elo y +3 $KUR; pierde → −10 Elo y pierde el cristal; empate → Elo igual y cristal gastado; cancelar antes de jugar lo devuelve. 60 s sin rival real → Bot, mismas recompensas | `create_challenge(w, ChallengeKind.FREE)` (la variante la decide el NFT) · `process_expired()` · `report_result()` |
 | **Free sin cristales** (solo SIN NFT): 10 al día (UTC), sin apuesta ni $KUR, ±10 Elo; 60 s sin rival real → Bot | ídem · `free_ranked_remaining(w)` |
 | **Competitivo** ($KUR / $KUSD): ilimitado, sin cristales, escrow, ganador = bote − 10 %, empate = reembolso, ±25 Elo. **Cero bots**: a los 60 s la búsqueda se relanza (`Challenge.relaunches`) hasta que acepte un jugador real o el creador cancele | `create_challenge(w, ChallengeKind.MONEY, stake, Currency.KUR \| KUSD)` |
 | Lista pública: cada cuenta ve solo los retos que puede aceptar (su variante de Free, o los competitivos) | `visible_challenges(viewer, kind=None)` |
@@ -87,7 +87,7 @@ jugadas mueve el equipo local; aun así el libro mayor nunca asigna un bot en Co
 - Publicar: `list_item(vendedor, tipo, cantidad, precio_kusd)` — el ítem queda en escrow.
 - Comprar: `buy_listing(comprador, listing_id)` — cobra $KUSD, la casa se queda el 10 % (`HOUSE_FEE_PCT`), el vendedor recibe el 90 %.
 - Retirar: `cancel_listing(vendedor, listing_id)` · Listar: `open_listings(tipo)`.
-- `crystals` viene registrado (cualquiera con cristales puede venderlos). Para un ítem nuevo:
-  `register_item_type("skin", take=fn_quitar, give=fn_entregar, requires_unlock=True)` — con
-  `requires_unlock=True` solo venden cuentas con NFT o con 300 combates.
+- **Publicar y comprar exige acceso completo** (NFT o 300 combates) para cualquier ítem, cristales incluidos.
+  `access_status(w)["can_trade_market"]` lo expone para el market. Para un ítem nuevo:
+  `register_item_type("skin", take=fn_quitar, give=fn_entregar)`.
 - Comisiones acumuladas: `server.house` · auditoría de cada movimiento: `server.journal` · persistencia: `to_json()` / `EconomyServer.from_json()`.
