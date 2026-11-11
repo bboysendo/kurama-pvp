@@ -21,7 +21,13 @@ Reglas DEFINITIVAS (revisión 11/11/2026):
      desbloquearse nadie sin NFT).
 
 2. MODO FREE
-   a) CON CRISTALES (ChallengeKind.CRYSTAL) — EXCLUSIVO de cuentas con NFT.
+   ESTATUS NFT: una cuenta tiene "estatus NFT" si posee un NFT o si
+   acumula ACCESS_BATTLES_REQUIRED (300) batallas totales (veterana). Con
+   300+ batallas se la trata EXACTAMENTE igual que a una cuenta con NFT
+   (Free con cristales, Competitivo, depósitos, market) aunque no tenga
+   ningún NFT equipado. Ver Account.nft_status.
+   a) CON CRISTALES (ChallengeKind.CRYSTAL) — EXCLUSIVO de cuentas con
+      estatus NFT. Apuesta FIJA: no existe apostar varios cristales.
       Cada partida GASTA exactamente CRYSTAL_STAKE (1) cristal propio: se
       retiene al lanzar/aceptar el reto y se CONSUME al jugarse, pase lo que
       pase. Los cristales NO se acumulan en un bote ni se roban al rival.
@@ -32,12 +38,16 @@ Reglas DEFINITIVAS (revisión 11/11/2026):
       antes de jugarse se devuelve el cristal.
       Sin retador real en CHALLENGE_EXPIRY_SECONDS (60 s) -> BOT, con las
       mismas recompensas/penalizaciones (el bot no apuesta cristales).
-   b) SIN CRISTALES (ChallengeKind.FREE) — EXCLUSIVO de cuentas SIN NFT.
+   b) SIN CRISTALES (ChallengeKind.FREE) — EXCLUSIVO de cuentas SIN estatus
+      NFT (sin NFT y con menos de 300 batallas).
       FREE_DAILY_RANKED_LIMIT (10) oportunidades al día (UTC). No se apuesta
       nada ni se gana $KUR. Gana +10 Elo, pierde -10 Elo.
       Sin retador real en 60 s -> BOT.
-   Una cuenta con NFT juega siempre Free con cristales (sin cristales no
-   puede jugar Free); una cuenta sin NFT juega siempre Free sin cristales.
+   Una cuenta con estatus NFT juega siempre Free con cristales (sin
+   cristales no puede jugar Free); una cuenta sin estatus NFT juega siempre
+   Free sin cristales. Al alcanzar las 300 batallas cambia de variante sola
+   (si tenía un reto Free abierto de la variante anterior, se retira y se
+   reembolsa).
 
 3. MODO COMPETITIVO (ChallengeKind.MONEY) — apuestas reales en $KUSD o $KUR
    - Requiere cuenta desbloqueada (punto 1). Sin cristales y sin límite
@@ -104,6 +114,15 @@ EVOLUTION_PATH: dict[NFTRarity, tuple[NFTRarity, int]] = {
 }
 
 BOT = "BOT"
+# Cuentas de bot (respaldo automático de Free). Nunca publican retos ni
+# aparecen en la lista pública: solo entran en segundo plano vía
+# process_expired() cuando un reto Free se queda sin rival real.
+BOT_WALLET_PREFIX = "bot:"
+
+
+def is_bot_wallet(wallet: Optional[str]) -> bool:
+    w = (wallet or "").lower()
+    return w == BOT.lower() or w.startswith(BOT_WALLET_PREFIX)
 
 
 class Currency(str, Enum):
@@ -156,17 +175,29 @@ class Account:
         return bool(self.nft_token_ids)
 
     @property
+    def veteran(self) -> bool:
+        """Ha acumulado ACCESS_BATTLES_REQUIRED (300) batallas totales."""
+        return self.battles_total >= ACCESS_BATTLES_REQUIRED
+
+    @property
+    def nft_status(self) -> bool:
+        """Estatus equivalente a tener NFT: NFT real o 300+ batallas. Decide
+        la variante Free (con cristales) y el acceso completo."""
+        return self.has_nft or self.veteran
+
+    @property
     def access_unlocked(self) -> bool:
         """Depósitos, retiradas, Competitivo y venta en el mercado."""
-        return self.has_nft or self.battles_total >= ACCESS_BATTLES_REQUIRED
+        return self.nft_status
 
     # Alias de compatibilidad con el nombre anterior.
     money_unlocked = access_unlocked
 
     @property
     def free_kind(self) -> ChallengeKind:
-        """Variante de Free que le corresponde: con NFT -> cristales; sin NFT -> sin cristales."""
-        return ChallengeKind.CRYSTAL if self.has_nft else ChallengeKind.FREE
+        """Variante de Free: estatus NFT (NFT o 300+ batallas) -> con cristales;
+        sin estatus NFT -> sin cristales (10/día)."""
+        return ChallengeKind.CRYSTAL if self.nft_status else ChallengeKind.FREE
 
 
 @dataclass
@@ -276,6 +307,9 @@ class EconomyServer:
         ok_free, why_free = self.can_play_free(wallet)
         return {
             "has_nft": acc.has_nft,
+            "nft_status": acc.nft_status,
+            "veteran": acc.veteran,
+            "elo": acc.elo,
             "battles_total": acc.battles_total,
             "battles_required": ACCESS_BATTLES_REQUIRED,
             "unlocked": acc.access_unlocked,
@@ -291,9 +325,9 @@ class EconomyServer:
 
     def can_play_free(self, wallet: str) -> tuple[bool, str]:
         acc = self.account(wallet)
-        if acc.has_nft:
+        if acc.nft_status:
             if acc.crystals < CRYSTAL_STAKE:
-                return False, (f"Con NFT el modo Free se juega con cristales: necesitas al menos "
+                return False, (f"Con NFT (o {ACCESS_BATTLES_REQUIRED}+ batallas) el modo Free se juega con cristales: necesitas al menos "
                                f"{CRYSTAL_STAKE} 💎 (consíguelos en el runner).")
             return True, ""
         if self._free_used_today(acc) >= FREE_DAILY_RANKED_LIMIT:
@@ -330,18 +364,43 @@ class EconomyServer:
             acc.balances[cur] = _money(amount)
             self._log("balance", wallet=acc.wallet, currency=cur, delta=delta, reason="sync")
 
-    def set_nfts(self, wallet: str, token_ids: list[int]) -> None:
-        """Sincroniza los NFT que posee la cuenta (indexador/servidor)."""
+    def set_nfts(self, wallet: str, token_ids: list[int]) -> Optional[Challenge]:
+        """Sincroniza los NFT que posee (o tiene equipados) la cuenta.
+
+        Si el cambio altera su variante Free (con NFT -> con cristales; sin
+        NFT -> sin cristales) y tenía abierto un reto Free de la variante
+        anterior, ese reto ya no es válido: se retira y se reembolsa (cristal
+        u oportunidad del día). Devuelve el reto retirado, o None."""
         acc = self.account(wallet)
         acc.nft_token_ids = sorted(set(int(t) for t in token_ids))
+        return self._retire_mismatched_free_challenge(acc)
 
-    def set_battles(self, wallet: str, n: int) -> None:
+    def _retire_mismatched_free_challenge(self, acc: Account) -> Optional[Challenge]:
+        ch = self.open_challenge_of(acc.wallet)
+        if ch is None or ch.kind == ChallengeKind.MONEY.value or ch.kind == acc.free_kind.value:
+            return None
+        self._refund_entry(ch, ch.creator)
+        ch.status = ChallengeStatus.CANCELLED.value
+        self._log("challenge_cancel", id=ch.id, reason="free_variant_changed")
+        return ch
+
+    @staticmethod
+    def _creator_fits_variant(ch: Challenge, creator: Account) -> bool:
+        """El creador sigue cumpliendo la variante de su reto Free."""
+        if ch.kind == ChallengeKind.CRYSTAL.value:
+            return creator.nft_status
+        if ch.kind == ChallengeKind.FREE.value:
+            return not creator.nft_status
+        return True
+
+    def set_battles(self, wallet: str, n: int) -> Optional[Challenge]:
         """Fija el histórico de combates (migración / soporte / pruebas)."""
         if n < 0:
             raise EconomyError("Los combates no pueden ser negativos.")
         acc = self.account(wallet)
         acc.battles_total = int(n)
         self._log("battles", wallet=acc.wallet, total=acc.battles_total, reason="set")
+        return self._retire_mismatched_free_challenge(acc)
 
     # ------------------------------------------------------------- cristales
     def grant_crystals(self, wallet: str, source: str, amount: Optional[int] = None) -> int:
@@ -394,9 +453,9 @@ class EconomyServer:
 
     def free_ranked_remaining(self, wallet: str) -> Optional[int]:
         """Partidas Free sin cristales que le quedan hoy. None si la cuenta
-        tiene NFT (no usa el cupo diario: juega Free con cristales)."""
+        tiene estatus NFT (no usa el cupo diario: juega Free con cristales)."""
         acc = self.account(wallet)
-        if acc.has_nft:
+        if acc.nft_status:
             return None
         return max(0, FREE_DAILY_RANKED_LIMIT - self._free_used_today(acc))
 
@@ -405,6 +464,7 @@ class EconomyServer:
         acc.battles_total += 1
         if not before and acc.access_unlocked:
             self._log("access_unlocked", wallet=acc.wallet, battles=acc.battles_total)
+            self._retire_mismatched_free_challenge(acc)  # pasa a Free con cristales
 
     # ---------------------------------------------------------------- retos
     def _pay_entry(self, acc: Account, ch: Challenge) -> None:
@@ -413,8 +473,11 @@ class EconomyServer:
         entry = {"crystals": 0, "free_slot": False, "stake": 0.0, "mode": ch.kind}
         kind = ChallengeKind(ch.kind)
         if kind is ChallengeKind.CRYSTAL:
-            if not acc.has_nft:
-                raise EconomyError("El modo Free con cristales es exclusivo de cuentas con NFT.")
+            if not acc.nft_status:
+                raise EconomyError(
+                    f"El modo Free con cristales es exclusivo de cuentas con NFT "
+                    f"(o con {ACCESS_BATTLES_REQUIRED} batallas; llevas {acc.battles_total})."
+                )
             if acc.crystals < CRYSTAL_STAKE:
                 raise EconomyError(
                     f"Necesitas al menos {CRYSTAL_STAKE} 💎 para jugar Free con cristales "
@@ -423,9 +486,10 @@ class EconomyServer:
             self._take_crystals(acc, CRYSTAL_STAKE)
             entry["crystals"] = CRYSTAL_STAKE
         elif kind is ChallengeKind.FREE:
-            if acc.has_nft:
+            if acc.nft_status:
                 raise EconomyError(
-                    "Las partidas Free sin cristales son exclusivas de cuentas sin NFT: "
+                    "Las partidas Free sin cristales son exclusivas de cuentas sin NFT "
+                    f"(y con menos de {ACCESS_BATTLES_REQUIRED} batallas): "
                     "con NFT juegas Free con cristales."
                 )
             if self._free_used_today(acc) >= FREE_DAILY_RANKED_LIMIT:
@@ -461,18 +525,30 @@ class EconomyServer:
 
     def visible_challenges(self, viewer: Optional[str] = None,
                            kind: Optional[ChallengeKind] = None) -> list[Challenge]:
-        """Retos abiertos que `viewer` puede aceptar. Sin `kind` se usa la
-        variante Free que le corresponde (con NFT -> con cristales; sin NFT ->
-        sin cristales). Para el lobby Competitivo, kind=ChallengeKind.MONEY.
-        Excluye los retos del propio `viewer`."""
+        """Lista PÚBLICA de retos abiertos que `viewer` puede aceptar.
+
+        - Competitivo: kind=ChallengeKind.MONEY.
+        - Free: el viewer SOLO ve su propia variante, se pida el `kind` que se
+          pida (FREE o CRYSTAL), para que la UI no pueda mezclarlas:
+            * con NFT  -> solo humanos que apuestan cristales (CRYSTAL);
+            * sin NFT  -> solo humanos sin cristales (FREE).
+        - Nunca incluye bots (son respaldo en segundo plano, ver
+          process_expired) ni retos cuyo creador ya no cumple su variante.
+        - Excluye los retos del propio `viewer`."""
         self.process_expired()
         v = viewer.lower() if viewer else None
-        if kind is None:
-            kind = self.account(v).free_kind if v else ChallengeKind.CRYSTAL
-        kind = ChallengeKind(kind)
+        requested = ChallengeKind(kind) if kind is not None else None
+        if requested is ChallengeKind.MONEY:
+            kind = ChallengeKind.MONEY
+        elif v:
+            kind = self.account(v).free_kind
+        else:
+            kind = requested or ChallengeKind.CRYSTAL
         return sorted(
             (c for c in self.challenges.values()
-             if c.status == ChallengeStatus.OPEN.value and c.kind == kind.value and c.creator != v),
+             if c.status == ChallengeStatus.OPEN.value and c.kind == kind.value and c.creator != v
+             and not is_bot_wallet(c.creator)
+             and self._creator_fits_variant(c, self.account(c.creator))),
             key=lambda c: c.expires_at,
         )
 
@@ -488,6 +564,8 @@ class EconomyServer:
         self.process_expired()
         kind = ChallengeKind(kind)
         acc = self.account(wallet)
+        if is_bot_wallet(acc.wallet):
+            raise EconomyError("Los bots no publican retos: solo actúan como respaldo automático.")
         if self.open_challenge_of(acc.wallet):
             raise EconomyError("Ya tienes un reto abierto: espera a que se acepte, expire o cancélalo.")
         if kind is ChallengeKind.MONEY:

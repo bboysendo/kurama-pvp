@@ -108,6 +108,17 @@ PVP_ROOT = _PVP_ROOT
 DATABASE_PATH = ENGINE_DIR / "cards_database.json"
 ESCENARIO_PATH = PVP_ROOT / "escenario.png"
 DEFAULT_GAMENFT_ID = 0  # Fox fijo de GAMENFT/ para Bot/rival y Free sin NFT — ver gamenft_avatar_path
+# Opción "Ninguno / Sin NFT (Modo Test)" del selector 🎴 Maestro equipado: simula
+# una cuenta SIN NFT aunque la wallet tenga alguno, para probar todas las
+# restricciones (Free sin cristales 10/día, Competitivo/depósitos/retiradas/
+# market bloqueados hasta 300 combates). -1 nunca es un token_id real.
+NO_NFT_TEST_ID = -1
+NO_NFT_TEST_LABEL = "🚫 Ninguno / Sin NFT (Modo Test)"
+
+
+def no_nft_test_mode() -> bool:
+    """¿Está elegido "Ninguno / Sin NFT (Modo Test)" en el selector de Maestro?"""
+    return st.session_state.get("equipped_token_id") == NO_NFT_TEST_ID
 
 # Única fuente de verdad para las 4 secciones del panel — la navegación vive
 # exclusivamente en el menú superior (st.popover "☰ MENÚ DE NAVEGACIÓN", ver
@@ -283,7 +294,22 @@ def sync_economy(connector: BlockchainConnector, wallet_address: str) -> None:
     sus NFT (deciden el acceso y la variante de Free) y su saldo $KUR. Es un
     ajuste de servidor, no un depósito del usuario (ver sync_balance)."""
     econ = econ_server()
-    econ.set_nfts(wallet_address, connector.owned_token_ids(wallet_address))
+    # Modo Test "Sin NFT": el libro mayor ve la cuenta sin NFT (sin tocar la
+    # wallet simulada), así acceso, variante Free y market se recalculan solos.
+    nfts = [] if no_nft_test_mode() else connector.owned_token_ids(wallet_address)
+    # Si el selector cambió de "con NFT" a "Ninguno / Sin NFT" (o al revés) con
+    # un reto Free propio abierto, el servidor lo retira y reembolsa: un reto
+    # con cristales no puede seguir publicado desde una cuenta sin NFT, ni uno
+    # sin cristales desde una cuenta con NFT.
+    retired = econ.set_nfts(wallet_address, nfts)
+    if retired is not None:
+        if st.session_state.get("own_challenge_id") == retired.id:
+            st.session_state["own_challenge_id"] = None
+            st.session_state["matchmaking_start"] = None
+        st.session_state["challenge_notice"] = {
+            "text": "Reto retirado al cambiar de NFT equipado: se te ha devuelto lo apostado.",
+            "until": time.time() + 8,
+        }
     econ.sync_balance(wallet_address, Currency.KUR, connector.kur_balance(wallet_address))
 
 
@@ -298,43 +324,43 @@ def push_kur(connector: BlockchainConnector, wallet_address: str) -> None:
 
 
 def player_has_nft(wallet_address: str) -> bool:
+    """NFT real equipado/en la wallet (decide HP, rareza y buff de mazo)."""
     return econ_server().account(wallet_address).has_nft
 
 
-CRYSTAL_SELECTOR_OPTIONS = [0, 1, 2, 3, 4, 5]
+def player_nft_status(wallet_address: str) -> bool:
+    """Estatus NFT a efectos de economía: NFT real O 300+ batallas totales
+    (economy_rules.Account.nft_status). Decide Free con/sin cristales."""
+    return econ_server().account(wallet_address).nft_status
+
+
+def crystal_balance_label(n: int) -> str:
+    return f"{n} cristal{'es' if n != 1 else ''} disponible{'s' if n != 1 else ''}"
 
 
 def crystal_status_text(wallet_address: str) -> tuple[str, bool]:
     """(texto, ok) — qué variante de Free le toca a la cuenta y si puede jugarla."""
     econ = econ_server()
     n = player_crystals(wallet_address)
-    if player_has_nft(wallet_address):
+    if player_nft_status(wallet_address):
         if n >= CRYSTAL_STAKE:
-            return (f"💎 Tienes {n} · cada reto gasta {CRYSTAL_STAKE} "
-                    f"(al lanzar: {n} → {n - CRYSTAL_STAKE})"), True
-        return f"⚠️ Sin cristales: necesitas al menos {CRYSTAL_STAKE} 💎 para lanzar un reto Free", False
+            return (f"💎 Free con cristales · apuesta fija {CRYSTAL_STAKE} 💎 por combate "
+                    f"(al luchar: {n} → {n - CRYSTAL_STAKE})"), True
+        return f"⚠️ 0 cristales: necesitas {CRYSTAL_STAKE} 💎 para lanzar o aceptar un reto Free", False
     left = econ.free_ranked_remaining(wallet_address)
-    extra = " (sin NFT los cristales no se usan en PvP)" if n else ""
-    return f"🎟️ Free sin cristales: {left}/{FREE_DAILY_RANKED_LIMIT} partidas hoy{extra}", left > 0
+    extra = " · sin NFT los cristales no se usan" if n else ""
+    return f"🎟️ Free sin cristales: {left}/{FREE_DAILY_RANKED_LIMIT} batallas hoy{extra}", left > 0
 
 
 def render_crystal_selector(wallet_address: str) -> None:
-    """Saldo de cristales del jugador (panel izquierdo). El valor mostrado
-    es SIEMPRE el del libro mayor (los cristales se apuestan y se ganan en
-    Free con cristales); el selector 0-5 es una herramienta de pruebas que
-    fija ese saldo al pulsarlo, nunca lo pisa en cada rerun."""
-    n = player_crystals(wallet_address)
-    options = sorted(set(CRYSTAL_SELECTOR_OPTIONS) | {n})
-    st.session_state["player_crystals_widget"] = n
-
-    def _store_crystals() -> None:
-        v = st.session_state.get("player_crystals_widget")
-        if v is not None:  # volver a pulsar el valor activo lo deselecciona: se ignora
-            econ_server().set_crystals(wallet_address, int(v))
-
-    text, ok = crystal_status_text(wallet_address)
+    """Saldo REAL de cristales de la cuenta (libro mayor) + control de
+    pruebas ➖/➕ (de 1 en 1) para alternar entre jugar con 0 cristales y con
+    1. La apuesta es SIEMPRE de CRYSTAL_STAKE (1) cristal por combate: no hay
+    selector de cuántos apostar."""
     econ = econ_server()
-    has_nft = player_has_nft(wallet_address)
+    acc = econ.account(wallet_address)
+    n = acc.crystals
+    text, ok = crystal_status_text(wallet_address)
     # ¿Hay un reto Free con cristales nuestro en curso? Su cristal ya salió
     # del saldo (retenido al lanzar) y se consumirá al jugarse.
     own = econ.challenges.get(st.session_state.get("own_challenge_id")) \
@@ -343,41 +369,62 @@ def render_crystal_selector(wallet_address: str) -> None:
     if own is not None and own.kind == ChallengeKind.CRYSTAL.value and own.status in (
         ChallengeStatus.OPEN.value, ChallengeStatus.MATCHED.value, ChallengeStatus.VS_BOT.value
     ):
-        staked = (own.entries.get(econ.account(wallet_address).wallet) or {}).get("crystals", 0)
+        staked = (own.entries.get(acc.wallet) or {}).get("crystals", 0)
+
     with st.container(key="crystal_selector"):
         st.markdown("<div class='crystal-sel-title'>💎 CRISTALES DEL JUGADOR</div>", unsafe_allow_html=True)
-        if has_nft:
-            # Stock visual: cada gema = 1 cristal disponible; la siguiente
-            # que se gastará al lanzar va marcada; la retenida en un reto en
-            # curso aparece aparte como "en juego".
-            slots = max(len(CRYSTAL_SELECTOR_OPTIONS) - 1, n)
-            gems = "".join(
-                f"<span class='crystal-gem {'next' if i == n - 1 and not staked else 'on' if i < n else 'off'}'>💎</span>"
-                for i in range(slots)
-            )
-            if staked:
-                gems += f"<span class='crystal-gem staked' title='Cristal apostado en el reto en curso'>💎</span>"
-            label = (f"{n} disponible{'s' if n != 1 else ''}"
-                     + (f" · {staked} en juego (se consume)" if staked else ""))
-            st.markdown(
-                f"<div class='crystal-stock'>{gems}</div><div class='crystal-stock-label'>{label}</div>",
-                unsafe_allow_html=True,
-            )
-        st.segmented_control(
-            "Cristales del jugador",
-            options=options,
-            key="player_crystals_widget",
-            on_change=_store_crystals,
-            label_visibility="collapsed",
-            help="Saldo de cristales (pulsar fija el saldo — herramienta de pruebas). "
-                 f"Con NFT: Free con cristales, cada partida gasta {CRYSTAL_STAKE} 💎 (no se recupera). "
-                 f"Sin NFT: Free sin cristales, {FREE_DAILY_RANKED_LIMIT} partidas al día. "
-                 "El Competitivo no usa cristales.",
+        shown = min(n, 10)
+        gems = "".join(
+            f"<span class='crystal-gem {'next' if i == shown - 1 and not staked and acc.nft_status else 'on'}'>💎</span>"
+            for i in range(shown)
+        ) + (f"<span class='crystal-more'>+{n - shown}</span>" if n > shown else "")
+        if not n:
+            gems = "<span class='crystal-gem off'>💎</span>"
+        if staked:
+            gems += "<span class='crystal-gem staked' title='Cristal apostado en el reto en curso'>💎</span>"
+        st.markdown(
+            f"<div class='crystal-balance'>{crystal_balance_label(n)}</div>"
+            f"<div class='crystal-stock'>{gems}</div>"
+            + (f"<div class='crystal-stock-label'>+ {staked} en juego (se consume al luchar)</div>" if staked else "")
+            + f"<div class='crystal-stake-rule'>Apuesta fija: {CRYSTAL_STAKE} 💎 por combate · se consume al luchar</div>",
+            unsafe_allow_html=True,
         )
+        with st.container(key="crystal_dev_controls"):
+            c_lbl, c_minus, c_plus = st.columns([2.2, 1, 1], vertical_alignment="center")
+            c_lbl.markdown("<span class='crystal-dev-tag'>🧪 Test</span>", unsafe_allow_html=True)
+            if c_minus.button("➖", key="crystal_dev_minus", disabled=n <= 0,
+                              help="Quitar 1 cristal (pruebas): 1 → 0 para jugar sin gastar."):
+                econ.set_crystals(wallet_address, n - 1)
+                st.rerun()
+            if c_plus.button("➕", key="crystal_dev_plus",
+                             help="Añadir 1 cristal (pruebas): 0 → 1 para jugar con cristal."):
+                econ.set_crystals(wallet_address, n + 1)
+                st.rerun()
         st.markdown(
             f"<div class='crystal-sel-status {'unlimited' if ok else 'limited'}'>{text}</div>",
             unsafe_allow_html=True,
         )
+
+
+def render_battle_counter(wallet_address: str) -> None:
+    """Contador de batallas totales (histórico) + Elo y progreso hacia las
+    300 que dan estatus NFT sin tener NFT."""
+    acc = econ_server().account(wallet_address)
+    done, need = acc.battles_total, ACCESS_BATTLES_REQUIRED
+    with st.container(key="battle_counter"):
+        if acc.has_nft:
+            badge = "<span class='bc-badge nft'>🦊 NFT</span>"
+        elif acc.veteran:
+            badge = "<span class='bc-badge vet'>🏅 Estatus NFT por experiencia</span>"
+        else:
+            badge = f"<span class='bc-badge free'>🎟️ Free · faltan {need - done}</span>"
+        st.markdown(
+            f"<div class='bc-row'><span class='bc-title'>⚔️ BATALLAS TOTALES</span>{badge}</div>"
+            f"<div class='bc-count'>{done}<span class='bc-of'> / {need}</span>"
+            f"<span class='bc-elo'>Elo {acc.elo}</span></div>",
+            unsafe_allow_html=True,
+        )
+        st.progress(min(1.0, done / need))
 
 
 def render_access_panel(connector: BlockchainConnector, wallet_address: str) -> None:
@@ -385,21 +432,22 @@ def render_access_panel(connector: BlockchainConnector, wallet_address: str) -> 
     de $KUR, que solo funcionan con la cuenta desbloqueada."""
     econ = econ_server()
     status = econ.access_status(wallet_address)
+    render_battle_counter(wallet_address)
     with st.container(key="access_panel"):
         if status["unlocked_by"] == "nft":
             st.success("🔓 Acceso completo (tienes NFT): Competitivo, depósitos, retiradas "
                        "y compraventa en el market de ítems.")
         elif status["unlocked_by"] == "battles":
-            st.success(f"🔓 Acceso completo ({status['battles_total']} combates): "
-                       "Competitivo, depósitos, retiradas y compraventa en el market de ítems.")
+            st.success(f"🔓 Estatus NFT por {status['battles_total']} batallas (sin NFT equipado): "
+                       "Free con cristales, Competitivo, depósitos, retiradas y market.")
         else:
             done = status["battles_total"]
             st.warning(
-                f"🔒 Sin NFT y con {done}/{ACCESS_BATTLES_REQUIRED} combates: Competitivo, depósitos, "
-                f"retiradas y compraventa en el market bloqueados. Juega tus {FREE_DAILY_RANKED_LIMIT} Free diarias para llegar a "
-                f"{ACCESS_BATTLES_REQUIRED} (o consigue un NFT)."
+                f"🔒 Modo Free estricto (sin NFT, {done}/{ACCESS_BATTLES_REQUIRED} batallas): "
+                f"{FREE_DAILY_RANKED_LIMIT} batallas al día sin cristales · Victoria +{FREE_RANKED_ELO_WIN} Elo · "
+                f"Derrota {FREE_RANKED_ELO_LOSS} Elo. Competitivo, depósitos, retiradas y market bloqueados "
+                f"hasta {ACCESS_BATTLES_REQUIRED} batallas (o con un NFT)."
             )
-            st.progress(min(1.0, done / ACCESS_BATTLES_REQUIRED))
         with st.expander("💼 Depositar / Retirar $KUR"):
             amount = st.number_input("Importe ($KUR)", min_value=0.0, value=10.0, step=5.0, key="cash_amount")
             c_dep, c_wd = st.columns(2)
@@ -447,6 +495,8 @@ def resolve_equipped_rarity(connector: BlockchainConnector, wallet_address: str)
     list_gamenft_ids); si no hay ninguno elegido todavía, cae a la mejor
     rareza disponible en la wallet — mismo comportamiento que antes."""
     equipped_id = st.session_state.get("equipped_token_id")
+    if equipped_id == NO_NFT_TEST_ID:
+        return NFTRarity.NONE  # Modo Test sin NFT: HP base y mazo de cuenta sin NFT
     if equipped_id is not None:
         return derive_placeholder_rarity(equipped_id)
     return connector.best_rarity_for_wallet(wallet_address)
@@ -1046,7 +1096,7 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
             )
         else:
             acc = econ_server().account(wallet_address)
-            if acc.has_nft:
+            if acc.nft_status:
                 st.caption(
                     f"💎 Free con cristales: apuestas {CRYSTAL_STAKE} cristal (tienes {acc.crystals}). "
                     f"Victoria: +{CRYSTAL_ELO_WIN} Elo y +{CRYSTAL_WIN_KUR_REWARD:.0f} $KUR. "
@@ -1247,12 +1297,12 @@ def render_new_match_button(connector: BlockchainConnector, wallet_address: str,
 # "Cancelar Reto" o aceptar el reto de otro jugador retiran el propio y
 # devuelven lo apostado (cristal, oportunidad del día o $KUR en escrow).
 # --------------------------------------------------------------------------- #
-SIMULATED_BOT_NAME_POOL = [
+SIMULATED_PLAYER_NAME_POOL = [
     "KitsuneMaster_99", "ShadowKitsune", "CyberFox_X", "KitsuneRogue", "FireFox_99",
     "NightVixen", "PhantomFox", "BlazeKitsune", "FrostFox_7", "VoidKitsune",
     "EmberTail", "MoonVixen", "RoninFox_21", "SakuraKit", "StormKitsune", "AshFox_88",
 ]
-BOT_CHALLENGE_COUNT = 5
+PUBLIC_CHALLENGE_COUNT = 5
 # Simulación de jugadores reales (prototipo sin backend multijugador):
 # probabilidad de que un jugador simulado acepte NUESTRO reto competitivo en
 # cada ventana de 60 s. Si no acepta nadie, la búsqueda se relanza; jamás
@@ -1260,10 +1310,15 @@ BOT_CHALLENGE_COUNT = 5
 SIM_ACCEPT_OWN_MONEY_PROB = 0.35
 
 
-def _sim_meta(rng: random.Random, name: str) -> dict:
+def _sim_meta(rng: random.Random, name: str, has_nft: bool = True) -> dict:
+    """Maestro mostrado en la fila del retador. Un retador SIN NFT (Free sin
+    cristales) no puede lucir un Fox con rareza: usa el Fox por defecto y HP
+    base, igual que un jugador real sin NFT."""
+    if not has_nft:
+        return {"name": name, "gamenft_id": DEFAULT_GAMENFT_ID, "rarity": NFTRarity.NONE, "has_nft": False}
     ids = list_gamenft_ids()
     gid = rng.choice(ids) if ids else rng.randrange(1600)
-    return {"name": name, "gamenft_id": gid, "rarity": derive_placeholder_rarity(gid)}
+    return {"name": name, "gamenft_id": gid, "rarity": derive_placeholder_rarity(gid), "has_nft": True}
 
 
 def _settle_offscreen_sim_matches(rng: random.Random) -> None:
@@ -1299,13 +1354,13 @@ def _refresh_sim_challenges(wallet_address: str, competitive: bool) -> list:
     meta = st.session_state.sim_challenge_meta
     visible = econ.visible_challenges(wallet_address, kind)
     tries = 0
-    while len(visible) < BOT_CHALLENGE_COUNT and tries < 40:
+    while len(visible) < PUBLIC_CHALLENGE_COUNT and tries < 40:
         tries += 1
-        name = rng.choice(SIMULATED_BOT_NAME_POOL)
+        name = rng.choice(SIMULATED_PLAYER_NAME_POOL)
         sim_wallet = f"sim:{name.lower()}"
         if econ.open_challenge_of(sim_wallet):
             continue
-        m = _sim_meta(rng, name)
+        m = _sim_meta(rng, name, has_nft=kind is not ChallengeKind.FREE)
         try:
             if kind is ChallengeKind.MONEY:
                 econ.set_nfts(sim_wallet, [m["gamenft_id"]])
@@ -1335,7 +1390,7 @@ def _sim_accepts_own_money_challenge(own_ch) -> None:
     rng = random.Random()
     if rng.random() >= SIM_ACCEPT_OWN_MONEY_PROB:
         return
-    name = rng.choice(SIMULATED_BOT_NAME_POOL)
+    name = rng.choice(SIMULATED_PLAYER_NAME_POOL)
     sim_wallet = f"sim:{name.lower()}"
     if econ.open_challenge_of(sim_wallet):
         econ.cancel_challenge(sim_wallet, econ.open_challenge_of(sim_wallet).id)
@@ -1384,6 +1439,15 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
     timer_specs = []
     with st.container(key="bot_challenges_feed"):
         st.subheader("🔍 RETOS DISPONIBLES EN TIEMPO REAL")
+        _acc_view = econ_server().account(wallet_address)
+        if st.session_state.match_mode == "competitive":
+            st.caption("💰 Solo jugadores reales apostando $KUR · sin bots.")
+        elif _acc_view.nft_status:
+            st.caption(f"💎 Solo rivales reales (NFT o 300+ batallas) que apuestan 1 cristal · si nadie acepta tu reto en "
+                       f"{CHALLENGE_EXPIRY_SECONDS} s, juegas contra un bot automáticamente.")
+        else:
+            st.caption(f"🎟️ Solo jugadores sin estatus NFT (sin cristales) · si nadie acepta tu reto en "
+                       f"{CHALLENGE_EXPIRY_SECONDS} s, un bot entra de respaldo (nunca se lista aquí).")
 
         notice = st.session_state.get("challenge_notice")
         if notice and time.time() < notice["until"]:
@@ -1395,10 +1459,13 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
         own_id = st.session_state.get("own_challenge_id")
         own_ch = econ.challenges.get(own_id) if own_id is not None else None
 
+        # Variante que le toca ver/publicar AHORA: Competitivo -> MONEY; Free ->
+        # CRYSTAL con NFT equipado, FREE con "Ninguno / Sin NFT".
+        expected_kind = ChallengeKind.MONEY if is_competitive else econ.account(wallet_address).free_kind
         if own_ch is not None and own_ch.status == ChallengeStatus.OPEN.value and \
-                (own_ch.kind == ChallengeKind.MONEY.value) != is_competitive:
-            # Cambió de modo con un reto abierto del otro modo: se retira y
-            # se reembolsa (cristal, oportunidad del día o apuesta).
+                own_ch.kind != expected_kind.value:
+            # Cambió de modo (o de NFT) con un reto abierto de otra variante:
+            # se retira y se reembolsa (cristal, oportunidad del día o apuesta).
             econ.cancel_challenge(wallet_address, own_ch.id)
             push_kur(connector, wallet_address)
             st.session_state["own_challenge_id"] = own_ch = None
@@ -1481,6 +1548,8 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
         balance = acc.balances[Currency.KUR.value]
         for ch in visible:
             m = meta.get(ch.id, {"name": ch.creator, "gamenft_id": None, "rarity": NFTRarity.NONE})
+            nft_html = (f"Fox #{m['gamenft_id']} · {rarity_label(m['rarity'])}"
+                        if m.get("has_nft", True) else "🚫 Sin NFT")
             remaining = max(0.0, ch.expires_at - now)
             pct = max(5, int(remaining / CHALLENGE_EXPIRY_SECONDS * 100))
             tid = f"c{ch.id}"
@@ -1488,13 +1557,13 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
                 blocked_label = "🚫 Sin saldo" if ch.stake > balance else None
             else:
                 blocked_label = None if can_free else (
-                    f"🎟️ 0/{FREE_DAILY_RANKED_LIMIT} hoy" if not acc.has_nft else "💎 Sin cristales")
+                    f"🎟️ 0/{FREE_DAILY_RANKED_LIMIT} hoy" if not acc.nft_status else "💎 Sin cristales")
             with st.container(key=f"challenge_row_{tid}"):
                 btn_col = _render_challenge_row(
                     m["gamenft_id"],
                     f"<div class='challenge-rival-name'>🦊 {m['name']}</div>",
-                    f"<div class='challenge-rival-nft'>Fox #{m['gamenft_id']} · "
-                    f"{rarity_label(m['rarity'])} · HP {compute_base_hp(m['rarity'])} · "
+                    f"<div class='challenge-rival-nft'>{nft_html} · "
+                    f"HP {compute_base_hp(m['rarity'])} · "
                     f"<span id='challenge-seconds-{tid}'>{int(remaining)}</span>s</div>"
                     f"{_challenge_stake_html(ch)}",
                     tid, pct,
@@ -1686,7 +1755,7 @@ def render_wallet_and_nft_bar(
             render_battle_mode_bar(connector, wallet_address, card_pool)
             return
 
-        if st.session_state.get("equipped_token_id") not in gamenft_ids:
+        if st.session_state.get("equipped_token_id") not in (NO_NFT_TEST_ID, *gamenft_ids):
             best = connector.best_rarity_for_wallet(wallet_address)
             st.session_state.equipped_token_id = next(
                 (tid for tid in owned if derive_placeholder_rarity(tid) == best),
@@ -1695,26 +1764,46 @@ def render_wallet_and_nft_bar(
 
         equipped_id = st.selectbox(
             "🎴 Maestro equipado",
-            gamenft_ids,
-            format_func=lambda tid: (
+            [NO_NFT_TEST_ID, *gamenft_ids],
+            format_func=lambda tid: NO_NFT_TEST_LABEL if tid == NO_NFT_TEST_ID else (
                 f"Fox #{tid} · {rarity_label(derive_placeholder_rarity(tid))}"
                 + ("" if tid in owned else " (no en wallet)")
             ),
             key="equipped_token_id",
+            help="Elige «Ninguno / Sin NFT (Modo Test)» para jugar como una cuenta sin NFT "
+                 "(aunque tu wallet tenga alguno) y probar los bloqueos de acceso.",
         )
-        rarity = derive_placeholder_rarity(equipped_id)
+        test_no_nft = equipped_id == NO_NFT_TEST_ID
+        rarity = NFTRarity.NONE if test_no_nft else derive_placeholder_rarity(equipped_id)
         buff_pct = DECK_STAT_BUFF_PCT.get(rarity, 0.0)
+        if test_no_nft:
+            if econ_server().account(wallet_address).veteran:
+                st.info(
+                    f"🧪 Modo Test sin NFT (wallet real: {len(owned)} NFT) · tienes "
+                    f"{econ_server().account(wallet_address).battles_total} batallas → estatus NFT: "
+                    "Free con cristales y acceso completo aunque no lleves NFT equipado."
+                )
+            else:
+                st.info(
+                    f"🧪 Modo Test sin NFT: se te trata como cuenta SIN NFT (wallet real: {len(owned)} NFT). "
+                    f"Free sin cristales ({FREE_DAILY_RANKED_LIMIT}/día, ±10 Elo) y, hasta {ACCESS_BATTLES_REQUIRED} "
+                    "batallas, Competitivo, depósitos, retiradas y market bloqueados."
+                )
 
         with st.container(key="nft_card_row"):
             nft_col, action_col = st.columns([1, 1.3], gap="medium")
             with nft_col.container(key="nft_thumb_stats_row"):
                 img_col, stats_col = st.columns([1, 2], gap="small")
                 with img_col:
-                    fox_path = PVP_ROOT / "GAMENFT" / f"fox_{equipped_id}.png"
-                    if fox_path.exists():
-                        st.image(str(fox_path), width=180)
+                    if test_no_nft:
+                        st.markdown("<div class='no-nft-thumb'>🚫<br><span>Sin NFT</span></div>",
+                                    unsafe_allow_html=True)
+                    else:
+                        fox_path = PVP_ROOT / "GAMENFT" / f"fox_{equipped_id}.png"
+                        if fox_path.exists():
+                            st.image(str(fox_path), width=180)
                 with stats_col.container(key="nft_stats_col"):
-                    st.metric("NFTs · $KUR", f"{len(owned)} · {kur_balance:,.0f}")
+                    st.metric("NFTs · $KUR", f"{0 if test_no_nft else len(owned)} · {kur_balance:,.0f}")
                     st.metric("Rareza", rarity_label(rarity))
                     st.metric("HP base", compute_base_hp(rarity))
                     st.metric("Buff mazo", f"+{buff_pct:.0%}" if buff_pct else "—")
@@ -1768,7 +1857,12 @@ def render_wallet_config_expander(connector: BlockchainConnector, wallet_address
             value=int(econ.account(wallet_address).battles_total), step=50, key="battle_wallet_battles",
         )
         if st.button("💾 Actualizar wallet simulada", width="stretch", key="battle_wallet_update"):
-            econ.set_battles(wallet_address, int(new_battles))
+            if econ.set_battles(wallet_address, int(new_battles)) is not None:
+                st.session_state["challenge_notice"] = {
+                    "text": "Reto retirado: con este nº de batallas cambia tu variante Free. "
+                            "Se te ha devuelto lo apostado.",
+                    "until": time.time() + 8,
+                }
             try:
                 ids = [int(x.strip()) for x in new_ids.split(",") if x.strip()]
             except ValueError:
@@ -2401,8 +2495,8 @@ st.markdown(
         margin-left: 0.1rem;
     }
     /* Selector global de cristales del jugador (panel izquierdo, ver
-       render_crystal_selector): caja propia bien visible, botones 0-5 a
-       todo el ancho y estado en verde (ilimitado) o ámbar (10 al día). */
+       render_crystal_selector): caja propia bien visible, saldo real,
+       control de pruebas ➖/➕ y estado en verde (ilimitado) o ámbar (10 al día). */
     [class*="st-key-crystal_selector"] {
         border: 1px solid rgba(64, 200, 255, 0.55);
         background: rgba(64, 200, 255, 0.08);
@@ -2435,6 +2529,12 @@ st.markdown(
         background: linear-gradient(135deg, #1aa7e0, #40c8ff) !important; color: #00131d !important;
         border-color: #8fe3ff !important; box-shadow: 0 0 10px rgba(64, 200, 255, 0.7);
     }
+    .no-nft-thumb {
+        aspect-ratio: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+        font-size: 2.2rem; line-height: 1.1; border-radius: 12px; color: #ffd27a;
+        border: 2px dashed rgba(255, 179, 71, 0.6); background: rgba(255, 140, 0, 0.08);
+    }
+    .no-nft-thumb span { font-size: 0.75rem; font-weight: 800; letter-spacing: 0.05em; }
     .crystal-stock { display: flex; flex-wrap: wrap; gap: 0.25rem; font-size: 1.15rem; line-height: 1; }
     .crystal-gem { transition: opacity .2s, filter .2s; }
     .crystal-gem.off { opacity: 0.18; filter: grayscale(1); }
@@ -2444,6 +2544,26 @@ st.markdown(
                           filter: drop-shadow(0 0 6px #ff8c00); animation: crystal-pulse 0.9s ease-in-out infinite; }
     @keyframes crystal-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.18); } }
     .crystal-stock-label { font-size: 0.72rem; font-weight: 700; color: #8fd8ff; letter-spacing: 0.03em; }
+    .crystal-balance { font-size: 1.15rem; font-weight: 900; color: #e6f8ff; }
+    .crystal-more { font-size: 0.8rem; font-weight: 800; color: #8fd8ff; align-self: center; }
+    .crystal-stake-rule { font-size: 0.72rem; font-weight: 700; color: #ffd27a; }
+    .crystal-dev-tag { font-size: 0.72rem; font-weight: 800; color: rgba(220,220,220,0.6); letter-spacing: 0.05em; }
+    [class*="st-key-crystal_dev_controls"] button { min-height: 2rem; padding: 0 0.4rem; font-weight: 900;
+        background: rgba(8, 8, 14, 0.75) !important; border-color: rgba(64, 200, 255, 0.45) !important; }
+    [class*="st-key-battle_counter"] {
+        border: 1px solid rgba(255, 179, 71, 0.5); background: rgba(255, 140, 0, 0.06);
+        border-radius: 12px; padding: 0.5rem 0.7rem; margin-top: 0.4rem; gap: 0.3rem !important;
+    }
+    [class*="st-key-battle_counter"] [data-testid="stMarkdownContainer"] { margin-bottom: 0 !important; }
+    .bc-row { display: flex; justify-content: space-between; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+    .bc-title { font-weight: 900; font-size: 0.85rem; letter-spacing: 0.06em; color: #ffd27a; }
+    .bc-badge { font-size: 0.7rem; font-weight: 800; padding: 0.1rem 0.45rem; border-radius: 999px; }
+    .bc-badge.nft { color: #00131d; background: #40c8ff; }
+    .bc-badge.vet { color: #1d1200; background: #ffd27a; }
+    .bc-badge.free { color: #ffd27a; border: 1px solid rgba(255, 179, 71, 0.6); }
+    .bc-count { font-size: 1.5rem; font-weight: 900; color: #fff; line-height: 1.1; }
+    .bc-of { font-size: 0.9rem; color: rgba(220,220,220,0.6); font-weight: 700; }
+    .bc-elo { float: right; font-size: 0.85rem; font-weight: 800; color: #8cffa0; margin-top: 0.45rem; }
     .crystal-sel-status {
         font-size: 0.8rem; font-weight: 700; padding: 0.2rem 0.55rem; border-radius: 8px;
     }

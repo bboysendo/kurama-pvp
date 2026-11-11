@@ -284,6 +284,98 @@ old["accounts"]["o"].update(battles_month="2026-11", battles_this_month=40, mile
 assert EconomyServer.from_json(_json.dumps(old), clock=clk).account("o").battles_total == 300
 print("persistencia JSON + migración del formato mensual OK")
 
+# ============ Lista pública de retos según selector de NFT (filtro 11/11/2026) ============
+from economy_rules import is_bot_wallet
+s, clk = new()
+nft(s, "h_cri", crystals=3)                      # humano con NFT que apuesta cristales
+r_cri = s.create_challenge("h_cri", FREE)
+r_sin = s.create_challenge("h_sin", FREE)        # humano sin NFT (sin cristales)
+assert r_cri.kind == CRY.value and r_sin.kind == FREE.value
+# Bots: nunca publican retos ni aparecen en la lista
+assert is_bot_wallet(BOT) and is_bot_wallet("bot:fox") and not is_bot_wallet("h_sin")
+assert "bots no publican" in must_fail(s.create_challenge, "bot:fox", FREE)
+assert "bots no publican" in must_fail(s.create_challenge, BOT, FREE)
+# 1) Viewer CON NFT en Free: solo humanos con cristales, aunque la UI pida FREE
+nft(s, "yo", crystals=2)
+for k in (None, FREE, CRY):
+    assert [c.id for c in s.visible_challenges("yo", k)] == [r_cri.id], k
+# 2) Selector "Ninguno / Sin NFT": solo humanos sin cristales, aunque pida CRYSTAL
+s.set_nfts("yo", [])
+for k in (None, FREE, CRY):
+    assert [c.id for c in s.visible_challenges("yo", k)] == [r_sin.id], k
+# 3) Cambiar el selector con un reto Free propio abierto lo retira y reembolsa
+s.set_nfts("yo", [7])
+mio = s.create_challenge("yo", FREE)
+assert mio.kind == CRY.value and s.account("yo").crystals == 2 - CRYSTAL_STAKE
+gone = s.set_nfts("yo", [])                      # -> "Ninguno / Sin NFT"
+assert gone is mio and mio.status == "cancelled" and s.account("yo").crystals == 2
+assert mio not in s.visible_challenges("h_cri")
+mio2 = s.create_challenge("yo", FREE)            # ahora sin cristales (gasta 1 de 10)
+assert mio2.kind == FREE.value and s.free_ranked_remaining("yo") == FREE_DAILY_RANKED_LIMIT - 1
+assert s.set_nfts("yo", [7]) is mio2 and s.account("yo").free_ranked_used == 0
+assert s.set_nfts("yo", [7]) is None             # sin cambio de variante: nada que retirar
+# 4) Un reto cuyo creador cambió de variante no se lista (defensa en profundidad)
+s.accounts["h_sin"].nft_token_ids = [9]          # mutación directa, sin pasar por set_nfts
+s.set_nfts("v_sin", [])
+assert r_sin not in s.visible_challenges("v_sin")
+s.accounts["h_sin"].nft_token_ids = []
+# 5) El bot solo entra en segundo plano: el reto expira -> VS_BOT y sale de la lista
+assert r_sin in s.visible_challenges("v_sin")
+clk.advance(CHALLENGE_EXPIRY_SECONDS + 1)
+assert s.visible_challenges("v_sin") == [] and r_sin.status == VS_BOT and r_sin.opponent == BOT
+print("lista pública de retos: filtro NFT/sin NFT, sin bots, retirada al cambiar de selector OK")
+
+
+# ============ Estatus NFT por 300 batallas + Free estricto (revisión 11/11/2026 b) ============
+s, clk = new()
+# Free estricto: sin NFT y < 300 batallas -> 10/día sin cristales, Elo fijo +10 / -10
+s.set_crystals("novato", 3)                          # tener cristales no cambia nada sin estatus NFT
+s.set_battles("novato", 50)
+acc = s.account("novato")
+assert not acc.nft_status and acc.free_kind == FREE and s.free_ranked_remaining("novato") == 10
+e0 = acc.elo
+ch = s.create_challenge("novato", CRY); assert ch.kind == FREE.value and acc.crystals == 3
+clk.advance(61); s.process_expired(); s.report_result(ch.id, "novato")
+assert acc.elo == e0 + 10 and acc.battles_total == 51
+ch = s.create_challenge("novato", FREE); clk.advance(61); s.process_expired(); s.report_result(ch.id, BOT)
+assert acc.elo == e0 and acc.crystals == 3 and acc.balances["KUR"] == 0.0
+for _ in range(8):
+    ch = s.create_challenge("novato", FREE); clk.advance(61); s.process_expired(); s.report_result(ch.id, BOT)
+assert s.free_ranked_remaining("novato") == 0 and acc.elo == e0 - 80
+assert "agotado tus 10" in must_fail(s.create_challenge, "novato", FREE)
+# 300 batallas sin NFT -> estatus NFT: Free con cristales (1 fijo), Competitivo, sin cupo diario
+assert s.set_battles("novato", ACCESS_BATTLES_REQUIRED) is None
+assert acc.nft_status and acc.veteran and not acc.has_nft and acc.free_kind == CRY
+assert s.free_ranked_remaining("novato") is None and s.access_status("novato")["nft_status"]
+ch = s.create_challenge("novato", FREE)              # cupo agotado da igual: ya juega con cristales
+assert ch.kind == CRY.value and acc.crystals == 3 - CRYSTAL_STAKE == 2
+nft(s, "rival", 1); s.accept_challenge("rival", ch.id); s.report_result(ch.id, "novato")
+assert acc.crystals == 2 and acc.elo == e0 - 80 + CRYSTAL_ELO_WIN   # 1 cristal consumido, nunca más
+assert ch.status == "settled"
+s.sync_balance("novato", Currency.KUR, 20); s.create_challenge("novato", MONEY, 5)   # Competitivo abierto
+# Veterano visible en la lista Free con cristales; un sin-NFT < 300 no lo ve
+s, clk = new()
+s.set_battles("vet", 300); s.set_crystals("vet", 1)
+rv = s.create_challenge("vet", FREE); assert rv.kind == CRY.value
+nft(s, "conft", 2); assert rv in s.visible_challenges("conft")
+assert rv not in s.visible_challenges("nuevo")
+# Cruzar las 300 jugando retira el reto Free sin cristales que quedase abierto
+s, clk = new()
+s.set_battles("cruza", 299)
+r1 = s.create_challenge("cruza", FREE)                # partida 300 en curso
+clk.advance(61); s.process_expired()                  # -> vs BOT
+r2 = s.create_challenge("cruza", FREE)                # otro reto sin cristales abierto mientras tanto
+assert r2.kind == FREE.value and s.free_ranked_remaining("cruza") == 8
+s.report_result(r1.id, "cruza")                       # llega a 300 -> estatus NFT
+assert s.account("cruza").nft_status and r2.status == "cancelled"
+assert s.account("cruza").free_ranked_used == 1        # la oportunidad de r2 se devolvió
+# set_battles por debajo de 300 lo devuelve a Free sin cristales (y retira el reto con cristales)
+s.set_crystals("cruza", 1); r3 = s.create_challenge("cruza", FREE); assert r3.kind == CRY.value
+assert s.set_battles("cruza", 10) is r3 and s.account("cruza").crystals == 1
+assert s.account("cruza").free_kind == FREE
+print("estatus NFT por 300 batallas, Free estricto 10/día ±10 Elo, apuesta fija de 1 cristal OK")
+
+
 # ===================== Conservación =====================
 import random
 rng = random.Random(7)
@@ -333,7 +425,7 @@ assert not any(c.kind == "money" and c.status == "expired" for c in s.challenges
 for a in s.accounts.values():
     for c in s.challenges.values():
         e = c.entries.get(a.wallet)
-        if e and e.get("mode") == "crystal": assert a.has_nft
+        if e and e.get("mode") == "crystal": assert a.nft_status   # NFT o 300+ batallas
         if e and e.get("mode") == "free": assert not a.has_nft
 for cur in ("KUR", "KUSD"):
     in_accounts = sum(a.balances[cur] for a in s.accounts.values())
