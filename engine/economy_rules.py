@@ -104,6 +104,14 @@ HOUSE_FEE_PCT = 0.10
 ELO_START = 1000
 ELO_FLOOR = 0
 
+# Versión del modelo de datos del libro mayor (Account / Challenge / EconomyServer).
+# Súbela cada vez que añadas o renombres atributos/propiedades: el dashboard
+# compara este número con el del EconomyServer guardado en st.session_state y,
+# si no coincide, lo reconstruye (ver pvp_dashboard.ensure_economy_server).
+# Sin esto, una sesión abierta en Streamlit Cloud sigue usando objetos creados
+# con la clase ANTIGUA tras un git push -> AttributeError (p. ej. nft_status).
+ECONOMY_SCHEMA_VERSION = 4
+
 # Cristales: fuentes del runner y evolución de rareza
 CRYSTAL_SOURCES = ("runner_objective", "runner_monster")
 CRYSTAL_DEFAULT_REWARD = {"runner_objective": 5, "runner_monster": 1}
@@ -249,6 +257,7 @@ class EconomyServer:
 
     def __init__(self, clock: Callable[[], float] = time.time):
         self.clock = clock
+        self.schema_version = ECONOMY_SCHEMA_VERSION
         self.accounts: dict[str, Account] = {}
         self.challenges: dict[int, Challenge] = {}
         self.listings: dict[int, Listing] = {}

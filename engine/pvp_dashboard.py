@@ -51,6 +51,7 @@ from economy_rules import (  # noqa: E402  (reglas de acceso / cristales / retos
     CRYSTAL_ELO_WIN,
     CRYSTAL_STAKE,
     CRYSTAL_WIN_KUR_REWARD,
+    ECONOMY_SCHEMA_VERSION,
     FREE_DAILY_RANKED_LIMIT,
     FREE_RANKED_ELO_LOSS,
     FREE_RANKED_ELO_WIN,
@@ -259,7 +260,7 @@ def init_state() -> None:
     # Libro mayor (economy_rules.EconomyServer): acceso NFT/300 combates,
     # cristales del jugador, cupo diario Free, escrow de retos, bots (solo
     # Free), Elo y premios.
-    st.session_state.setdefault("economy", EconomyServer())
+    ensure_economy_server()
     st.session_state.setdefault("own_challenge_id", None)     # reto propio abierto (Free o Competitivo)
     st.session_state.setdefault("match_challenge_id", None)   # reto de la partida en curso
     st.session_state.setdefault("sim_challenge_meta", {})     # nombre/Fox de los retadores simulados
@@ -276,8 +277,59 @@ def init_state() -> None:
         st.session_state.setdefault(f"zones_{_pk}", {})
 
 
-def econ_server() -> EconomyServer:
+# Campos persistentes de Account que se trasladan al reconstruir el libro mayor.
+_ACCOUNT_CARRY_FIELDS = (
+    "crystals", "balances", "elo", "nft_token_ids",
+    "free_ranked_day", "free_ranked_used", "battles_total",
+)
+
+
+def _economy_is_stale(econ: object) -> bool:
+    """True si el EconomyServer de la sesión se creó con código antiguo:
+    otra clase (módulo recargado tras un deploy) u otra versión de esquema."""
+    return (
+        not isinstance(econ, EconomyServer)
+        or getattr(econ, "schema_version", None) != ECONOMY_SCHEMA_VERSION
+    )
+
+
+def _migrate_economy(old: object) -> EconomyServer:
+    """Crea un EconomyServer nuevo copiando los datos de las cuentas antiguas
+    (cristales, saldos, Elo, NFT, contadores). Los retos abiertos NO se migran:
+    sus ids dejan de existir y se limpian las referencias en session_state."""
+    new = EconomyServer()
+    for key, old_acc in (getattr(old, "accounts", None) or {}).items():
+        acc = new.account(key)
+        for f in _ACCOUNT_CARRY_FIELDS:
+            if hasattr(old_acc, f):
+                val = getattr(old_acc, f)
+                setattr(acc, f, dict(val) if isinstance(val, dict)
+                        else list(val) if isinstance(val, list) else val)
+    new.nft_rarity = dict(getattr(old, "nft_rarity", {}) or {})
+    return new
+
+
+def ensure_economy_server() -> EconomyServer:
+    """Garantiza que st.session_state.economy es un EconomyServer del código
+    ACTUAL. Tras un git push, Streamlit Cloud recarga los módulos pero las
+    sesiones abiertas conservan objetos viejos; aquí se detectan y migran."""
+    econ = st.session_state.get("economy")
+    if econ is None:
+        st.session_state.economy = EconomyServer()
+    elif _economy_is_stale(econ):
+        try:
+            st.session_state.economy = _migrate_economy(econ)
+        except Exception:  # datos irrecuperables -> libro mayor limpio
+            st.session_state.economy = EconomyServer()
+        # Los retos del servidor viejo ya no existen en el nuevo.
+        st.session_state["own_challenge_id"] = None
+        st.session_state["match_challenge_id"] = None
+        st.session_state["sim_challenge_meta"] = {}
     return st.session_state.economy
+
+
+def econ_server() -> EconomyServer:
+    return ensure_economy_server()
 
 
 def player_crystals(wallet_address: str) -> int:
