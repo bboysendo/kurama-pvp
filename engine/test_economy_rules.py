@@ -92,12 +92,17 @@ ch = s.create_challenge("kai", MONEY, 5); s.accept_challenge("hugo", ch.id); s.r
 assert s.account("hugo").battles_total == 301 and s.account("kai").battles_total == 1
 print("acceso: 300 combates acumulados (Free + Competitivo, también vs bot) OK")
 
-# ============ 2a. FREE CON CRISTALES: solo NFT, apuesta 1 cristal ============
+# ============ 2a. FREE CON CRISTALES: abierto a todos, apuesta 1 cristal ============
 s, clk = new()
 s.set_crystals("sinnft", 5)                           # sin NFT, aunque tenga cristales
-ch = s.create_challenge("sinnft", CRY)                # se resuelve a su variante: SIN cristales
+ch = s.create_challenge("sinnft", CRY)                # sin elegir variante -> por defecto SIN cristales
 assert ch.kind == FREE.value and s.account("sinnft").crystals == 5
 s.cancel_challenge("sinnft", ch.id)
+# ...pero SÍ puede usar sus cristales si elige jugar con cristales (12/11/2026)
+s.set_free_variant("sinnft", CRY)
+ch = s.create_challenge("sinnft", FREE)
+assert ch.kind == CRY.value and s.account("sinnft").crystals == 4 and not s.account("sinnft").nft_status
+s.cancel_challenge("sinnft", ch.id); assert s.account("sinnft").crystals == 5
 nft(s, "ana")
 assert "Necesitas al menos 1" in must_fail(s.create_challenge, "ana", FREE)   # NFT sin cristales
 ok, why = s.can_play_free("ana"); assert not ok and "cristales" in why
@@ -107,7 +112,7 @@ assert ch.kind == CRY.value and s.account("ana").crystals == 2   # 1 en escrow
 assert s.free_ranked_remaining("ana") is None         # no usa el cupo diario
 # solo otra cuenta con NFT y cristales puede aceptar
 s.set_crystals("pepe", 9)                             # sin NFT
-assert "exclusivo de cuentas con NFT" in must_fail(s.accept_challenge, "pepe", ch.id)
+assert "otra variante" in must_fail(s.accept_challenge, "pepe", ch.id)   # eligió (por defecto) sin cristales
 nft(s, "cero")                                        # NFT sin cristales
 assert "Necesitas al menos 1" in must_fail(s.accept_challenge, "cero", ch.id)
 s.accept_challenge("bea", ch.id)
@@ -164,7 +169,7 @@ clk.advance(86400); assert s.free_ranked_remaining("dave") == 10    # nuevo día
 # contra un jugador real sin NFT
 ch = s.create_challenge("dave", FREE)
 nft(s, "conft", 5)
-assert "exclusivas de cuentas sin NFT" in must_fail(s.accept_challenge, "conft", ch.id)
+assert "otra variante" in must_fail(s.accept_challenge, "conft", ch.id)   # con NFT eligió (por defecto) con cristales
 s.accept_challenge("eva", ch.id); assert s.free_ranked_remaining("eva") == 9
 s.report_result(ch.id, "eva")
 assert s.account("eva").elo == ELO_START + 10 and s.account("dave").elo == ELO_START - 10

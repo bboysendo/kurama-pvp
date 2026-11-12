@@ -282,7 +282,7 @@ def init_state() -> None:
 # Campos persistentes de Account que se trasladan al reconstruir el libro mayor.
 _ACCOUNT_CARRY_FIELDS = (
     "crystals", "balances", "elo", "nft_token_ids",
-    "free_ranked_day", "free_ranked_used", "battles_total",
+    "free_ranked_day", "free_ranked_used", "battles_total", "free_variant",
 )
 
 
@@ -351,10 +351,10 @@ def sync_economy(connector: BlockchainConnector, wallet_address: str) -> None:
     # Modo Test "Sin NFT": el libro mayor ve la cuenta sin NFT (sin tocar la
     # wallet simulada), así acceso, variante Free y market se recalculan solos.
     nfts = [] if no_nft_test_mode() else connector.owned_token_ids(wallet_address)
-    # Si el selector cambió de "con NFT" a "Ninguno / Sin NFT" (o al revés) con
-    # un reto Free propio abierto, el servidor lo retira y reembolsa: un reto
-    # con cristales no puede seguir publicado desde una cuenta sin NFT, ni uno
-    # sin cristales desde una cuenta con NFT.
+    # Los NFT ya NO deciden si se juega con o sin cristales (lo elige el
+    # jugador, ver render_free_variant_selector). Solo si el jugador no ha
+    # elegido nunca, el cambio de NFT cambia la variante por defecto y el
+    # servidor retira y reembolsa un reto Free propio de la variante anterior.
     retired = econ.set_nfts(wallet_address, nfts)
     if retired is not None:
         if st.session_state.get("own_challenge_id") == retired.id:
@@ -384,7 +384,8 @@ def player_has_nft(wallet_address: str) -> bool:
 
 def player_nft_status(wallet_address: str) -> bool:
     """Estatus NFT a efectos de economía: NFT real O 300+ batallas totales
-    (economy_rules.Account.nft_status). Decide Free con/sin cristales."""
+    (economy_rules.Account.nft_status). Decide el acceso completo; la
+    variante Free con/sin cristales la elige el jugador (Account.free_kind)."""
     return econ_server().account(wallet_address).nft_status
 
 
@@ -393,16 +394,18 @@ def crystal_balance_label(n: int) -> str:
 
 
 def crystal_status_text(wallet_address: str) -> tuple[str, bool]:
-    """(texto, ok) — qué variante de Free le toca a la cuenta y si puede jugarla."""
+    """(texto, ok) — variante Free ELEGIDA por el jugador (con o sin
+    cristales, tenga o no NFT) y si puede jugarla ahora."""
     econ = econ_server()
     n = player_crystals(wallet_address)
-    if player_nft_status(wallet_address):
+    if econ.account(wallet_address).free_kind is ChallengeKind.CRYSTAL:
         if n >= CRYSTAL_STAKE:
             return (f"💎 Free con cristales · apuesta fija {CRYSTAL_STAKE} 💎 por combate "
                     f"(al luchar: {n} → {n - CRYSTAL_STAKE})"), True
-        return f"⚠️ 0 cristales: necesitas {CRYSTAL_STAKE} 💎 para lanzar o aceptar un reto Free", False
+        return (f"⚠️ 0 cristales: necesitas {CRYSTAL_STAKE} 💎 para lanzar o aceptar un reto con "
+                "cristales (o elige «Sin cristales»)"), False
     left = econ.free_ranked_remaining(wallet_address)
-    extra = " · sin NFT los cristales no se usan" if n else ""
+    extra = " · tus cristales quedan guardados (elige «Con cristales» para usarlos)" if n else ""
     return f"🎟️ Free sin cristales: {left}/{FREE_DAILY_RANKED_LIMIT} batallas hoy{extra}", left > 0
 
 
@@ -429,7 +432,7 @@ def render_crystal_selector(wallet_address: str) -> None:
         st.markdown("<div class='crystal-sel-title'>💎 CRISTALES DEL JUGADOR</div>", unsafe_allow_html=True)
         shown = min(n, 10)
         gems = "".join(
-            f"<span class='crystal-gem {'next' if i == shown - 1 and not staked and acc.nft_status else 'on'}'>💎</span>"
+            f"<span class='crystal-gem {'next' if i == shown - 1 and not staked and acc.free_kind is ChallengeKind.CRYSTAL else 'on'}'>💎</span>"
             for i in range(shown)
         ) + (f"<span class='crystal-more'>+{n - shown}</span>" if n > shown else "")
         if not n:
@@ -493,13 +496,13 @@ def render_access_panel(connector: BlockchainConnector, wallet_address: str) -> 
                        "y compraventa en el market de ítems.")
         elif status["unlocked_by"] == "battles":
             st.success(f"🔓 Estatus NFT por {status['battles_total']} batallas (sin NFT equipado): "
-                       "Free con cristales, Competitivo, depósitos, retiradas y market.")
+                       "Competitivo, depósitos, retiradas y market.")
         else:
             done = status["battles_total"]
             st.warning(
-                f"🔒 Modo Free estricto (sin NFT, {done}/{ACCESS_BATTLES_REQUIRED} batallas): "
-                f"{FREE_DAILY_RANKED_LIMIT} batallas al día sin cristales · Victoria +{FREE_RANKED_ELO_WIN} Elo · "
-                f"Derrota {FREE_RANKED_ELO_LOSS} Elo. Competitivo, depósitos, retiradas y market bloqueados "
+                f"🔒 Sin NFT ({done}/{ACCESS_BATTLES_REQUIRED} batallas): juegas Free con tus cristales "
+                f"(1 💎 por combate) o sin cristales ({FREE_DAILY_RANKED_LIMIT}/día, ±10 Elo). "
+                f"Competitivo, depósitos, retiradas y market bloqueados "
                 f"hasta {ACCESS_BATTLES_REQUIRED} batallas (o con un NFT)."
             )
         with st.expander("💼 Depositar / Retirar $KUR"):
@@ -1097,6 +1100,48 @@ def _reset_match_mode_if_empty() -> None:
     st.session_state["_match_mode_keep"] = st.session_state.match_mode
 
 
+FREE_VARIANT_OPTIONS = (ChallengeKind.CRYSTAL.value, ChallengeKind.FREE.value)
+
+
+def _on_free_variant_change(wallet_address: str) -> None:
+    """Guarda en el libro mayor la variante Free elegida. Si había un reto
+    Free propio abierto de la otra variante, el servidor lo retira y
+    reembolsa (cristal u oportunidad del día)."""
+    choice = st.session_state.get("free_variant_choice")
+    if choice not in FREE_VARIANT_OPTIONS:  # deseleccionado: se mantiene la anterior
+        st.session_state["free_variant_choice"] = econ_server().account(wallet_address).free_kind.value
+        return
+    retired = econ_server().set_free_variant(wallet_address, ChallengeKind(choice))
+    if retired is not None:
+        st.session_state["own_challenge_id"] = None
+        st.session_state["matchmaking_start"] = None
+        st.session_state["challenge_notice"] = {
+            "text": "Reto retirado al cambiar entre con/sin cristales: se te ha devuelto lo apostado.",
+            "until": time.time() + 8,
+        }
+
+
+def render_free_variant_selector(connector: BlockchainConnector, wallet_address: str) -> None:
+    """Modo Free: el JUGADOR elige con o sin cristales, tenga o no NFT /
+    300 batallas. La lista de retos muestra solo humanos de esa variante."""
+    acc = econ_server().account(wallet_address)
+    current = acc.free_kind.value
+    if st.session_state.get("free_variant_choice") not in FREE_VARIANT_OPTIONS:
+        st.session_state["free_variant_choice"] = current
+    elif st.session_state["free_variant_choice"] != current:
+        econ_server().set_free_variant(wallet_address, ChallengeKind(st.session_state["free_variant_choice"]))
+    st.segmented_control(
+        "Variante Free",
+        options=list(FREE_VARIANT_OPTIONS),
+        format_func=lambda v: (f"💎 Con cristales ({acc.crystals})" if v == ChallengeKind.CRYSTAL.value
+                               else "🎟️ Sin cristales"),
+        key="free_variant_choice",
+        on_change=_on_free_variant_change,
+        args=(wallet_address,),
+        label_visibility="collapsed",
+    )
+
+
 def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, card_pool: list[Card]) -> None:
     # Re-fijar la clave antes del widget: Streamlit borra el estado de un
     # widget que no se dibuja (durante la partida) y al volver al lobby el
@@ -1149,8 +1194,9 @@ def render_battle_mode_bar(connector: BlockchainConnector, wallet_address: str, 
                 f"la búsqueda · Elo {acc.elo}"
             )
         else:
+            render_free_variant_selector(connector, wallet_address)
             acc = econ_server().account(wallet_address)
-            if acc.nft_status:
+            if acc.free_kind is ChallengeKind.CRYSTAL:
                 st.caption(
                     f"💎 Free con cristales: apuestas {CRYSTAL_STAKE} cristal (tienes {acc.crystals}). "
                     f"Victoria: +{CRYSTAL_ELO_WIN} Elo y +{CRYSTAL_WIN_KUR_REWARD:.0f} $KUR. "
@@ -1466,12 +1512,12 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
         _acc_view = econ_server().account(wallet_address)
         if st.session_state.match_mode == "competitive":
             st.caption("💰 Solo jugadores reales apostando $KUR · sin bots.")
-        elif _acc_view.nft_status:
-            st.caption(f"💎 Solo rivales reales (NFT o 300+ batallas) que apuestan 1 cristal · si nadie acepta tu reto en "
-                       f"{CHALLENGE_EXPIRY_SECONDS} s, juegas contra un bot automáticamente.")
+        elif _acc_view.free_kind is ChallengeKind.CRYSTAL:
+            st.caption(f"💎 Solo jugadores reales que juegan CON cristales (1 💎) · sin bots · si nadie acepta "
+                       f"tu reto en {CHALLENGE_EXPIRY_SECONDS} s, un bot entra de respaldo (nunca se lista aquí).")
         else:
-            st.caption(f"🎟️ Solo jugadores sin estatus NFT (sin cristales) · si nadie acepta tu reto en "
-                       f"{CHALLENGE_EXPIRY_SECONDS} s, un bot entra de respaldo (nunca se lista aquí).")
+            st.caption(f"🎟️ Solo jugadores reales que juegan SIN cristales · sin bots · si nadie acepta tu reto "
+                       f"en {CHALLENGE_EXPIRY_SECONDS} s, un bot entra de respaldo (nunca se lista aquí).")
 
         notice = st.session_state.get("challenge_notice")
         if notice and time.time() < notice["until"]:
@@ -1484,7 +1530,7 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
         own_ch = econ.challenges.get(own_id) if own_id is not None else None
 
         # Variante que le toca ver/publicar AHORA: Competitivo -> MONEY; Free ->
-        # CRYSTAL con NFT equipado, FREE con "Ninguno / Sin NFT".
+        # la variante que eligió el jugador (con o sin cristales).
         expected_kind = ChallengeKind.MONEY if is_competitive else econ.account(wallet_address).free_kind
         if own_ch is not None and own_ch.status == ChallengeStatus.OPEN.value and \
                 own_ch.kind != expected_kind.value:
@@ -1581,7 +1627,8 @@ def render_bot_challenges_feed(connector: BlockchainConnector, wallet_address: s
                 blocked_label = "🚫 Sin saldo" if ch.stake > balance else None
             else:
                 blocked_label = None if can_free else (
-                    f"🎟️ 0/{FREE_DAILY_RANKED_LIMIT} hoy" if not acc.nft_status else "💎 Sin cristales")
+                    "💎 Sin cristales" if acc.free_kind is ChallengeKind.CRYSTAL
+                    else f"🎟️ 0/{FREE_DAILY_RANKED_LIMIT} hoy")
             with st.container(key=f"challenge_row_{tid}"):
                 btn_col = _render_challenge_row(
                     m["gamenft_id"],
@@ -1805,12 +1852,12 @@ def render_wallet_and_nft_bar(
                 st.info(
                     f"🧪 Modo Test sin NFT (wallet real: {len(owned)} NFT) · tienes "
                     f"{econ_server().account(wallet_address).battles_total} batallas → estatus NFT: "
-                    "Free con cristales y acceso completo aunque no lleves NFT equipado."
+                    "acceso completo aunque no lleves NFT equipado."
                 )
             else:
                 st.info(
                     f"🧪 Modo Test sin NFT: se te trata como cuenta SIN NFT (wallet real: {len(owned)} NFT). "
-                    f"Free sin cristales ({FREE_DAILY_RANKED_LIMIT}/día, ±10 Elo) y, hasta {ACCESS_BATTLES_REQUIRED} "
+                    f"Free con tus cristales o sin cristales ({FREE_DAILY_RANKED_LIMIT}/día, ±10 Elo) y, hasta {ACCESS_BATTLES_REQUIRED} "
                     "batallas, Competitivo, depósitos, retiradas y market bloqueados."
                 )
 
