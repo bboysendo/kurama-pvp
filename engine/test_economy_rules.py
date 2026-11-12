@@ -445,3 +445,34 @@ print(f"conservación de $KUR/$KUSD y cristales en 6000 operaciones aleatorias O
       f"(casa: {s.house['KUR']:.2f} KUR · {s.house['KUSD']:.2f} KUSD)")
 
 print("\nALL ECONOMY ASSERTIONS PASSED")
+
+
+# --------------------------------------------------------------------------- #
+# Lista pública SIN bots: ni BOT / bot:* ni simulados sim:* en ningún modo.
+# --------------------------------------------------------------------------- #
+from economy_rules import is_listable_opponent
+assert not is_listable_opponent("BOT") and not is_listable_opponent("bot:alfa")
+assert not is_listable_opponent("sim:frostfox_7") and not is_listable_opponent("")
+assert is_listable_opponent("0xreal")
+_s = EconomyServer()
+for _w, _nft in (("0xreal_nft", [7]), ("sim:frostfox_7", [8]), ("0xreal_sin", []), ("sim:void", [])):
+    _s.set_nfts(_w, _nft)
+    _s.sync_balance(_w, Currency.KUR, 100.0)
+    if _nft:
+        _s.set_crystals(_w, 3)
+_s.create_challenge("sim:frostfox_7", ChallengeKind.FREE)       # Free con cristales (simulado)
+_s.create_challenge("0xreal_nft", ChallengeKind.FREE)           # Free con cristales (real)
+_s.create_challenge("sim:void", ChallengeKind.FREE)             # Free sin cristales (simulado)
+_s.create_challenge("0xreal_sin", ChallengeKind.FREE)           # Free sin cristales (real)
+for _viewer, _nft in (("0xviewer_nft", [9]), ("0xviewer_sin", [])):
+    _s.set_nfts(_viewer, _nft)
+_s.set_nfts("sim:moneybot", [10]); _s.sync_balance("sim:moneybot", Currency.KUR, 500.0)
+_s.create_challenge("sim:moneybot", ChallengeKind.MONEY, 10.0, Currency.KUR)
+for _viewer in ("0xviewer_nft", "0xviewer_sin"):
+    for _k in (ChallengeKind.FREE, ChallengeKind.CRYSTAL, ChallengeKind.MONEY):
+        _vis = _s.visible_challenges(_viewer, _k)
+        assert all(is_listable_opponent(c.creator) for c in _vis), (_viewer, _k, [c.creator for c in _vis])
+assert [c.creator for c in _s.visible_challenges("0xviewer_nft", ChallengeKind.CRYSTAL)] == ["0xreal_nft"]
+assert [c.creator for c in _s.visible_challenges("0xviewer_sin", ChallengeKind.FREE)] == ["0xreal_sin"]
+assert _s.visible_challenges("0xviewer_nft", ChallengeKind.MONEY) == []
+print("lista pública sin bots ni simulados en Competitivo / Free con y sin cristales OK")

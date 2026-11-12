@@ -133,6 +133,23 @@ def is_bot_wallet(wallet: Optional[str]) -> bool:
     return w == BOT.lower() or w.startswith(BOT_WALLET_PREFIX)
 
 
+# Cuentas simuladas (sim:*) que el prototipo usaba para rellenar la lista
+# pública. Las controla la IA del bot, así que a efectos de la lista pública
+# SON bots y nunca deben mostrarse como contrincantes elegibles.
+SIMULATED_WALLET_PREFIX = "sim:"
+
+
+def is_simulated_wallet(wallet: Optional[str]) -> bool:
+    return (wallet or "").lower().startswith(SIMULATED_WALLET_PREFIX)
+
+
+def is_listable_opponent(wallet: Optional[str]) -> bool:
+    """True solo para jugadores REALES: ni bots (BOT / bot:*) ni simulados (sim:*).
+    Es el único filtro que decide quién puede aparecer en la lista pública,
+    tanto en Competitivo como en Free (con o sin cristales)."""
+    return bool(wallet) and not is_bot_wallet(wallet) and not is_simulated_wallet(wallet)
+
+
 class Currency(str, Enum):
     KUR = "KUR"
     KUSD = "KUSD"
@@ -541,8 +558,10 @@ class EconomyServer:
           pida (FREE o CRYSTAL), para que la UI no pueda mezclarlas:
             * con NFT  -> solo humanos que apuestan cristales (CRYSTAL);
             * sin NFT  -> solo humanos sin cristales (FREE).
-        - Nunca incluye bots (son respaldo en segundo plano, ver
-          process_expired) ni retos cuyo creador ya no cumple su variante.
+        - Nunca incluye bots (BOT / bot:*) ni cuentas simuladas (sim:*) — ver
+          is_listable_opponent —; el bot solo actúa en segundo plano como
+          respaldo de Free (process_expired) ni retos cuyo creador ya no
+          cumple su variante.
         - Excluye los retos del propio `viewer`."""
         self.process_expired()
         v = viewer.lower() if viewer else None
@@ -556,7 +575,7 @@ class EconomyServer:
         return sorted(
             (c for c in self.challenges.values()
              if c.status == ChallengeStatus.OPEN.value and c.kind == kind.value and c.creator != v
-             and not is_bot_wallet(c.creator)
+             and is_listable_opponent(c.creator)
              and self._creator_fits_variant(c, self.account(c.creator))),
             key=lambda c: c.expires_at,
         )

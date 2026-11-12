@@ -63,6 +63,8 @@ from economy_rules import (  # noqa: E402  (reglas de acceso / cristales / retos
     Currency,
     EconomyError,
     EconomyServer,
+    is_listable_opponent,
+    is_simulated_wallet,
 )
 from blockchain_connector import (
     DECK_STAT_BUFF_PCT,
@@ -1383,56 +1385,26 @@ def _settle_offscreen_sim_matches(rng: random.Random) -> None:
 
 
 def _refresh_sim_challenges(wallet_address: str, competitive: bool) -> list:
-    """Lista pública de retos de jugadores reales que `wallet_address` puede
-    aceptar (economy_rules.visible_challenges). Sin backend multijugador en
-    este prototipo, esos jugadores son cuentas simuladas (sim:*) del mismo
-    libro mayor, creadas con la MISMA variante que le toca al jugador:
-      - Free con NFT    -> retadores con NFT y cristales (apuestan 1 💎)
-      - Free sin NFT    -> retadores sin NFT (Free sin cristales)
-      - Competitivo     -> retadores con NFT y saldo, apuesta en $KUR
-    Sus retos Free que nadie acepta en 60 s juegan contra un bot (fuera de
-    pantalla); sus retos competitivos que expiran se relanzan, y para que la
-    lista rote el jugador simulado se cansa y lo cancela tras un relanzamiento."""
+    """Lista PÚBLICA de retos que `wallet_address` puede aceptar.
+
+    Regla estricta: SOLO jugadores reales. Nunca se listan bots (BOT / bot:*)
+    ni cuentas simuladas (sim:*), ni en Competitivo ni en Free (con o sin
+    NFT / 300+ batallas). El bot solo entra en segundo plano como respaldo de
+    TU reto Free cuando pasan 60 s sin rival real (process_expired -> VS_BOT).
+
+    Ya no se generan retadores simulados para rellenar la lista; si quedaba
+    alguno abierto de una sesión anterior, se retira (y se le reembolsa)."""
     econ = econ_server()
-    rng = random.Random()
     econ.process_expired()
-    _settle_offscreen_sim_matches(rng)
+    _settle_offscreen_sim_matches(random.Random())
+    for ch in list(econ.challenges.values()):
+        if is_simulated_wallet(ch.creator) and ch.status == ChallengeStatus.OPEN.value:
+            econ.cancel_challenge(ch.creator, ch.id)
+            st.session_state.sim_challenge_meta.pop(ch.id, None)
     kind = ChallengeKind.MONEY if competitive else econ.account(wallet_address).free_kind
-    if competitive:
-        for ch in list(econ.challenges.values()):
-            if (ch.creator.startswith("sim:") and ch.kind == ChallengeKind.MONEY.value
-                    and ch.status == ChallengeStatus.OPEN.value and ch.relaunches >= 1):
-                econ.cancel_challenge(ch.creator, ch.id)
-    meta = st.session_state.sim_challenge_meta
-    visible = econ.visible_challenges(wallet_address, kind)
-    tries = 0
-    while len(visible) < PUBLIC_CHALLENGE_COUNT and tries < 40:
-        tries += 1
-        name = rng.choice(SIMULATED_PLAYER_NAME_POOL)
-        sim_wallet = f"sim:{name.lower()}"
-        if econ.open_challenge_of(sim_wallet):
-            continue
-        m = _sim_meta(rng, name, has_nft=kind is not ChallengeKind.FREE)
-        try:
-            if kind is ChallengeKind.MONEY:
-                econ.set_nfts(sim_wallet, [m["gamenft_id"]])
-                econ.sync_balance(sim_wallet, Currency.KUR, 500.0)
-                ch = econ.create_challenge(sim_wallet, ChallengeKind.MONEY, float(rng.randint(5, 50)), Currency.KUR)
-            elif kind is ChallengeKind.CRYSTAL:
-                econ.set_nfts(sim_wallet, [m["gamenft_id"]])
-                econ.set_crystals(sim_wallet, rng.randint(1, 5))
-                ch = econ.create_challenge(sim_wallet, ChallengeKind.FREE)
-            else:
-                econ.set_nfts(sim_wallet, [])
-                ch = econ.create_challenge(sim_wallet, ChallengeKind.FREE)
-        except EconomyError:
-            continue  # p.ej. simulado sin NFT que ya agotó sus 10 de hoy
-        age = rng.randint(0, 30)  # publicado hace un rato: temporizadores variados
-        ch.created_at -= age
-        ch.expires_at -= age
-        meta[ch.id] = m
-        visible = econ.visible_challenges(wallet_address, kind)
-    return visible
+    # Doble barrera: el servidor ya filtra, y la vista vuelve a filtrar por si acaso.
+    return [ch for ch in econ.visible_challenges(wallet_address, kind)
+            if is_listable_opponent(ch.creator)]
 
 
 def _sim_accepts_own_money_challenge(own_ch) -> None:
