@@ -9,7 +9,7 @@ depósitos, retiradas, premios y cristales de bots, contabilizados aparte).
 
 from economy_rules import (
     ACCESS_BATTLES_REQUIRED, BOT, CHALLENGE_EXPIRY_SECONDS, CRYSTAL_ELO_LOSS, CRYSTAL_ELO_WIN, CRYSTAL_STAKE,
-    CRYSTAL_WIN_KUR_REWARD, ELO_START, FREE_DAILY_RANKED_LIMIT, FREE_RANKED_ELO_LOSS, FREE_RANKED_ELO_WIN,
+    CRYSTAL_WIN_KUR_REWARD, ELO_FLOOR, ELO_START, FREE_DAILY_RANKED_LIMIT, FREE_RANKED_ELO_LOSS, FREE_RANKED_ELO_WIN,
     HOUSE_FEE_PCT, MONEY_ELO_LOSS, MONEY_ELO_WIN, ChallengeKind, ChallengeStatus, Currency, EconomyError,
     EconomyServer,
 )
@@ -122,7 +122,7 @@ a, b = s.account("ana"), s.account("bea")
 assert a.crystals == 2 and b.crystals == 2            # cada uno gasta 1: nadie se lleva el cristal del rival
 assert s.crystals_consumed == 2
 assert a.balances["KUR"] == CRYSTAL_WIN_KUR_REWARD == 3.0 and b.balances["KUR"] == 0.0
-assert a.elo == ELO_START + 20 and b.elo == ELO_START - 10
+assert a.elo == ELO_START + 20 and b.elo == max(ELO_FLOOR, ELO_START - 10)   # Elo nunca < 0
 assert (CRYSTAL_ELO_WIN, CRYSTAL_ELO_LOSS, CRYSTAL_STAKE) == (20, -10, 1)
 # ilimitado mientras haya cristales (más que el cupo diario)
 s.set_crystals("ana", 20); s.set_crystals("bea", 20); elo_a = a.elo
@@ -163,7 +163,8 @@ for i in range(FREE_DAILY_RANKED_LIMIT):
 d = s.account("dave")
 assert s.free_ranked_remaining("dave") == 0
 assert "agotado tus 10" in must_fail(s.create_challenge, "dave", FREE)
-assert d.elo == ELO_START + 5 * 10 - 5 * 10 and d.balances["KUR"] == 0.0 and d.crystals == 0
+# L,W,L,W... desde 0 con suelo 0 -> termina en 10
+assert d.elo == 10 and d.balances["KUR"] == 0.0 and d.crystals == 0
 assert (FREE_RANKED_ELO_WIN, FREE_RANKED_ELO_LOSS) == (10, -10)
 clk.advance(86400); assert s.free_ranked_remaining("dave") == 10    # nuevo día UTC
 # contra un jugador real sin NFT
@@ -172,7 +173,7 @@ nft(s, "conft", 5)
 assert "otra variante" in must_fail(s.accept_challenge, "conft", ch.id)   # con NFT eligió (por defecto) con cristales
 s.accept_challenge("eva", ch.id); assert s.free_ranked_remaining("eva") == 9
 s.report_result(ch.id, "eva")
-assert s.account("eva").elo == ELO_START + 10 and s.account("dave").elo == ELO_START - 10
+assert s.account("eva").elo == ELO_START + 10 and s.account("dave").elo == max(ELO_FLOOR, 10 - 10)
 assert s.account("eva").balances["KUR"] == 0.0
 # cancelar devuelve la oportunidad
 ch = s.create_challenge("eva", FREE); assert s.free_ranked_remaining("eva") == 8
@@ -209,7 +210,7 @@ assert "Competitivo bloqueado" in must_fail(s.accept_challenge, "nadie", ch.id)
 assert "Ya tienes un reto abierto" in must_fail(s.create_challenge, "jon", MONEY, 1)
 s.accept_challenge("kim", ch.id); s.report_result(ch.id, "kim")
 assert s.account("kim").balances["KUR"] == 950 + 90.0 and s.house["KUR"] == 10.0
-assert s.account("kim").elo == ELO_START + MONEY_ELO_WIN and s.account("jon").elo == ELO_START + MONEY_ELO_LOSS
+assert s.account("kim").elo == ELO_START + MONEY_ELO_WIN and s.account("jon").elo == max(ELO_FLOOR, ELO_START + MONEY_ELO_LOSS)
 assert s.account("kim").crystals == 0 and s.account("kim").balances["KUSD"] == 40   # sin premio de cristales
 ch = s.create_challenge("jon", MONEY, 20, Currency.KUSD); s.accept_challenge("kim", ch.id)
 s.report_result(ch.id, "jon")
@@ -346,7 +347,7 @@ ch = s.create_challenge("novato", FREE); clk.advance(61); s.process_expired(); s
 assert acc.elo == e0 and acc.crystals == 3 and acc.balances["KUR"] == 0.0
 for _ in range(8):
     ch = s.create_challenge("novato", FREE); clk.advance(61); s.process_expired(); s.report_result(ch.id, BOT)
-assert s.free_ranked_remaining("novato") == 0 and acc.elo == e0 - 80
+assert s.free_ranked_remaining("novato") == 0 and acc.elo == max(ELO_FLOOR, e0 - 80)
 assert "agotado tus 10" in must_fail(s.create_challenge, "novato", FREE)
 # 300 batallas sin NFT -> estatus NFT: Free con cristales (1 fijo), Competitivo, sin cupo diario
 assert s.set_battles("novato", ACCESS_BATTLES_REQUIRED) is None
@@ -355,7 +356,7 @@ assert s.free_ranked_remaining("novato") is None and s.access_status("novato")["
 ch = s.create_challenge("novato", FREE)              # cupo agotado da igual: ya juega con cristales
 assert ch.kind == CRY.value and acc.crystals == 3 - CRYSTAL_STAKE == 2
 nft(s, "rival", 1); s.accept_challenge("rival", ch.id); s.report_result(ch.id, "novato")
-assert acc.crystals == 2 and acc.elo == e0 - 80 + CRYSTAL_ELO_WIN   # 1 cristal consumido, nunca más
+assert acc.crystals == 2 and acc.elo == max(ELO_FLOOR, e0 - 80) + CRYSTAL_ELO_WIN   # 1 cristal consumido, nunca más
 assert ch.status == "settled"
 s.sync_balance("novato", Currency.KUR, 20); s.create_challenge("novato", MONEY, 5)   # Competitivo abierto
 # Veterano visible en la lista Free con cristales; un sin-NFT < 300 no lo ve
@@ -481,3 +482,39 @@ assert [c.creator for c in _s.visible_challenges("0xviewer_nft", ChallengeKind.C
 assert [c.creator for c in _s.visible_challenges("0xviewer_sin", ChallengeKind.FREE)] == ["0xreal_sin"]
 assert _s.visible_challenges("0xviewer_nft", ChallengeKind.MONEY) == []
 print("lista pública sin bots ni simulados en Competitivo / Free con y sin cristales OK")
+
+
+# --------------------------------------------------------------------------- #
+# Elo desde 0 + temporadas semanales (reseteo de Elo cada 7 días, lunes UTC)
+# --------------------------------------------------------------------------- #
+import json
+from datetime import datetime, timezone
+from economy_rules import SEASON_DURATION_SECONDS, migrate_legacy_elo, season_start_for
+assert ELO_START == 0 and ELO_FLOOR == 0
+s, clk = new()
+assert s.season_number == 1 and s.season_start_ts == season_start_for(clk())
+assert datetime.fromtimestamp(s.season_start_ts, timezone.utc).weekday() == 0      # lunes 00:00 UTC
+nft(s, "t1", 5); nft(s, "t2", 5); s.sync_balance("t1", Currency.KUR, 50.0)
+assert s.account("t1").elo == 0
+ch = s.create_challenge("t1", FREE); s.accept_challenge("t2", ch.id); s.report_result(ch.id, "t1")
+t1, t2 = s.account("t1"), s.account("t2")
+assert t1.elo == CRYSTAL_ELO_WIN and t2.elo == 0                    # el perdedor en 0 no baja de 0
+kur, cry, bat, nfts = t1.balances["KUR"], t1.crystals, t1.battles_total, list(t1.nft_token_ids)
+left = s.season_time_left(); assert 0 < left <= SEASON_DURATION_SECONDS
+clk.advance(left - 1); s.account("t1"); assert s.season_number == 1 and t1.elo == CRYSTAL_ELO_WIN
+clk.advance(1); s.account("t1")                                      # fin de la semana -> reseteo
+assert s.season_number == 2 and t1.elo == 0 and t2.elo == 0
+assert (t1.balances["KUR"], t1.crystals, t1.battles_total, t1.nft_token_ids) == (kur, cry, bat, nfts)
+assert s.season_history[-1]["season"] == 1 and s.season_history[-1]["elo"] == {"t1": CRYSTAL_ELO_WIN}
+assert s.season_time_left() == SEASON_DURATION_SECONDS
+clk.advance(3 * SEASON_DURATION_SECONDS + 5); s.process_expired()   # 3 semanas sin actividad
+assert s.season_number == 5 and len(s.season_history) == 2
+# persistencia + migración del Elo antiguo (base 1000)
+r = EconomyServer.from_json(s.to_json(), clock=clk)
+assert r.season_number == 5 and r.season_start_ts == s.season_start_ts
+legacy = json.loads(s.to_json()); legacy.pop("schema_version"); legacy.pop("season_number")
+legacy["accounts"]["t1"]["elo"] = 1040; legacy["accounts"]["t2"]["elo"] = 980
+r = EconomyServer.from_json(json.dumps(legacy), clock=clk)
+assert r.account("t1").elo == 40 and r.account("t2").elo == 0
+assert migrate_legacy_elo(1000) == 0 and migrate_legacy_elo(1234) == 234 and migrate_legacy_elo(3) == 0
+print("Elo desde 0 (suelo 0) + temporadas semanales con reseteo y migración OK")

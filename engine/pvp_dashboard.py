@@ -64,6 +64,7 @@ from economy_rules import (  # noqa: E402  (reglas de acceso / cristales / retos
     EconomyError,
     EconomyServer,
     is_listable_opponent,
+    migrate_legacy_elo,
     is_simulated_wallet,
 )
 from blockchain_connector import (
@@ -307,7 +308,18 @@ def _migrate_economy(old: object) -> EconomyServer:
                 val = getattr(old_acc, f)
                 setattr(acc, f, dict(val) if isinstance(val, dict)
                         else list(val) if isinstance(val, list) else val)
+    # Elo base antiguo (1000) -> nuevo (0): solo si el servidor viejo es
+    # anterior al esquema 6 (Elo desde 0 + temporadas semanales).
+    if int(getattr(old, "schema_version", 0) or 0) < 6:
+        for acc in new.accounts.values():
+            acc.elo = migrate_legacy_elo(acc.elo)
+    # Conserva la temporada en curso si el servidor viejo ya la tenía.
+    if hasattr(old, "season_number") and hasattr(old, "season_start_ts"):
+        new.season_number = int(old.season_number)
+        new.season_start_ts = float(old.season_start_ts)
+        new.season_history = list(getattr(old, "season_history", []) or [])
     new.nft_rarity = dict(getattr(old, "nft_rarity", {}) or {})
+    new.check_season()
     return new
 
 
@@ -463,6 +475,19 @@ def render_crystal_selector(wallet_address: str) -> None:
         )
 
 
+def format_season_left(seconds: float) -> str:
+    """Tiempo restante de temporada en formato corto: '3d 4h', '5h 12m', '42m'."""
+    secs = max(0, int(seconds))
+    d, rem = divmod(secs, 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    if d:
+        return f"{d}d {h}h"
+    if h:
+        return f"{h}h {m}m"
+    return f"{max(m, 1)}m"
+
+
 def render_battle_counter(wallet_address: str) -> None:
     """Contador de batallas totales (histórico) + Elo y progreso hacia las
     300 que dan estatus NFT sin tener NFT."""
@@ -482,6 +507,13 @@ def render_battle_counter(wallet_address: str) -> None:
             unsafe_allow_html=True,
         )
         st.progress(min(1.0, done / need))
+        season = econ_server().season_info()
+        st.markdown(
+            f"<div class='bc-season' title='Cada 7 días (lunes 00:00 UTC) el Elo de todos vuelve a 0; "
+            f"NFTs, cristales, saldos y batallas se conservan.'>🗓️ Temporada {season['number']} · "
+            f"reinicio de Elo en {format_season_left(season['seconds_left'])}</div>",
+            unsafe_allow_html=True,
+        )
 
 
 def render_access_panel(connector: BlockchainConnector, wallet_address: str) -> None:
@@ -2634,6 +2666,7 @@ st.markdown(
     .bc-badge.free { color: #ffd27a; border: 1px solid rgba(255, 179, 71, 0.6); }
     .bc-count { font-size: 1.5rem; font-weight: 900; color: #fff; line-height: 1.1; }
     .bc-of { font-size: 0.9rem; color: rgba(220,220,220,0.6); font-weight: 700; }
+    .bc-season { font-size: 0.72rem; color: rgba(255,255,255,0.55); margin-top: 0.15rem; text-align: right; }
     .bc-elo { float: right; font-size: 0.85rem; font-weight: 800; color: #8cffa0; margin-top: 0.45rem; }
     .crystal-sel-status {
         font-size: 0.8rem; font-weight: 700; padding: 0.2rem 0.55rem; border-radius: 8px;

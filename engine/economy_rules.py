@@ -51,6 +51,15 @@ Reglas DEFINITIVAS (revisión 11/11/2026):
    Si el jugador cambia de variante con un reto Free abierto de la otra,
    ese reto se retira y se reembolsa (cristal u oportunidad del día).
 
+ELO Y TEMPORADAS (revisión 12/11/2026)
+   - Toda cuenta empieza con ELO_START = 0 Elo y nunca baja de 0
+     (max(0, elo + delta)).
+   - Temporadas semanales de SEASON_DURATION_SECONDS (7 días), alineadas al
+     lunes 00:00 UTC. Al acabar una, check_season() suma 1 a season_number
+     (una por semana transcurrida), guarda el Elo final en season_history y
+     pone el Elo de TODAS las cuentas a 0. NFTs, cristales, saldos y batallas
+     totales se conservan.
+
 3. MODO COMPETITIVO (ChallengeKind.MONEY) — apuestas reales en $KUSD o $KUR
    - Requiere cuenta desbloqueada (punto 1). Sin cristales y sin límite
      diario: tantas partidas como se quiera.
@@ -73,7 +82,7 @@ import itertools
 import json
 import time
 from dataclasses import asdict, dataclass, field, fields
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Callable, Optional
 
@@ -103,8 +112,15 @@ MONEY_ELO_WIN, MONEY_ELO_LOSS = 25, -25
 # Comisión de la casa: minimarket y bote de los retos por dinero
 HOUSE_FEE_PCT = 0.10
 
-ELO_START = 1000
-ELO_FLOOR = 0
+ELO_START = 0             # Elo inicial de toda cuenta nueva (y tras cada reseteo de temporada)
+ELO_FLOOR = 0             # el Elo nunca baja de 0: max(0, elo + delta)
+LEGACY_ELO_START = 1000   # Elo base anterior (schema <= 5); se descuenta al migrar
+
+# Temporadas (épocas) semanales: cada SEASON_DURATION_SECONDS (7 días) el Elo
+# de TODAS las cuentas vuelve a ELO_START. NFTs, cristales, saldos y batallas
+# totales no se tocan. Las temporadas se alinean al lunes 00:00 UTC (semana
+# ISO), así todos los jugadores comparten el mismo calendario.
+SEASON_DURATION_SECONDS = 7 * 24 * 3600
 
 # Versión del modelo de datos del libro mayor (Account / Challenge / EconomyServer).
 # Súbela cada vez que añadas o renombres atributos/propiedades: el dashboard
@@ -112,7 +128,7 @@ ELO_FLOOR = 0
 # si no coincide, lo reconstruye (ver pvp_dashboard.ensure_economy_server).
 # Sin esto, una sesión abierta en Streamlit Cloud sigue usando objetos creados
 # con la clase ANTIGUA tras un git push -> AttributeError (p. ej. nft_status).
-ECONOMY_SCHEMA_VERSION = 5
+ECONOMY_SCHEMA_VERSION = 6
 
 # Cristales: fuentes del runner y evolución de rareza
 CRYSTAL_SOURCES = ("runner_objective", "runner_monster")
@@ -289,6 +305,10 @@ class EconomyServer:
         self.crystals_consumed = 0           # cristales gastados en partidas Free con cristales
         self.nft_rarity: dict[int, str] = {}  # rarezas evolucionadas (override del placeholder)
         self.journal: list[dict] = []        # auditoría de cada movimiento
+        # Temporada semanal en curso (ver check_season).
+        self.season_number: int = 1
+        self.season_start_ts: float = season_start_for(self._now())
+        self.season_history: list[dict] = []  # Elo final de cada temporada cerrada
         self._ids = itertools.count(1)
         self._item_types: dict[str, _ItemType] = {}
         self.register_item_type(
@@ -308,7 +328,44 @@ class EconomyServer:
     def _log(self, event: str, **data) -> None:
         self.journal.append({"t": self._now(), "event": event, **data})
 
+    # ------------------------------------------------------------ temporadas
+    def season_end_ts(self) -> float:
+        return self.season_start_ts + SEASON_DURATION_SECONDS
+
+    def season_time_left(self) -> float:
+        """Segundos que faltan para el próximo reseteo semanal de Elo."""
+        self.check_season()
+        return max(0.0, self.season_end_ts() - self._now())
+
+    def season_info(self) -> dict:
+        left = self.season_time_left()
+        return {"number": self.season_number, "start_ts": self.season_start_ts,
+                "end_ts": self.season_end_ts(), "seconds_left": left}
+
+    def check_season(self) -> bool:
+        """Si la temporada actual ya cumplió sus 7 días, la cierra: guarda el
+        Elo final, suma 1 a season_number por cada semana transcurrida y pone
+        el Elo de TODAS las cuentas a ELO_START (0). NFTs, cristales, saldos y
+        batallas totales se conservan. Devuelve True si hubo reseteo."""
+        now = self._now()
+        if now < self.season_end_ts():
+            return False
+        weeks = int((now - self.season_start_ts) // SEASON_DURATION_SECONDS)
+        self.season_history.append({
+            "season": self.season_number,
+            "start_ts": self.season_start_ts,
+            "end_ts": self.season_end_ts(),
+            "elo": {w: a.elo for w, a in self.accounts.items() if a.elo != ELO_START},
+        })
+        for acc in self.accounts.values():
+            acc.elo = ELO_START
+        self.season_number += weeks
+        self.season_start_ts += weeks * SEASON_DURATION_SECONDS
+        self._log("season_reset", season=self.season_number, weeks=weeks)
+        return True
+
     def account(self, wallet: str) -> Account:
+        self.check_season()
         key = wallet.lower()
         if key not in self.accounts:
             self.accounts[key] = Account(wallet=key)
@@ -662,6 +719,7 @@ class EconomyServer:
     def process_expired(self) -> list[Challenge]:
         """Temporizador de 60 s. Free (con o sin cristales) -> BOT.
         Competitivo -> se RELANZA la búsqueda otros 60 s (nunca bot)."""
+        self.check_season()
         changed = []
         now = self._now()
         for ch in self.challenges.values():
@@ -809,6 +867,9 @@ class EconomyServer:
             "house": self.house, "rewards_paid_kur": self.rewards_paid_kur,
             "crystals_consumed": self.crystals_consumed,
             "nft_rarity": self.nft_rarity, "journal": self.journal,
+            "schema_version": ECONOMY_SCHEMA_VERSION,
+            "season_number": self.season_number, "season_start_ts": self.season_start_ts,
+            "season_history": self.season_history,
         })
 
     @classmethod
@@ -824,8 +885,30 @@ class EconomyServer:
         s.crystals_consumed = d.get("crystals_consumed", 0)
         s.nft_rarity = {int(k): v for k, v in d["nft_rarity"].items()}
         s.journal = d["journal"]
+        if "season_number" in d:
+            s.season_number = int(d["season_number"])
+            s.season_start_ts = float(d["season_start_ts"])
+            s.season_history = list(d.get("season_history", []))
+        if int(d.get("schema_version", 0)) < 6:   # Elo base antiguo 1000 -> 0
+            for acc in s.accounts.values():
+                acc.elo = migrate_legacy_elo(acc.elo)
+        s.check_season()
         s._ids = itertools.count(max([0, *s.challenges, *s.listings]) + 1)
         return s
+
+
+def season_start_for(ts: float) -> float:
+    """Inicio (lunes 00:00 UTC) de la semana ISO que contiene `ts`."""
+    d = datetime.fromtimestamp(ts, timezone.utc)
+    monday = (d - timedelta(days=d.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    return monday.timestamp()
+
+
+def migrate_legacy_elo(elo: int) -> int:
+    """Elo del esquema antiguo (base 1000) -> esquema nuevo (base 0),
+    conservando lo ganado por encima de la base: 1000 -> 0, 1040 -> 40,
+    980 -> 0."""
+    return max(ELO_FLOOR, int(elo) - LEGACY_ELO_START)
 
 
 def _account_from_dict(v: dict) -> Account:
